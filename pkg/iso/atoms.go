@@ -366,16 +366,15 @@ func (m *Movie) WriteTrackFragment(
     m.StartAtom(MoofTrafTrun)
     m.Skip(1) // version
     trunFlags := TrunDataOffset | TrunSampleDuration | TrunSampleSize | TrunSampleFlags
-    m.WriteUint24(uint32(trunFlags))
-    m.WriteUint32(uint32(len(sampleDurations))) // Anzahl der Samples
+    m.WriteUint24(uint32(trunFlags)) // Flags
+    m.WriteUint32(uint32(len(sampleDurations))) // Amount of samples
     dataOffsetPosition := len(m.Bytes())
-    m.Skip(4) // Platzhalter für data_offset
+    m.Skip(4) // Placeholder for data_offset
 
-    // Sample-Einträge schreiben
     for i := 0; i < len(sampleDurations); i++ {
-        m.WriteUint32(sampleDurations[i]) // Sample-Dauer
-        m.WriteUint32(sampleSizes[i])     // Sample-Größe
-        m.WriteUint32(sampleFlags[i])     // Sample-Flags
+        m.WriteUint32(sampleDurations[i]) // Sample Duration
+        m.WriteUint32(sampleSizes[i])     // Sample Size
+        m.WriteUint32(sampleFlags[i])     // Sample Flags
     }
 
     m.EndAtom() // 'trun'
