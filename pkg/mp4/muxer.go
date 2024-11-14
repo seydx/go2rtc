@@ -3,6 +3,7 @@ package mp4
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"math"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
@@ -20,6 +21,7 @@ type Muxer struct {
 type Track struct {
     dts uint64
     pts uint32
+    lastDTS uint64
 }
 
 func (m *Muxer) AddTrack(codec *core.Codec) {
@@ -215,6 +217,9 @@ func (m *Muxer) GetFragmentPayload(audioTrackID byte, videoTrackID byte, fragmen
 
     // Video
     videoSampleDurations, videoSampleSizes, videoSampleFlags, videoBaseMediaDecodeTime, videoDataSize := m.PrepareTrackFragment(videoTrack, videoCodec, fragment.video)
+
+    // log.Printf("[MP4] video dts:%d pts:%d dur:%d size:%d", videoBaseMediaDecodeTime, videoTrack.pts, videoSampleDurations, videoSampleSizes)
+
     videoDataOffsetPos := mv.WriteTrackFragment(
         videoBaseMediaDecodeTime,
         videoTrackID,
@@ -226,7 +231,11 @@ func (m *Muxer) GetFragmentPayload(audioTrackID byte, videoTrackID byte, fragmen
 
     // Audio
     if len(fragment.audio) > 0 {
+        m.syncAudioVideo(audioTrack, videoTrack, audioCodec, videoCodec)
         audioSampleDurations, audioSampleSizes, audioSampleFlags, audioBaseMediaDecodeTime, audioDataSize := m.PrepareTrackFragment(audioTrack, audioCodec, fragment.audio)
+
+        // log.Printf("[MP4] audio dts:%d pts:%d dur:%d size:%d", audioBaseMediaDecodeTime, audioTrack.pts, audioSampleDurations, audioSampleSizes)
+
         audioDataOffsetPos := mv.WriteTrackFragment(
             audioBaseMediaDecodeTime,
             audioTrackID,
@@ -275,51 +284,125 @@ func (m *Muxer) PrepareTrackFragment(track *Track, codec *core.Codec, packets []
     sampleFlags = make([]uint32, sampleCount)
     totalDataSize = 0
 
-    if track.dts == 0 && sampleCount > 0 {
-        track.dts = uint64(packets[0].Timestamp)
+    isAudio := codec.Name != core.CodecH264 && codec.Name != core.CodecH265
+
+    if m.index == 1 {
+        track.dts = 0
+        track.pts = 0
+        track.lastDTS = 0
+    } else if track.dts == 0 && sampleCount > 0 {
+        if isAudio {
+            // Audio: Set DTS/PTS based on first packet
+            videoCodec := m.codecs[1]
+            if videoCodec != nil {
+                track.dts = uint64(float64(packets[0].Timestamp) * float64(codec.ClockRate) / float64(videoCodec.ClockRate))
+            }
+            track.pts = uint32(track.dts)
+            track.lastDTS = track.dts
+        } else {
+            track.dts = uint64(packets[0].Timestamp)
+            track.pts = packets[0].Timestamp
+            track.lastDTS = track.dts
+        }
     }
 
-    for i, packet := range packets {
-        duration := packet.Timestamp - track.pts
-        track.pts = packet.Timestamp
-
+    // Audio
+    if isAudio {
+        var defaultDuration uint32
         switch codec.Name {
-        case core.CodecH264:
-            if h264.IsKeyframe(packet.Payload) {
-                sampleFlags[i] = iso.SampleVideoIFrame
-            } else {
-                sampleFlags[i] = iso.SampleVideoNonIFrame
-            }
-        case core.CodecH265:
-            if h265.IsKeyframe(packet.Payload) {
-                sampleFlags[i] = iso.SampleVideoIFrame
-            } else {
-                sampleFlags[i] = iso.SampleVideoNonIFrame
-            }
         case core.CodecAAC:
-            duration = 1024                     // important for Apple Finder and QuickTime
-            sampleFlags[i] = iso.SampleAudio    // not important?
+            defaultDuration = 1024
+        case core.CodecOpus:
+            defaultDuration = 480
+        case core.CodecFLAC:
+            defaultDuration = 80
         default:
-            sampleFlags[i] = iso.SampleAudio    // important for FLAC on Android Telegram
+            defaultDuration = uint32(codec.ClockRate / 100)
         }
 
-        // minumum duration important for MSE in Apple Safari
+        // Make sure DTS is greater than last DTS
+        if track.dts <= track.lastDTS {
+            track.dts = track.lastDTS + 1
+        }
+
+        baseMediaDecodeTime = track.dts
+
+        for i := 0; i < sampleCount; i++ {
+            sampleDurations[i] = defaultDuration
+            sampleSizes[i] = uint32(len(packets[i].Payload))
+            sampleFlags[i] = iso.SampleAudio
+            totalDataSize += len(packets[i].Payload)
+        }
+
+        // Calculate DTS/PTS
+        track.dts += uint64(defaultDuration * uint32(sampleCount))
+        track.pts = uint32(track.dts - uint64(defaultDuration))
+        track.lastDTS = track.dts  // Update lastDTS
+
+        return
+    }
+
+    // Video
+    var totalDuration uint64
+
+    for i, packet := range packets {
+        var duration uint32
+        if i < sampleCount-1 {
+            nextTS := packets[i+1].Timestamp
+            if nextTS < packet.Timestamp {
+                duration = (0xFFFFFFFF - packet.Timestamp) + nextTS + 1
+            } else {
+                duration = nextTS - packet.Timestamp
+            }
+        } else {
+            duration = codec.ClockRate/30
+        }
+
         if duration == 0 || duration > codec.ClockRate {
-            duration = codec.ClockRate/1000 + 1
-            track.pts += duration
+            duration = codec.ClockRate/30
         }
 
         sampleDurations[i] = duration
-        size := uint32(len(packet.Payload))
-        sampleSizes[i] = size
-        totalDataSize += int(size)
+        sampleSizes[i] = uint32(len(packet.Payload))
+        totalDuration += uint64(duration)
+
+        if i == 0 && h264.IsKeyframe(packet.Payload) {
+            sampleFlags[i] = iso.SampleVideoIFrame
+        } else {
+            sampleFlags[i] = iso.SampleVideoNonIFrame
+        }
+
+        totalDataSize += len(packet.Payload)
+    }
+
+    // Make sure DTS is greater than last DTS
+    if track.dts <= track.lastDTS {
+        track.dts = track.lastDTS + 1
     }
 
     baseMediaDecodeTime = track.dts
+    track.dts += totalDuration
+    track.pts = packets[sampleCount-1].Timestamp
+    track.lastDTS = track.dts  // Update lastDTS
 
-    for _, duration := range sampleDurations {
-        track.dts += uint64(duration)
+    return
+}
+
+func (m *Muxer) syncAudioVideo(audioTrack, videoTrack *Track, audioCodec, videoCodec *core.Codec) {
+    if audioTrack.dts == 0 || videoTrack.dts == 0 {
+        return
     }
 
-    return sampleDurations, sampleSizes, sampleFlags, baseMediaDecodeTime, totalDataSize
+    // Calculate audio/video relation time
+    audioTime := float64(audioTrack.dts) / float64(audioCodec.ClockRate)
+    videoTime := float64(videoTrack.dts) / float64(videoCodec.ClockRate)
+
+    // Check if audio is ahead of video
+    if diff := math.Abs(audioTime - videoTime); diff > 0.1 { // 100ms difference
+        if audioTime > videoTime {
+            audioTrack.dts = uint64(videoTime * float64(audioCodec.ClockRate))
+        } else {
+            audioTrack.dts += uint64((diff + 0.01) * float64(audioCodec.ClockRate)) // +10ms extra
+        }
+    }
 }
