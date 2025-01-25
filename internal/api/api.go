@@ -138,8 +138,9 @@ func tlsListen(network, address, certFile, keyFile, caFile string) {
             log.Error().Msg("[api] failed to parse CA certificate")
             return
         }
+		tlsConfig.RootCAs = certPool
         tlsConfig.ClientCAs = certPool
-        tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+        tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
     }
 
     ln, err := net.Listen(network, address)
