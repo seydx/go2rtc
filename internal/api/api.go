@@ -130,7 +130,7 @@ func tlsListen(network, address, certFile, keyFile string) {
 
 	server := &http.Server{
 		Handler:           Handler,
-		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}},
+		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true},
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err = server.ServeTLS(ln, "", ""); err != nil {
