@@ -124,6 +124,7 @@ func tlsListen(network, address, certFile, keyFile, caFile string) {
 
     tlsConfig := &tls.Config{
         Certificates: []tls.Certificate{cert},
+		// InsecureSkipVerify: true,
     }
 
     // Wenn ein CA File angegeben wurde
