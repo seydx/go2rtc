@@ -1,9 +1,11 @@
 package streams
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/url"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,8 +46,23 @@ func Init() {
 
 var sanitize = regexp.MustCompile(`\s`)
 
-// Validate - not allow creating dynamic streams with spaces in the source
+func decodeExecBase64(source string) (string, error) {
+    if strings.HasPrefix(source, "exec:base64:") {
+        encodedPart := strings.TrimPrefix(source, "exec:base64:")
+        decodedBytes, err := base64.StdEncoding.DecodeString(encodedPart)
+        if err != nil {
+            return "", err
+        }
+        return "exec:" + string(decodedBytes), nil
+    }
+    return source, nil
+}
+
+// Validate - not allow creating dynamic streams with spaces in the source, except exec:base64:*
 func Validate(source string) error {
+	if strings.HasPrefix(source, "exec:base64:") {
+        return nil
+    }
 	if sanitize.MatchString(source) {
 		return errors.New("streams: invalid dynamic source")
 	}
@@ -53,11 +70,20 @@ func Validate(source string) error {
 }
 
 func New(name string, sources ...string) *Stream {
-	for _, source := range sources {
+    decodedSources := make([]string, len(sources))
+    
+	for i, source := range sources {
 		if Validate(source) != nil {
 			return nil
 		}
-	}
+
+        decoded, err := decodeExecBase64(source)
+        if err != nil {
+            log.Error().Err(err).Msg("Failed to decode base64 exec command")
+            return nil
+        }
+        decodedSources[i] = decoded
+    }
 
 	stream := NewStream(sources)
 
