@@ -2,6 +2,7 @@ package onvif
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"html"
 	"io"
@@ -39,7 +40,18 @@ func NewClient(rawURL string) (*Client, error) {
 
 	b, err := client.DeviceRequest(DeviceGetCapabilities)
 	if err != nil {
-		return nil, err
+		baseURL = "https://" + u.Host
+
+		if u.Path == "" {
+			client.deviceURL = baseURL + PathDevice
+		} else {
+			client.deviceURL = baseURL + u.Path
+		}
+		
+		b, err = client.DeviceRequest(DeviceGetCapabilities)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	client.mediaURL = FindTagValue(b, "Media.+?XAddr")
@@ -183,13 +195,25 @@ func (c *Client) Request(url, body string) ([]byte, error) {
 	e := NewEnvelopeWithUser(c.url.User)
 	e.Append(body)
 
-	client := &http.Client{Timeout: time.Second * 5000}
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   time.Second * 5000,
+	}
+
 	res, err := client.Post(url, `application/soap+xml;charset=utf-8`, bytes.NewReader(e.Bytes()))
 	if err != nil {
 		return nil, err
 	}
 
 	// need to close body with eny response status
+	defer res.Body.Close()
+
 	b, err := io.ReadAll(res.Body)
 
 	if err == nil && res.StatusCode != http.StatusOK {
