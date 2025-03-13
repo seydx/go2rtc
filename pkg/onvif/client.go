@@ -2,6 +2,7 @@ package onvif
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"html"
@@ -32,19 +33,24 @@ func NewClient(rawURL string) (*Client, error) {
 	baseURL := "http://" + u.Host
 
 	client := &Client{url: u}
+
+	// Set default media URL before trying to get capabilities
+	client.mediaURL = baseURL + "/onvif/media_service"
+	client.imaginURL = baseURL + "/onvif/imaging_service"
+
 	if u.Path == "" {
 		client.deviceURL = baseURL + PathDevice
 	} else {
 		client.deviceURL = baseURL + u.Path
 	}
 
-    // Set default media URL before trying to get capabilities
-    client.mediaURL = baseURL + "/onvif/media_service"
-    client.imaginURL = baseURL + "/onvif/imaging_service"
-
 	b, err := client.DeviceRequest(DeviceGetCapabilities)
 	if err != nil {
 		baseURL = "https://" + u.Host
+
+		// Set default media URL before trying to get capabilities
+		client.mediaURL = baseURL + "/onvif/media_service"
+		client.imaginURL = baseURL + "/onvif/imaging_service"
 
 		if u.Path == "" {
 			client.deviceURL = baseURL + PathDevice
@@ -209,17 +215,47 @@ func (c *Client) Request(rawUrl, body string) ([]byte, error) {
 		return nil, err
 	}
 
+	// Determine if HTTPS is needed
+    isHTTPS := strings.ToLower(u.Scheme) == "https"
+
 	// Ensure we have a port
 	host := u.Host
-	if !strings.Contains(host, ":") {
-		host = host + ":80"
-	}
+    if !strings.Contains(host, ":") {
+        if isHTTPS {
+            host = host + ":443" // Standard HTTPS port
+        } else {
+            host = host + ":80"  // Standard HTTP port
+        }
+    }
 
-	// Connect with timeout
-	conn, err := net.DialTimeout("tcp", host, 5*time.Second)
-	if err != nil {
-		return nil, err
-	}
+	var conn net.Conn
+
+    if isHTTPS {
+        // HTTPS connection with TLS
+        tlsConfig := &tls.Config{
+            InsecureSkipVerify: true, // Accept self-signed certificates
+        }
+
+        // Connect with TLS
+        tlsConn, err := tls.DialWithDialer(
+            &net.Dialer{Timeout: 5 * time.Second},
+            "tcp",
+            host,
+            tlsConfig,
+        )
+        if err != nil {
+            return nil, fmt.Errorf("TLS connection error: %w", err)
+        }
+        conn = tlsConn
+    } else {
+        // Plain HTTP connection
+        tcpConn, err := net.DialTimeout("tcp", host, 5*time.Second)
+        if err != nil {
+            return nil, fmt.Errorf("TCP connection error: %w", err)
+        }
+        conn = tcpConn
+    }
+
 	defer conn.Close()
 
 	// Send request
@@ -257,8 +293,8 @@ func (c *Client) Request(rawUrl, body string) ([]byte, error) {
 
 	// No XML found - might be an error response
 	if idx := bytes.Index(fullResponse, []byte("\r\n\r\n")); idx >= 0 {
-		// Return body after headers
-		return fullResponse[idx+4:], nil
+		// Return error message
+		return nil, errors.New(string(fullResponse[idx+4:]))
 	}
 
 	return fullResponse, nil
