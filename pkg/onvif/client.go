@@ -44,7 +44,18 @@ func NewClient(rawURL string) (*Client, error) {
 
 	b, err := client.DeviceRequest(DeviceGetCapabilities)
 	if err != nil {
-		return nil, err
+		baseURL = "https://" + u.Host
+
+		if u.Path == "" {
+			client.deviceURL = baseURL + PathDevice
+		} else {
+			client.deviceURL = baseURL + u.Path
+		}
+		
+		b, err = client.DeviceRequest(DeviceGetCapabilities)
+		if err != nil {
+			return nil, err
+		}
 	}
 
     // Update URLs if found in capabilities

@@ -63,6 +63,11 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	log.Trace().Msgf("[onvif] server request %s %s:\n%s", r.Method, r.RequestURI, b)
 
+	protocol := "http"
+	if api.IsHTTPS {
+		protocol = "https"
+	}
+
 	switch operation {
 	case onvif.DeviceGetNetworkInterfaces, // important for Hass
 		onvif.DeviceGetSystemDateAndTime, // important for Hass
@@ -81,10 +86,10 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	case onvif.DeviceGetCapabilities:
 		// important for Hass: Media section
-		b = onvif.GetCapabilitiesResponse(r.Host)
+		b = onvif.GetCapabilitiesResponse(protocol, r.Host)
 
 	case onvif.DeviceGetServices:
-		b = onvif.GetServicesResponse(r.Host)
+		b = onvif.GetServicesResponse(protocol, r.Host)
 
 	case onvif.DeviceGetDeviceInformation:
 		// important for Hass: SerialNumber (unique server ID)
@@ -132,7 +137,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetStreamUriResponse(uri)
 
 	case onvif.MediaGetSnapshotUri:
-		uri := "http://" + r.Host + "/api/frame.jpeg?src=" + onvif.FindTagValue(b, "ProfileToken")
+		uri := protocol + "://" + r.Host + "/api/frame.jpeg?src=" + onvif.FindTagValue(b, "ProfileToken")
 		b = onvif.GetSnapshotUriResponse(uri)
 
 	default:
