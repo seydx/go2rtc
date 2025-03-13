@@ -71,18 +71,21 @@ func Init() {
 	}
 
 	if cfg.Mod.Listen != "" {
+		IsHTTP = true
 		_, port, _ := net.SplitHostPort(cfg.Mod.Listen)
 		Port, _ = strconv.Atoi(port)
 		go listen("tcp", cfg.Mod.Listen)
 	}
 
 	if cfg.Mod.UnixListen != "" {
+		IsUnix = true
 		_ = syscall.Unlink(cfg.Mod.UnixListen)
 		go listen("unix", cfg.Mod.UnixListen)
 	}
 
 	// Initialize the HTTPS server
 	if cfg.Mod.TLSListen != "" && cfg.Mod.TLSCert != "" && cfg.Mod.TLSKey != "" {
+		IsHTTPS = true
 		go tlsListen("tcp", cfg.Mod.TLSListen, cfg.Mod.TLSCert, cfg.Mod.TLSKey, cfg.Mod.TLSCa)
 	}
 }
@@ -206,6 +209,9 @@ func Response(w http.ResponseWriter, body any, contentType string) {
 
 const StreamNotFound = "stream not found"
 
+var IsHTTP bool
+var IsHTTPS bool
+var IsUnix bool
 var basePath string
 var log zerolog.Logger
 
