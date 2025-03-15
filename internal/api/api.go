@@ -313,6 +313,21 @@ type Source struct {
 	Location string `json:"location,omitempty"`
 }
 
+func ResponseSource(w http.ResponseWriter, source *Source) {
+	if source == nil {
+		http.Error(w, "source not found", http.StatusNotFound)
+		return
+	}
+
+	var response = struct {
+		Source *Source `json:"source"`
+	}{
+		Source: source,
+	}
+
+	ResponseJSON(w, response)
+}
+
 func ResponseSources(w http.ResponseWriter, sources []*Source) {
 	if len(sources) == 0 {
 		http.Error(w, "no sources", http.StatusNotFound)

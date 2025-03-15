@@ -48,9 +48,13 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := apiPair(r.Form.Get("id"), r.Form.Get("url")); err != nil {
+		source, err := apiPair(r.Form.Get("id"), r.Form.Get("url"))
+		if err != nil {
 			api.Error(w, err)
+			return
 		}
+
+		api.ResponseSource(w, source)
 
 	case "DELETE":
 		if err := r.ParseMultipartForm(1024); err != nil {
@@ -95,15 +99,20 @@ func discovery() ([]*api.Source, error) {
 	return sources, nil
 }
 
-func apiPair(id, url string) error {
+func apiPair(id, url string) (*api.Source, error) {
 	conn, err := hap.Pair(url)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	streams.New(id, conn.URL())
+	connURL := conn.URL()
+	streams.New(id, connURL)
 
-	return app.PatchConfig([]string{"streams", id}, conn.URL())
+	if err := app.PatchConfig([]string{"streams", id}, connURL); err != nil {
+		return nil, err
+	}
+
+	return &api.Source{Name: id, URL: connURL}, nil
 }
 
 func apiUnpair(id string) error {
