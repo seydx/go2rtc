@@ -12,7 +12,7 @@ import (
 )
 
 func FindTagValue(b []byte, tag string) string {
-	re := regexp.MustCompile(`(?s)<(?:\w+:)?` + tag + `\b[^>]*>([^<]+)`)
+	re := regexp.MustCompile(`(?s)<(?:[\w-]+:)?` + tag + `[^>]*>([^<]+)</(?:[\w-]+:)?` + tag + `>`)
 	m := re.FindSubmatch(b)
 	if len(m) != 2 {
 		return ""

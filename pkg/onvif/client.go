@@ -272,6 +272,7 @@ func (c *Client) Request(rawUrl, body string) ([]byte, error) {
 
 	// Read full response first
 	var fullResponse []byte
+	var xmlFound bool
 	buf := make([]byte, 4096)
 	for {
 		n, err := conn.Read(buf)
@@ -288,7 +289,21 @@ func (c *Client) Request(rawUrl, body string) ([]byte, error) {
 
 	// Look for XML in complete response
 	if idx := bytes.Index(fullResponse, []byte("<?xml")); idx >= 0 {
-		return fullResponse[idx:], nil
+		xmlFound = true
+		fullResponse = fullResponse[idx:]
+	}
+
+	if xmlFound {
+		if isAuthError(fullResponse) {
+			return nil, errors.New("not authorized")
+		}
+
+		if isFault(fullResponse) {
+			reason := FindTagValue(fullResponse, "Text")
+			return nil, errors.New(reason)
+		}
+
+		return fullResponse, nil
 	}
 
 	// No XML found - might be an error response
@@ -297,5 +312,13 @@ func (c *Client) Request(rawUrl, body string) ([]byte, error) {
 		return nil, errors.New(string(fullResponse[idx+4:]))
 	}
 
-	return fullResponse, nil
+	return nil, errors.New("no XML found in response")
+}
+
+func isFault(b []byte) bool {
+	return bytes.Contains(b, []byte("Fault"))
+}
+
+func isAuthError(xmlData []byte) bool {
+	return isFault(xmlData) && bytes.Contains(xmlData, []byte("NotAuthorized"))
 }
