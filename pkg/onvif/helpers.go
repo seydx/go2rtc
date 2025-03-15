@@ -3,6 +3,7 @@ package onvif
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -10,6 +11,14 @@ import (
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 )
+
+type ONVIFDevice struct {
+	URL          string
+	Name         string
+	Hardware     string
+	UUID         string
+	IPAddress    string
+}
 
 func FindTagValue(b []byte, tag string) string {
 	re := regexp.MustCompile(`(?s)<(?:[\w-]+:)?` + tag + `[^>]*>([^<]+)</(?:[\w-]+:)?` + tag + `>`)
@@ -26,7 +35,12 @@ func UUID() string {
 	return s[:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:]
 }
 
-func DiscoveryStreamingURLs() ([]string, error) {
+func extractScopeValue(scope, prefix string) string {
+	value := strings.TrimPrefix(scope, prefix)
+	return value
+}
+
+func DiscoveryONVIFDevices() ([]ONVIFDevice, error) {
 	conn, err := net.ListenUDP("udp4", nil)
 	if err != nil {
 		return nil, err
@@ -64,7 +78,8 @@ func DiscoveryStreamingURLs() ([]string, error) {
 		return nil, err
 	}
 
-	var urls []string
+	// Map to deduplicate devices by their UUID
+	deviceMap := make(map[string]*ONVIFDevice)
 
 	b := make([]byte, 8192)
 	for {
@@ -73,25 +88,95 @@ func DiscoveryStreamingURLs() ([]string, error) {
 			break
 		}
 
-		//log.Printf("[onvif] discovery response addr=%s:\n%s", addr, b[:n])
-
-		// ignore printers, etc
-		if !strings.Contains(string(b[:n]), "onvif") {
+		// Ignore non-ONVIF devices
+		response := string(b[:n])
+		if !strings.Contains(response, "onvif") {
 			continue
 		}
 
-		url := FindTagValue(b[:n], "XAddrs")
-		if url == "" {
+		// Extract UUID - this is often in EndpointReference
+		uuid := FindTagValue(b[:n], "EndpointReference")
+		if uuid == "" {
+			// Alternatively look in Address
+			uuid = FindTagValue(b[:n], "Address")
+		}
+		
+		// Fallback to IP address if UUID is empty
+		if uuid == "" {
+			uuid = "unknown-" + addr.IP.String()
+		}
+
+		// Extract XAddrs
+		xaddrs := FindTagValue(b[:n], "XAddrs")
+		if xaddrs == "" {
 			continue
 		}
 
-		// fix some buggy cameras
-		// <wsdd:XAddrs>http://0.0.0.0:8080/onvif/device_service</wsdd:XAddrs>
-		if strings.HasPrefix(url, "http://0.0.0.0") {
-			url = "http://" + addr.IP.String() + url[14:]
+		// Get device from map or create new one
+		_, exists := deviceMap[uuid]
+		if !exists {
+			firstURL := strings.Fields(xaddrs)[0]
+    
+			// Fix buggy URLs
+			if strings.HasPrefix(firstURL, "http://0.0.0.0") {
+				firstURL = "http://" + addr.IP.String() + firstURL[14:]
+			}
+
+			device := &ONVIFDevice{
+				IPAddress:   addr.IP.String(),
+				UUID:        uuid,
+				URL:         firstURL,
+			}
+			deviceMap[uuid] = device
+
+			// Extract additional information from scopes
+			scopes := FindTagValue(b[:n], "Scopes")
+			if scopes != "" {
+				scopesList := strings.Fields(scopes)
+
+				for _, scope := range scopesList {
+					scope = strings.TrimSpace(scope)
+					
+					// Extract name
+					if strings.Contains(scope, "onvif://www.onvif.org/name/") {
+						device.Name = extractScopeValue(scope, "onvif://www.onvif.org/name/")
+						// Decode URL-encoded name
+						if decodedName, err := url.QueryUnescape(device.Name); err == nil {
+							device.Name = decodedName
+						}
+					}
+					
+					// Extract hardware
+					if strings.Contains(scope, "onvif://www.onvif.org/hardware/") {
+						device.Hardware = extractScopeValue(scope, "onvif://www.onvif.org/hardware/")
+					}
+				}
+			}
+
+			if device.Name == "" {
+				device.Name = device.IPAddress
+			}
 		}
 
-		urls = append(urls, url)
+	}
+
+	var devices []ONVIFDevice
+	for _, device := range deviceMap {
+		devices = append(devices, *device)
+	}
+
+	return devices, nil
+}
+
+func DiscoveryStreamingURLs() ([]string, error) {
+	devices, err := DiscoveryONVIFDevices()
+	if err != nil {
+		return nil, err
+	}
+	
+	var urls []string
+	for _, device := range devices {
+		urls = append(urls, device.URL)
 	}
 
 	return urls, nil
