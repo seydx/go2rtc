@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/AlexxIT/go2rtc/internal/alsa"
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/api/ws"
 	"github.com/AlexxIT/go2rtc/internal/app"
@@ -92,6 +93,7 @@ func main() {
 	doorbird.Init() // doorbird source
 	v4l2.Init()     // v4l2 source
 	cui.Init()     	// cui source
+	alsa.Init()     // alsa source
 	flussonic.Init()
 	eseecloud.Init()
 
