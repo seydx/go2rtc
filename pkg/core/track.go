@@ -153,12 +153,19 @@ func (s *Sender) Start() {
 }
 
 func (s *Sender) Wait() {
-	if done := s.done; done != nil {
+	s.mu.Lock()
+	done := s.done
+	s.mu.Unlock()
+
+	if done != nil {
 		<-done
 	}
 }
 
 func (s *Sender) State() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.buf == nil {
 		return "closed"
 	}
