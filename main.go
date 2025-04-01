@@ -5,6 +5,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/api/ws"
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/internal/bubble"
+	"github.com/AlexxIT/go2rtc/internal/cui"
 	"github.com/AlexxIT/go2rtc/internal/debug"
 	"github.com/AlexxIT/go2rtc/internal/doorbird"
 	"github.com/AlexxIT/go2rtc/internal/dvrip"
@@ -39,7 +40,7 @@ import (
 )
 
 func main() {
-	app.Version = "1.9.9-cui.2"
+	app.Version = "1.9.9-cui.4"
 
 	// 1. Core modules: app, api/ws, streams
 
@@ -88,6 +89,7 @@ func main() {
 	gopro.Init()    // gopro source
 	doorbird.Init() // doorbird source
 	v4l2.Init()     // v4l2 source
+	cui.Init()     	// cui source
 
 	// 6. Helper modules
 
