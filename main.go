@@ -92,7 +92,6 @@ func main() {
 	doorbird.Init() // doorbird source
 	v4l2.Init()     // v4l2 source
 	flussonic.Init()
-	cui.Init()     	// cui source
 	eseecloud.Init()
 	cui.Init()     	// cui source
 
