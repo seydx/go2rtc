@@ -52,15 +52,15 @@ func GetRequestAction(b []byte) string {
 	return string(m[1])
 }
 
-func GetCapabilitiesResponse(host string) []byte {
+func GetCapabilitiesResponse(protocol string, host string) []byte {
 	e := NewEnvelope()
 	e.Append(`<tds:GetCapabilitiesResponse>
 	<tds:Capabilities>
 		<tt:Device>
-			<tt:XAddr>http://`, host, `/onvif/device_service</tt:XAddr>
+			<tt:XAddr>`, protocol, `://`, host, `/onvif/device_service</tt:XAddr>
 		</tt:Device>
 		<tt:Media>
-			<tt:XAddr>http://`, host, `/onvif/media_service</tt:XAddr>
+			<tt:XAddr>`, protocol, `://`, host, `/onvif/media_service</tt:XAddr>
 			<tt:StreamingCapabilities>
 				<tt:RTPMulticast>false</tt:RTPMulticast>
 				<tt:RTP_TCP>false</tt:RTP_TCP>
@@ -72,17 +72,17 @@ func GetCapabilitiesResponse(host string) []byte {
 	return e.Bytes()
 }
 
-func GetServicesResponse(host string) []byte {
+func GetServicesResponse(protocol string, host string) []byte {
 	e := NewEnvelope()
 	e.Append(`<tds:GetServicesResponse>
 	<tds:Service>
 		<tds:Namespace>http://www.onvif.org/ver10/device/wsdl</tds:Namespace>
-		<tds:XAddr>http://`, host, `/onvif/device_service</tds:XAddr>
+		<tds:XAddr>`, protocol, `://`, host, `/onvif/device_service</tds:XAddr>
 		<tds:Version><tt:Major>2</tt:Major><tt:Minor>5</tt:Minor></tds:Version>
 	</tds:Service>
 	<tds:Service>
 		<tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace>
-		<tds:XAddr>http://`, host, `/onvif/media_service</tds:XAddr>
+		<tds:XAddr>`, protocol, `://`, host, `/onvif/media_service</tds:XAddr>
 		<tds:Version><tt:Major>2</tt:Major><tt:Minor>5</tt:Minor></tds:Version>
 	</tds:Service>
 </tds:GetServicesResponse>`)

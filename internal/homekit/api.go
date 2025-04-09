@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
@@ -23,7 +22,7 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		urls := findHomeKitURLs()
+		urls := streams.FindPrefixURLs("homekit")
 		for id, u := range urls {
 			deviceID := u.Query().Get("device_id")
 			for _, source := range sources {
@@ -48,9 +47,13 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := apiPair(r.Form.Get("id"), r.Form.Get("url")); err != nil {
+		source, err := apiPair(r.Form.Get("id"), r.Form.Get("url"))
+		if err != nil {
 			api.Error(w, err)
+			return
 		}
+
+		api.ResponseSource(w, source)
 
 	case "DELETE":
 		if err := r.ParseMultipartForm(1024); err != nil {
@@ -95,15 +98,20 @@ func discovery() ([]*api.Source, error) {
 	return sources, nil
 }
 
-func apiPair(id, url string) error {
+func apiPair(id, url string) (*api.Source, error) {
 	conn, err := hap.Pair(url)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	streams.New(id, conn.URL())
+	connURL := conn.URL()
+	streams.New(id, connURL)
 
-	return app.PatchConfig([]string{"streams", id}, conn.URL())
+	if err := app.PatchConfig([]string{"streams", id}, connURL); err != nil {
+		return nil, err
+	}
+
+	return &api.Source{Name: id, URL: connURL}, nil
 }
 
 func apiUnpair(id string) error {
@@ -112,7 +120,7 @@ func apiUnpair(id string) error {
 		return errors.New(api.StreamNotFound)
 	}
 
-	rawURL := findHomeKitURL(stream.Sources())
+	rawURL := streams.FindPrefixURL("homekit", stream.Sources())
 	if rawURL == "" {
 		return errors.New("not homekit source")
 	}
@@ -124,16 +132,4 @@ func apiUnpair(id string) error {
 	streams.Delete(id)
 
 	return app.PatchConfig([]string{"streams", id}, nil)
-}
-
-func findHomeKitURLs() map[string]*url.URL {
-	urls := map[string]*url.URL{}
-	for name, sources := range streams.GetAllSources() {
-		if rawURL := findHomeKitURL(sources); rawURL != "" {
-			if u, err := url.Parse(rawURL); err == nil {
-				urls[name] = u
-			}
-		}
-	}
-	return urls
 }

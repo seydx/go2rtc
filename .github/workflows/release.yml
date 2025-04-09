@@ -1,0 +1,202 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-binaries:
+    name: Build binaries
+    runs-on: ubuntu-latest
+    env: { CGO_ENABLED: 0 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+
+      - name: Build go2rtc_win64
+        env: { GOOS: windows, GOARCH: amd64 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_win64
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_win64, path: go2rtc.exe }
+
+      - name: Build go2rtc_win32
+        env: { GOOS: windows, GOARCH: 386, GOTOOLCHAIN: go1.20.14 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_win32
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_win32, path: go2rtc.exe }
+
+      - name: Build go2rtc_win_arm64
+        env: { GOOS: windows, GOARCH: arm64 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_win_arm64
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_win_arm64, path: go2rtc.exe }
+
+      - name: Build go2rtc_linux_amd64
+        env: { GOOS: linux, GOARCH: amd64 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_linux_amd64
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_linux_amd64, path: go2rtc }
+
+      - name: Build go2rtc_linux_i386
+        env: { GOOS: linux, GOARCH: 386 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_linux_i386
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_linux_i386, path: go2rtc }
+
+      - name: Build go2rtc_linux_arm64
+        env: { GOOS: linux, GOARCH: arm64 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_linux_arm64
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_linux_arm64, path: go2rtc }
+
+      - name: Build go2rtc_linux_arm
+        env: { GOOS: linux, GOARCH: arm, GOARM: 7 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_linux_arm
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_linux_arm, path: go2rtc }
+
+      - name: Build go2rtc_linux_armv6
+        env: { GOOS: linux, GOARCH: arm, GOARM: 6 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_linux_armv6
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_linux_armv6, path: go2rtc }
+
+      - name: Build go2rtc_linux_mipsel
+        env: { GOOS: linux, GOARCH: mipsle }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_linux_mipsel
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_linux_mipsel, path: go2rtc }
+
+      - name: Build go2rtc_mac_amd64
+        env: { GOOS: darwin, GOARCH: amd64, GOTOOLCHAIN: go1.20.14 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_mac_amd64
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_mac_amd64, path: go2rtc }
+
+      - name: Build go2rtc_mac_arm64
+        env: { GOOS: darwin, GOARCH: arm64 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_mac_arm64
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_mac_arm64, path: go2rtc }
+
+      - name: Build go2rtc_freebsd_amd64
+        env: { GOOS: freebsd, GOARCH: amd64 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_freebsd_amd64
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_freebsd_amd64, path: go2rtc }
+
+      - name: Build go2rtc_freebsd_arm64
+        env: { GOOS: freebsd, GOARCH: arm64 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_freebsd_arm64
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_freebsd_arm64, path: go2rtc }
+
+  package-and-release:
+    name: Package and Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          
+      - name: Get version from package.json
+        id: package-version
+        uses: martinbeentjes/npm-get-version-action@v1.3.1
+
+      - name: Create ZIP files with specific naming scheme
+        run: |
+          mkdir -p release
+          
+          # Function to get OS and architecture names for the filename
+          function get_os_arch() {
+            local artifact=$1
+            
+            if [[ $artifact == *win64* ]]; then
+              echo "windows-x64"
+            elif [[ $artifact == *win32* ]]; then
+              echo "windows-x86"
+            elif [[ $artifact == *win_arm64* ]]; then
+              echo "windows-arm64"
+            elif [[ $artifact == *linux_amd64* ]]; then
+              echo "linux-x64"
+            elif [[ $artifact == *linux_i386* ]]; then
+              echo "linux-x86"
+            elif [[ $artifact == *linux_arm64* ]]; then
+              echo "linux-arm64"
+            elif [[ $artifact == *linux_arm* && $artifact != *armv6* ]]; then
+              echo "linux-armv7"
+            elif [[ $artifact == *linux_armv6* ]]; then
+              echo "linux-armv6"
+            elif [[ $artifact == *linux_mipsel* ]]; then
+              echo "linux-mipsel"
+            elif [[ $artifact == *mac_amd64* ]]; then
+              echo "darwin-x64"
+            elif [[ $artifact == *mac_arm64* ]]; then
+              echo "darwin-arm64"
+            elif [[ $artifact == *freebsd_amd64* ]]; then
+              echo "freebsd-x64"
+            elif [[ $artifact == *freebsd_arm64* ]]; then
+              echo "freebsd-arm64"
+            else
+              echo "unknown"
+            fi
+          }
+          
+          # Create a zip for each artifact with the proper naming scheme
+          for dir in artifacts/*; do
+            artifact=$(basename "$dir")
+            os_arch=$(get_os_arch "$artifact")
+            
+            if [[ $os_arch != "unknown" ]]; then
+              echo "Creating ZIP for $artifact as $os_arch"
+              cd "$dir"
+              
+              # Prepare the filename: go2rtc-darwin-x64-1.9.9.zip
+              zip_filename="go2rtc-${os_arch}-${{ steps.package-version.outputs.current-version }}.zip"
+              
+              # Create the zip with the correct internal filename (just "go2rtc" or "go2rtc.exe")
+              if [[ $os_arch == windows* ]]; then
+                # For Windows, we want to keep it as .exe
+                zip -j "../../release/$zip_filename" go2rtc.exe
+              else
+                zip -j "../../release/$zip_filename" go2rtc
+              fi
+              
+              cd ../..
+            fi
+          done
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: release/*.zip
+          draft: false
+          prerelease: false
+          tag_name: v${{ steps.package-version.outputs.current-version }}
+          name: Release v${{ steps.package-version.outputs.current-version }}

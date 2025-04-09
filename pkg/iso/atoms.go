@@ -332,6 +332,58 @@ func (m *Movie) WriteMovieFragment(seq, tid, duration, size, flags uint32, dts u
 	m.EndAtom() // MOOF
 }
 
+func (m *Movie) WriteTrackFragment(
+    baseMediaDecodeTime uint64,
+    trackID byte,
+    sampleDurations, sampleSizes, sampleFlags []uint32,
+) int {
+    // Calculate total data size
+    totalDataSize := 0
+    for _, size := range sampleSizes {
+        totalDataSize += int(size)
+    }
+
+    // Start 'traf' atom
+    m.StartAtom(MoofTraf)
+
+    // Write 'tfhd' atom
+    m.StartAtom(MoofTrafTfhd)
+    m.Skip(1) // version
+    m.WriteUint24(
+        TfhdDefaultBaseIsMoof,
+    )
+    m.WriteUint32(uint32(trackID + 1)) // track id
+    m.EndAtom() // 'tfhd'
+
+    // Write 'tfdt' atom
+    m.StartAtom(MoofTrafTfdt)
+    m.WriteBytes(1) // Version 1 für 64-Bit baseMediaDecodeTime
+    m.Skip(3)       // Flags
+    m.WriteUint64(baseMediaDecodeTime)
+    m.EndAtom() // 'tfdt'
+
+    // Write 'trun' atom
+    m.StartAtom(MoofTrafTrun)
+    m.Skip(1) // version
+    trunFlags := TrunDataOffset | TrunSampleDuration | TrunSampleSize | TrunSampleFlags
+    m.WriteUint24(uint32(trunFlags)) // Flags
+    m.WriteUint32(uint32(len(sampleDurations))) // Amount of samples
+    dataOffsetPosition := len(m.Bytes())
+    m.Skip(4) // Placeholder for data_offset
+
+    for i := 0; i < len(sampleDurations); i++ {
+        m.WriteUint32(sampleDurations[i]) // Sample Duration
+        m.WriteUint32(sampleSizes[i])     // Sample Size
+        m.WriteUint32(sampleFlags[i])     // Sample Flags
+    }
+
+    m.EndAtom() // 'trun'
+    m.EndAtom() // 'traf'
+
+    return dataOffsetPosition
+}
+
+
 func (m *Movie) WriteData(b []byte) {
 	m.StartAtom(Mdat)
 	m.Write(b)
