@@ -92,10 +92,11 @@ func main() {
 	gopro.Init()    // gopro source
 	doorbird.Init() // doorbird source
 	v4l2.Init()     // v4l2 source
-	cui.Init()     	// cui source
 	alsa.Init()     // alsa source
 	flussonic.Init()
 	eseecloud.Init()
+
+	cui.Init()     	// cui source
 
 	// 6. Helper modules
 
