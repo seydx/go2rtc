@@ -75,10 +75,7 @@ func DecodeSources(sources ...string) ([]string, error) {
 
 // Validate - not allow creating dynamic streams with spaces in the source, except exec:base64:*
 func Validate(source string) error {
-	println("Validate source:", source)
-
 	if strings.HasPrefix(source, "exec:base64:") {
-		println("Validate source: exec:base64:", source)
         return nil
     }
 	if sanitize.MatchString(source) {
