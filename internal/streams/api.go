@@ -54,7 +54,13 @@ func apiStreams(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := app.PatchConfig([]string{"streams", name}, query["src"]); err != nil {
+		sources, err := DecodeSources(query["src"]...)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if err := app.PatchConfig([]string{"streams", name}, sources); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 

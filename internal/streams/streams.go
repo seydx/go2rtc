@@ -46,21 +46,39 @@ func Init() {
 
 var sanitize = regexp.MustCompile(`\s`)
 
-func decodeExecBase64(source string) (string, error) {
-    if strings.HasPrefix(source, "exec:base64:") {
-        encodedPart := strings.TrimPrefix(source, "exec:base64:")
-        decodedBytes, err := base64.StdEncoding.DecodeString(encodedPart)
-        if err != nil {
-            return "", err
-        }
-        return "exec:" + string(decodedBytes), nil
-    }
-    return source, nil
+func DecodeExecSource(source string) (string, error) {
+	if strings.HasPrefix(source, "exec:base64:") {
+		encodedPart := strings.TrimPrefix(source, "exec:base64:")
+		decodedBytes, err := base64.StdEncoding.DecodeString(encodedPart)
+		if err != nil {
+			return "", err
+		}
+		return "exec:" + string(decodedBytes), nil
+	}
+	return source, nil
+}
+
+func DecodeSources(sources ...string) ([]string, error) {
+	decodedSources := make([]string, len(sources))
+
+	for i, source := range sources {
+		decodedSource, err := DecodeExecSource(source)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to decode base64 exec command")
+			return nil, err
+		}
+		decodedSources[i] = decodedSource
+	}
+
+	return decodedSources, nil
 }
 
 // Validate - not allow creating dynamic streams with spaces in the source, except exec:base64:*
 func Validate(source string) error {
+	println("Validate source:", source)
+
 	if strings.HasPrefix(source, "exec:base64:") {
+		println("Validate source: exec:base64:", source)
         return nil
     }
 	if sanitize.MatchString(source) {
@@ -70,14 +88,14 @@ func Validate(source string) error {
 }
 
 func New(name string, sources ...string) *Stream {
-    decodedSources := make([]string, len(sources))
-    
+	decodedSources := make([]string, len(sources))
+
 	for i, source := range sources {
 		if Validate(source) != nil {
 			return nil
 		}
 
-        decoded, err := decodeExecBase64(source)
+        decoded, err := DecodeExecSource(source)
         if err != nil {
             log.Error().Err(err).Msg("Failed to decode base64 exec command")
             return nil
@@ -85,7 +103,7 @@ func New(name string, sources ...string) *Stream {
         decodedSources[i] = decoded
     }
 
-	stream := NewStream(sources)
+	stream := NewStream(decodedSources)
 
 	streamsMu.Lock()
 	streams[name] = stream
