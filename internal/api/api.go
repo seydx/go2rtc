@@ -139,7 +139,6 @@ func tlsListen(network, address, certFile, keyFile, caFile string) {
             return
         }
         tlsConfig.ClientCAs = certPool
-        tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
     }
 
     ln, err := net.Listen(network, address)
