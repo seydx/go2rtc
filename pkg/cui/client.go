@@ -14,8 +14,6 @@ type Client struct {
 }
 
 func NewClient(rawURL string) (*Client, error) {
-	println("CUI URL:", rawURL)
-
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
