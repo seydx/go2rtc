@@ -45,7 +45,7 @@ import (
 )
 
 func main() {
-	app.Version = "1.9.9-cui.14"
+	app.Version = "1.9.9-cui.15"
 
 	// 1. Core modules: app, api/ws, streams
 
