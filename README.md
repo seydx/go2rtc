@@ -570,12 +570,12 @@ Tested: KD110, KC200, KC401, KC420WS, EC71.
 
 [Tuya](https://www.tuya.com/) proprietary camera protocol with **two way audio** support.
 
-- Obtain `client_id`, `client_secret`, `uid` and `device_id` from [Tuya IoT Platform](https://iot.tuya.com/)
+- Obtain `device_id`, `client_id`, `client_secret`, and `uid` (if using `mode=webrtc`) from [Tuya IoT Platform](https://iot.tuya.com/). [Here's a guide](https://xzetsubou.github.io/hass-localtuya/cloud_api/).
 - Use `mode` parameter to select the stream type:
   - `webrtc` - WebRTC stream (default)
   - `rtsp` - RTSP stream _(if available)_
   - `hls` - HLS stream _(if available)_
-- Use `type` parameter to select the stream type: _(if available)_
+- Use `role` parameter to select the stream:
   - `main` - Main stream (default)
   - `sub` - Sub stream
 
@@ -588,10 +588,10 @@ streams:
   tuya_webrtc_2: tuya://openapi.tuyaus.com?device_id=XXX&uid=XXX&client_id=XXX&client_secret=XXX&mode=webrtc
   
   # Tuya WebRTC stream (HD)
-  tuya_webrtc_hd: tuya://openapi.tuyaus.com?device_id=XXX&uid=XXX&client_id=XXX&client_secret=XXX&type=main
+  tuya_webrtc_hd: tuya://openapi.tuyaus.com?device_id=XXX&uid=XXX&client_id=XXX&client_secret=XXX&role=main
   
   # Tuya WebRTC stream (SD)
-  tuya_webrtc_sd: tuya://openapi.tuyaus.com?device_id=XXX&uid=XXX&client_id=XXX&client_secret=XXX&type=sub
+  tuya_webrtc_sd: tuya://openapi.tuyaus.com?device_id=XXX&uid=XXX&client_id=XXX&client_secret=XXX&role=sub
   
   # Using RTSP when available (no "uid" required)
   tuya_rtsp: tuya://openapi.tuyaus.com?device_id=XXX&client_id=XXX&client_secret=XXX&mode=rtsp
