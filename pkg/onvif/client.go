@@ -57,20 +57,20 @@ func NewClient(rawURL string) (*Client, error) {
 		} else {
 			client.deviceURL = baseURL + u.Path
 		}
-		
+
 		b, err = client.DeviceRequest(DeviceGetCapabilities)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-    // Update URLs if found in capabilities
-    if mediaAddr := FindTagValue(b, "Media.+?XAddr"); mediaAddr != "" {
-        client.mediaURL = mediaAddr
-    }
-    if imagingAddr := FindTagValue(b, "Imaging.+?XAddr"); imagingAddr != "" {
-        client.imaginURL = imagingAddr
-    }
+	// Update URLs if found in capabilities
+	if mediaAddr := FindTagValue(b, "Media.+?XAddr"); mediaAddr != "" {
+		client.mediaURL = mediaAddr
+	}
+	if imagingAddr := FindTagValue(b, "Imaging.+?XAddr"); imagingAddr != "" {
+		client.imaginURL = imagingAddr
+	}
 
 	return client, nil
 }
@@ -216,45 +216,45 @@ func (c *Client) Request(rawUrl, body string) ([]byte, error) {
 	}
 
 	// Determine if HTTPS is needed
-    isHTTPS := strings.ToLower(u.Scheme) == "https"
+	isHTTPS := strings.ToLower(u.Scheme) == "https"
 
 	// Ensure we have a port
 	host := u.Host
-    if !strings.Contains(host, ":") {
-        if isHTTPS {
-            host = host + ":443" // Standard HTTPS port
-        } else {
-            host = host + ":80"  // Standard HTTP port
-        }
-    }
+	if !strings.Contains(host, ":") {
+		if isHTTPS {
+			host = host + ":443" // Standard HTTPS port
+		} else {
+			host = host + ":80" // Standard HTTP port
+		}
+	}
 
 	var conn net.Conn
 
-    if isHTTPS {
-        // HTTPS connection with TLS
-        tlsConfig := &tls.Config{
-            InsecureSkipVerify: true, // Accept self-signed certificates
-        }
+	if isHTTPS {
+		// HTTPS connection with TLS
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: true, // Accept self-signed certificates
+		}
 
-        // Connect with TLS
-        tlsConn, err := tls.DialWithDialer(
-            &net.Dialer{Timeout: 5 * time.Second},
-            "tcp",
-            host,
-            tlsConfig,
-        )
-        if err != nil {
-            return nil, fmt.Errorf("TLS connection error: %w", err)
-        }
-        conn = tlsConn
-    } else {
-        // Plain HTTP connection
-        tcpConn, err := net.DialTimeout("tcp", host, 5*time.Second)
-        if err != nil {
-            return nil, fmt.Errorf("TCP connection error: %w", err)
-        }
-        conn = tcpConn
-    }
+		// Connect with TLS
+		tlsConn, err := tls.DialWithDialer(
+			&net.Dialer{Timeout: 5 * time.Second},
+			"tcp",
+			host,
+			tlsConfig,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("TLS connection error: %w", err)
+		}
+		conn = tlsConn
+	} else {
+		// Plain HTTP connection
+		tcpConn, err := net.DialTimeout("tcp", host, 5*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("TCP connection error: %w", err)
+		}
+		conn = tcpConn
+	}
 
 	defer conn.Close()
 

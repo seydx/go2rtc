@@ -100,7 +100,7 @@ func main() {
 	flussonic.Init()
 	eseecloud.Init()
 
-	cui.Init()     	// cui source
+	cui.Init() // cui source
 
 	// 6. Helper modules
 

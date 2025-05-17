@@ -1,6 +1,7 @@
 package tuya
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"

@@ -13,11 +13,11 @@ import (
 )
 
 type ONVIFDevice struct {
-	URL          string
-	Name         string
-	Hardware     string
-	UUID         string
-	IPAddress    string
+	URL       string
+	Name      string
+	Hardware  string
+	UUID      string
+	IPAddress string
 }
 
 func FindTagValue(b []byte, tag string) string {
@@ -100,7 +100,7 @@ func DiscoveryONVIFDevices() ([]ONVIFDevice, error) {
 			// Alternatively look in Address
 			uuid = FindTagValue(b[:n], "Address")
 		}
-		
+
 		// Fallback to IP address if UUID is empty
 		if uuid == "" {
 			uuid = "unknown-" + addr.IP.String()
@@ -116,16 +116,16 @@ func DiscoveryONVIFDevices() ([]ONVIFDevice, error) {
 		_, exists := deviceMap[uuid]
 		if !exists {
 			firstURL := strings.Fields(xaddrs)[0]
-    
+
 			// Fix buggy URLs
 			if strings.HasPrefix(firstURL, "http://0.0.0.0") {
 				firstURL = "http://" + addr.IP.String() + firstURL[14:]
 			}
 
 			device := &ONVIFDevice{
-				IPAddress:   addr.IP.String(),
-				UUID:        uuid,
-				URL:         firstURL,
+				IPAddress: addr.IP.String(),
+				UUID:      uuid,
+				URL:       firstURL,
 			}
 			deviceMap[uuid] = device
 
@@ -136,7 +136,7 @@ func DiscoveryONVIFDevices() ([]ONVIFDevice, error) {
 
 				for _, scope := range scopesList {
 					scope = strings.TrimSpace(scope)
-					
+
 					// Extract name
 					if strings.Contains(scope, "onvif://www.onvif.org/name/") {
 						device.Name = extractScopeValue(scope, "onvif://www.onvif.org/name/")
@@ -145,7 +145,7 @@ func DiscoveryONVIFDevices() ([]ONVIFDevice, error) {
 							device.Name = decodedName
 						}
 					}
-					
+
 					// Extract hardware
 					if strings.Contains(scope, "onvif://www.onvif.org/hardware/") {
 						device.Hardware = extractScopeValue(scope, "onvif://www.onvif.org/hardware/")
@@ -173,7 +173,7 @@ func DiscoveryStreamingURLs() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var urls []string
 	for _, device := range devices {
 		urls = append(urls, device.URL)

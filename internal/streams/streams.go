@@ -76,8 +76,8 @@ func DecodeSources(sources ...string) ([]string, error) {
 // Validate - not allow creating dynamic streams with spaces in the source, except exec:base64:*
 func Validate(source string) error {
 	if strings.HasPrefix(source, "exec:base64:") {
-        return nil
-    }
+		return nil
+	}
 	if sanitize.MatchString(source) {
 		return errors.New("streams: invalid dynamic source")
 	}
@@ -92,13 +92,13 @@ func New(name string, sources ...string) *Stream {
 			return nil
 		}
 
-        decoded, err := DecodeExecSource(source)
-        if err != nil {
-            log.Error().Err(err).Msg("Failed to decode base64 exec command")
-            return nil
-        }
-        decodedSources[i] = decoded
-    }
+		decoded, err := DecodeExecSource(source)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to decode base64 exec command")
+			return nil
+		}
+		decodedSources[i] = decoded
+	}
 
 	stream := NewStream(decodedSources)
 

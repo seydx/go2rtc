@@ -228,17 +228,17 @@ func apiOnvif(w http.ResponseWriter, r *http.Request) {
 			if len(tokens) > 1 {
 				streamName += " stream" + strconv.Itoa(i+1)
 			}
-		
+
 			streamID := "stream" + strconv.Itoa(i+1)
-		
+
 			items = append(items, &api.Source{
 				ID:   streamID,
-				Name: streamName, 
+				Name: streamName,
 				URL:  src + "?subtype=" + token,
 				Info: token,
 			})
 		}
-		
+
 		if len(tokens) > 0 && client.HasSnapshots() {
 			items = append(items, &api.Source{
 				ID:   "snapshot",

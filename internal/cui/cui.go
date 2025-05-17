@@ -10,7 +10,7 @@ import (
 
 func Init() {
 	log = app.GetLogger("cui")
-	
+
 	streams.HandleFunc("cui", streamCui)
 }
 

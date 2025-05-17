@@ -20,12 +20,12 @@ func NewClient(rawURL string) (*Client, error) {
 	}
 
 	u.Scheme = "https"
-	
+
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 	client := &http.Client{Transport: tr}
-	
+
 	res, err := client.Get(u.String())
 	if err != nil {
 		return nil, err

@@ -11,9 +11,9 @@ import (
 )
 
 type FormatConfig struct {
-	Type            string `json:"type"`
-	Value           string `json:"value"`
-	FragmentMode    string `json:"fragmentMode"`
+	Type         string `json:"type"`
+	Value        string `json:"value"`
+	FragmentMode string `json:"fragmentMode"`
 }
 
 func handlerWSMSE(tr *ws.Transport, msg *ws.Message) error {
@@ -23,38 +23,38 @@ func handlerWSMSE(tr *ws.Transport, msg *ws.Message) error {
 	}
 
 	var medias []*core.Media
-    var format FormatConfig
-    if msg.Value != nil {
-        switch v := msg.Value.(type) {
-        case string:
-            format = FormatConfig{
-                Value:        v,
-                FragmentMode: "frame",
-            }
-        case map[string]interface{}:
-            if codecsVal, ok := v["value"].(string); ok {
-                format.Value = codecsVal
-            }
-            if modeVal, ok := v["fragmentMode"].(string); ok {
-                format.FragmentMode = modeVal
-            } else {
+	var format FormatConfig
+	if msg.Value != nil {
+		switch v := msg.Value.(type) {
+		case string:
+			format = FormatConfig{
+				Value:        v,
+				FragmentMode: "frame",
+			}
+		case map[string]interface{}:
+			if codecsVal, ok := v["value"].(string); ok {
+				format.Value = codecsVal
+			}
+			if modeVal, ok := v["fragmentMode"].(string); ok {
+				format.FragmentMode = modeVal
+			} else {
 				format.FragmentMode = "frame"
 			}
-        }
-    }
+		}
+	}
 
 	if format.Value != "" {
-        log.Trace().
-            Str("codecs", format.Value).
-            Str("mode", format.FragmentMode).
-            Msgf("[mp4] new WS/MSE consumer")
-        
-        medias = mp4.ParseCodecs(format.Value, true)
-    }
+		log.Trace().
+			Str("codecs", format.Value).
+			Str("mode", format.FragmentMode).
+			Msgf("[mp4] new WS/MSE consumer")
+
+		medias = mp4.ParseCodecs(format.Value, true)
+	}
 
 	cons := mp4.NewConsumer(medias)
 	cons.FormatName = "mse/fmp4"
-    cons.FragmentMode = format.FragmentMode
+	cons.FragmentMode = format.FragmentMode
 	cons.WithRequest(tr.Request)
 
 	if err := stream.AddConsumer(cons); err != nil {

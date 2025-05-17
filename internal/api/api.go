@@ -30,7 +30,7 @@ func Init() {
 			TLSListen  string `yaml:"tls_listen"`
 			TLSCert    string `yaml:"tls_cert"`
 			TLSKey     string `yaml:"tls_key"`
-			TLSCa	   string `yaml:"tls_ca"`
+			TLSCa      string `yaml:"tls_ca"`
 			UnixListen string `yaml:"unix_listen"`
 		} `yaml:"api"`
 	}
@@ -109,54 +109,54 @@ func listen(network, address string) {
 }
 
 func tlsListen(network, address, certFile, keyFile, caFile string) {
-    var cert tls.Certificate
-    var err error
-    if strings.IndexByte(certFile, '\n') < 0 && strings.IndexByte(keyFile, '\n') < 0 {
-        // check if file path
-        cert, err = tls.LoadX509KeyPair(certFile, keyFile)
-    } else {
-        // if text file content
-        cert, err = tls.X509KeyPair([]byte(certFile), []byte(keyFile))
-    }
-    if err != nil {
-        log.Error().Err(err).Caller().Send()
-        return
-    }
+	var cert tls.Certificate
+	var err error
+	if strings.IndexByte(certFile, '\n') < 0 && strings.IndexByte(keyFile, '\n') < 0 {
+		// check if file path
+		cert, err = tls.LoadX509KeyPair(certFile, keyFile)
+	} else {
+		// if text file content
+		cert, err = tls.X509KeyPair([]byte(certFile), []byte(keyFile))
+	}
+	if err != nil {
+		log.Error().Err(err).Caller().Send()
+		return
+	}
 
-    tlsConfig := &tls.Config{
-        Certificates: []tls.Certificate{cert},
-    }
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	}
 
-    if caFile != "" {
-        caData, err := os.ReadFile(caFile)
-        if err != nil {
-            log.Error().Err(err).Msg("[api] failed to read CA file")
-            return
-        }
-        certPool := x509.NewCertPool()
-        if !certPool.AppendCertsFromPEM(caData) {
-            log.Error().Msg("[api] failed to parse CA certificate")
-            return
-        }
-        tlsConfig.ClientCAs = certPool
-    }
+	if caFile != "" {
+		caData, err := os.ReadFile(caFile)
+		if err != nil {
+			log.Error().Err(err).Msg("[api] failed to read CA file")
+			return
+		}
+		certPool := x509.NewCertPool()
+		if !certPool.AppendCertsFromPEM(caData) {
+			log.Error().Msg("[api] failed to parse CA certificate")
+			return
+		}
+		tlsConfig.ClientCAs = certPool
+	}
 
-    ln, err := net.Listen(network, address)
-    if err != nil {
-        log.Error().Err(err).Msg("[api] tls listen")
-        return
-    }
+	ln, err := net.Listen(network, address)
+	if err != nil {
+		log.Error().Err(err).Msg("[api] tls listen")
+		return
+	}
 
-    log.Info().Str("addr", address).Msg("[api] tls listen")
+	log.Info().Str("addr", address).Msg("[api] tls listen")
 
-    server := &http.Server{
-        Handler:           Handler,
-        TLSConfig:        tlsConfig,
-        ReadHeaderTimeout: 5 * time.Second,
-    }
-    if err = server.ServeTLS(ln, "", ""); err != nil {
-        log.Fatal().Err(err).Msg("[api] tls serve")
-    }
+	server := &http.Server{
+		Handler:           Handler,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if err = server.ServeTLS(ln, "", ""); err != nil {
+		log.Fatal().Err(err).Msg("[api] tls serve")
+	}
 }
 
 var Port int
