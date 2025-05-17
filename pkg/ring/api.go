@@ -466,24 +466,12 @@ func (c *RingRestClient) ensureAuth() error {
 	expiresIn := time.Duration(authResp.ExpiresIn-60) * time.Second
 	c.tokenExpiry = time.Now().Add(expiresIn)
 
-	// Set token expiry (1 minute before actual expiry)
-	expiresIn := time.Duration(authResp.ExpiresIn-60) * time.Second
-	c.tokenExpiry = time.Now().Add(expiresIn)
-
 	// Encode and notify about new refresh token
 	if c.onTokenRefresh != nil {
 		newRefreshToken := encodeAuthConfig(c.authConfig)
 		c.onTokenRefresh(newRefreshToken)
 	}
 	
-	// Refreshn the token in the client
-	c.RefreshToken = encodeAuthConfig(c.authConfig)
-
-	// Refresh the cached client
-	cacheMutex.Lock()
-	clientCache[c.cacheKey] = c
-	cacheMutex.Unlock()
-
 	// Refreshn the token in the client
 	c.RefreshToken = encodeAuthConfig(c.authConfig)
 
@@ -598,11 +586,6 @@ func (c *RingRestClient) GetAuth(twoFactorAuthCode string) (*AuthTokenResponse, 
 		c.onTokenRefresh(c.RefreshToken)
 	}
 	
-	// Refresh the cached client
-	cacheMutex.Lock()
-	clientCache[c.cacheKey] = c
-	cacheMutex.Unlock()
-
 	// Refresh the cached client
 	cacheMutex.Lock()
 	clientCache[c.cacheKey] = c
