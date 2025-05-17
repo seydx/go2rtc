@@ -461,7 +461,7 @@ func (c *RingRestClient) ensureAuth() error {
 		RT:  authResp.RefreshToken,
 		HID: c.hardwareID,
 	}
-	
+
 	// Set token expiry (1 minute before actual expiry)
 	expiresIn := time.Duration(authResp.ExpiresIn-60) * time.Second
 	c.tokenExpiry = time.Now().Add(expiresIn)
@@ -471,7 +471,7 @@ func (c *RingRestClient) ensureAuth() error {
 		newRefreshToken := encodeAuthConfig(c.authConfig)
 		c.onTokenRefresh(newRefreshToken)
 	}
-	
+
 	// Refreshn the token in the client
 	c.RefreshToken = encodeAuthConfig(c.authConfig)
 
@@ -585,7 +585,7 @@ func (c *RingRestClient) GetAuth(twoFactorAuthCode string) (*AuthTokenResponse, 
 	if c.onTokenRefresh != nil {
 		c.onTokenRefresh(c.RefreshToken)
 	}
-	
+
 	// Refresh the cached client
 	cacheMutex.Lock()
 	clientCache[c.cacheKey] = c
