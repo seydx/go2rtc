@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 type Client struct {
@@ -19,12 +20,21 @@ func NewClient(rawURL string) (*Client, error) {
 		return nil, err
 	}
 
-	u.Scheme = "https"
+	query := u.Query()
+	useInsecure := query.Get("insecure") == "1"
 
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	var client http.Client
+
+	if !useInsecure {
+		u.Scheme = "https"
+		tr := http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		client = http.Client{Transport: &tr, Timeout: 10 * time.Second}
+	} else {
+		u.Scheme = "http"
+		client = http.Client{Timeout: 10 * time.Second}
 	}
-	client := &http.Client{Transport: tr}
 
 	res, err := client.Get(u.String())
 	if err != nil {
