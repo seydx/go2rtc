@@ -7,3 +7,4 @@
 - https://github.com/make-all/tuya-local/blob/main/custom_components/tuya_local/cloud.py
 - https://ipc-us.ismartlife.me/
 - https://protect-us.ismartlife.me/
+- https://github.com/tuya/tuya-device-sharing-sdk
