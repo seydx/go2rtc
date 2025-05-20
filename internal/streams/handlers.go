@@ -97,7 +97,3 @@ func GetConsumer(url string) (core.Consumer, func(), error) {
 
 	return nil, nil, errors.New("streams: unsupported scheme: " + url)
 }
-
-func ParseURL(url string) string {
-	return app.ResolveSecrets(url)
-}
