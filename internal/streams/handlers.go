@@ -47,8 +47,7 @@ func GetProducer(url string) (core.Producer, error) {
 		}
 
 		if handler, ok := handlers[scheme]; ok {
-			parsedURL := app.ResolveSecrets(url)
-			return handler(parsedURL)
+			return handler(url)
 		}
 	}
 
@@ -97,4 +96,8 @@ func GetConsumer(url string) (core.Consumer, func(), error) {
 	}
 
 	return nil, nil, errors.New("streams: unsupported scheme: " + url)
+}
+
+func ParseURL(url string) string {
+	return app.ResolveSecrets(url)
 }
