@@ -15,6 +15,8 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/tuya"
 )
 
+var users = make(map[string]tuya.LoginResponse)
+
 func Init() {
 	streams.HandleFunc("tuya", func(source string) (core.Producer, error) {
 		return tuya.Dial(source)
