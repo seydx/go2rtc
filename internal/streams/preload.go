@@ -4,7 +4,6 @@ import (
 	"net/url"
 
 	"github.com/AlexxIT/go2rtc/pkg/preload"
-	"github.com/rs/zerolog/log"
 )
 
 var preloads = map[string]*preload.Preload{}
