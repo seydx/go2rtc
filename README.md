@@ -222,6 +222,10 @@ streams:
   unifi_camera: rtspx://192.168.1.123:7441/fD6ouM72bWoFijxK#gop=1
 ```
 
+**RTSP clients** can use the `?gop=0` query to request the stream without GOP cache even if it is enabled for the source in the config file.
+
+```yaml
+
 #### Two way audio
 
 Supported for sources:
