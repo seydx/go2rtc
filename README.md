@@ -227,8 +227,6 @@ streams:
 
 **RTSP clients** can use the `?gop=0` query to request the stream without GOP cache even if it is enabled for the source in the config file.
 
-```
-
 #### Two way audio
 
 Supported for sources:
