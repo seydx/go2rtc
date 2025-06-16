@@ -12,8 +12,12 @@ func (s *Stream) Preload(name string, query url.Values) error {
 	cons := preload.NewPreload(name, query)
 	preloads[name] = cons
 
-	if err := s.AddConsumer(cons); err != nil {
-		return err
+	silent := query.Get("silent") == "1"
+
+	if !silent {
+		if err := s.AddConsumer(cons); err != nil {
+			return err
+		}
 	}
 
 	return nil
