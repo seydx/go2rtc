@@ -148,6 +148,13 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.Method {
+	case "GET":
+		if cons, ok := preloads[src]; ok {
+			api.ResponseJSON(w, cons)
+		} else {
+			http.Error(w, "preload not found", http.StatusNotFound)
+			return
+		}
 	case "POST":
 		stream := Get(src)
 		if stream == nil {
