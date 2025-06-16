@@ -134,21 +134,40 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.Method {
-	case "PUT":
-		// check if stream exists
+	case "POST":
 		stream := Get(src)
 		if stream == nil {
 			http.Error(w, "stream not found", http.StatusNotFound)
 			return
 		}
 
-		// check if consumer exists
+		action := query.Get("action")
+		startPreload := action == "start" || action == ""
+		stopPreload := action == "stop"
+
+		if cons, ok := preloads[src]; ok {
+			if startPreload && !stream.HasConsumer(cons) {
+				if err := stream.AddConsumer(cons); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			} else if stopPreload {
+				stream.RemoveConsumer(cons)
+			}
+		}
+
+	case "PUT":
+		stream := Get(src)
+		if stream == nil {
+			http.Error(w, "stream not found", http.StatusNotFound)
+			return
+		}
+
 		if cons, ok := preloads[src]; ok {
 			stream.RemoveConsumer(cons)
 			delete(preloads, src)
 		}
 
-		// parse query parameters
 		var rawQuery string
 		if query.Has("video") {
 			if videoQuery := query.Get("video"); videoQuery != "" {

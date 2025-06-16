@@ -238,6 +238,26 @@ paths:
 
 
   /api/preload:
+    post:
+      summary: Start or stop preloading stream
+      tags: [ Streams list ]
+      parameters:
+        - name: src
+          in: query
+          description: Stream source (name)
+          required: true
+          schema: { type: string }
+          example: "camera1"
+        - name: action
+          in: query
+          description: Start or stop preloading
+          required: false
+          schema:
+            type: string
+            enum: [ start, stop ]
+      responses:
+            default:
+              description: Default response
     put:
       summary: Preload new stream
       tags: [ Streams list ]

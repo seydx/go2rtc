@@ -61,6 +61,18 @@ func (s *Stream) SetSource(source string) {
 	}
 }
 
+func (s *Stream) HasConsumer(cons core.Consumer) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, consumer := range s.consumers {
+		if consumer == cons {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Stream) RemoveConsumer(cons core.Consumer) {
 	_ = cons.Stop()
 
