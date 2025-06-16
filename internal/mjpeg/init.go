@@ -37,13 +37,14 @@ func Init() {
 
 var log zerolog.Logger
 
-type ongoingSnapshotRequest struct {
-	resultChan chan []byte
-	errorChan  chan error
-	once       sync.Once
-}
+var streamLocks sync.Map
 
-var activeSnapshotRequests = sync.Map{}
+type cachedResult struct {
+	imgData   []byte
+	err       error
+	timestamp time.Time
+}
+var snapshotCache sync.Map
 
 func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 	var streamName string
@@ -58,64 +59,46 @@ func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. create a new request or get the existing one.
-	newReq := &ongoingSnapshotRequest{
-		resultChan: make(chan []byte, 1),
-		errorChan:  make(chan error, 1),
-	}
-
-	actual, loaded := activeSnapshotRequests.LoadOrStore(streamName, newReq)
-	ongoingReq := actual.(*ongoingSnapshotRequest)
-
-	if loaded {
-		// there is already an ongoing request for this stream.
-		select {
-		case imgData := <-ongoingReq.resultChan:
-			if imgData != nil {
-				sendImage(w, imgData)
+	if val, ok := snapshotCache.Load(streamName); ok {
+		res := val.(cachedResult)
+		if time.Since(res.timestamp) < 2*time.Second {
+			if res.err != nil {
+				http.Error(w, res.err.Error(), http.StatusInternalServerError)
 			}
-		case err := <-ongoingReq.errorChan:
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
-		case <-r.Context().Done():
-			// client has disconnected, nothing to do.
-		}
-		return
-	}
-
-	// we are the first goroutine, we will fetch the snapshot.
-	// defer here to ensure that the request is removed from the map,
-	defer activeSnapshotRequests.Delete(streamName)
-
-	ongoingReq.once.Do(func() {
-		imgData, err := fetchAndProcessSnapshot(r)
-		if err != nil {
-			// inform all waiting goroutines about the error.
-			ongoingReq.errorChan <- err
-			// close channels to signal that no more results will be sent.
-			close(ongoingReq.errorChan)
-			close(ongoingReq.resultChan)
 			return
 		}
-		// inform all waiting goroutines about the successful result.
-		ongoingReq.resultChan <- imgData
-		close(ongoingReq.resultChan)
-		close(ongoingReq.errorChan)
+	}
+
+	mu, _ := streamLocks.LoadOrStore(streamName, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer func() {
+		mu.(*sync.Mutex).Unlock()
+	}()
+
+	if val, ok := snapshotCache.Load(streamName); ok {
+		res := val.(cachedResult)
+		if time.Since(res.timestamp) < 2*time.Second {
+			if res.err != nil {
+				http.Error(w, res.err.Error(), http.StatusInternalServerError)
+			} else {
+				sendImage(w, res.imgData)
+			}
+			return
+		}
+	}
+
+	imgData, err := fetchAndProcessSnapshot(r)
+
+	snapshotCache.Store(streamName, cachedResult{
+		imgData:   imgData,
+		err:       err,
+		timestamp: time.Now(),
 	})
 
-	// wait for the result or error from the ongoing request.
-	select {
-	case imgData := <-ongoingReq.resultChan:
-		if imgData != nil {
-			sendImage(w, imgData)
-		}
-	case err := <-ongoingReq.errorChan:
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-	case <-r.Context().Done():
-		// client has disconnected while the fetch was in progress.
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	} else {
+		sendImage(w, imgData)
 	}
 }
 
@@ -132,7 +115,9 @@ func fetchAndProcessSnapshot(r *http.Request) ([]byte, error) {
 		log.Error().Err(err).Caller().Send()
 		return nil, err
 	}
-	defer stream.RemoveConsumer(cons)
+	defer func() {
+		stream.RemoveConsumer(cons)
+	}()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -161,7 +146,7 @@ func fetchAndProcessSnapshot(r *http.Request) ([]byte, error) {
 		if b, err = ffmpeg.JPEGWithQuery(b, r.URL.Query()); err != nil {
 			return nil, err
 		}
-		log.Debug().Stringer("duration", time.Since(ts)).Msg("[mjpeg] transcoding")
+		log.Debug().Msgf("[mjpeg] transcoding time=%s", time.Since(ts))
 	case core.CodecJPEG:
 		b = mjpeg.FixJPEG(b)
 	}
