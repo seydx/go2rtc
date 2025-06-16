@@ -235,7 +235,7 @@ Supported for sources:
 - [Hikvision ISAPI](#source-isapi) cameras
 - [Roborock vacuums](#source-roborock) models with cameras
 - [Exec](#source-exec) audio on server
-- [Ring](#source-ring) cameras
+- [Tuya](#source-tuya) cameras
 - [Any Browser](#incoming-browser) as IP-camera
 
 Two way audio can be used in browser with [WebRTC](#module-webrtc) technology. The browser will give access to the microphone only for HTTPS sites ([read more](https://stackoverflow.com/questions/52759992/how-to-access-camera-and-microphone-in-chrome-without-https)).
@@ -589,7 +589,7 @@ Tested: KD110, KC200, KC401, KC420WS, EC71.
 
 **Tuya Smart API (recommended)**:
 - Cameras can be discovered through the go2rtc web interface via Tuya Smart account (Add > Tuya > Select region and fill in email and password > Login).
-- Smart Life accounts are not supported, you need to create a Tuya Smart account. If the cameras are already added to the Smart Life app, you need to remove them and add them again to the Tuya Smart app.
+- **Smart Life accounts are not supported**, you need to create a Tuya Smart account. If the cameras are already added to the Smart Life app, you need to remove them and add them again to the Tuya Smart app.
 
 **Tuya Cloud API**:
 - Requires setting up a cloud project in the Tuya Developer Platform.
