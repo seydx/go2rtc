@@ -136,7 +136,22 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		if cons, ok := preloads[src]; ok {
-			api.ResponseJSON(w, cons)
+			stream := Get(src)
+			if stream != nil {
+				response := struct {
+					Src      string `json:"src"`
+					Status   string `json:"status"`
+				}{
+					Src:    src,
+					Status: "stopped",
+				}
+
+				if stream.HasConsumer(cons) {
+					response.Status = "started"
+				}
+
+				api.ResponseJSON(w, response)
+			}
 		} else {
 			http.Error(w, "preload not found", http.StatusNotFound)
 			return
