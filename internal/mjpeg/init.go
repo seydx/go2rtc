@@ -1,11 +1,13 @@
 package mjpeg
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
@@ -35,11 +37,75 @@ func Init() {
 
 var log zerolog.Logger
 
+var streamLocks sync.Map
+
+type cachedResult struct {
+	imgData   []byte
+	err       error
+	timestamp time.Time
+}
+var snapshotCache sync.Map
+
 func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
+	var streamName string
+	if src := r.URL.Query().Get("src"); src != "" {
+		streamName = src
+	} else {
+		streamName = r.URL.Query().Get("name")
+	}
+
+	if streamName == "" {
+		http.Error(w, "src or name parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	if val, ok := snapshotCache.Load(streamName); ok {
+		res := val.(cachedResult)
+		if time.Since(res.timestamp) < 2*time.Second {
+			if res.err != nil {
+				http.Error(w, res.err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+	}
+
+	mu, _ := streamLocks.LoadOrStore(streamName, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer func() {
+		mu.(*sync.Mutex).Unlock()
+	}()
+
+	if val, ok := snapshotCache.Load(streamName); ok {
+		res := val.(cachedResult)
+		if time.Since(res.timestamp) < 2*time.Second {
+			if res.err != nil {
+				http.Error(w, res.err.Error(), http.StatusInternalServerError)
+			} else {
+				sendImage(w, res.imgData)
+			}
+			return
+		}
+	}
+
+	imgData, err := fetchAndProcessSnapshot(r)
+
+	snapshotCache.Store(streamName, cachedResult{
+		imgData:   imgData,
+		err:       err,
+		timestamp: time.Now(),
+	})
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	} else {
+		sendImage(w, imgData)
+	}
+}
+
+func fetchAndProcessSnapshot(r *http.Request) ([]byte, error) {
 	stream := streams.GetOrPatch(r.URL.Query())
 	if stream == nil {
-		http.Error(w, api.StreamNotFound, http.StatusNotFound)
-		return
+		return nil, errors.New(api.StreamNotFound)
 	}
 
 	cons := magic.NewKeyframe()
@@ -47,28 +113,48 @@ func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 
 	if err := stream.AddConsumer(cons); err != nil {
 		log.Error().Err(err).Caller().Send()
-		return
+		return nil, err
 	}
+	defer func() {
+		stream.RemoveConsumer(cons)
+	}()
 
-	once := &core.OnceBuffer{} // init and first frame
-	_, _ = cons.WriteTo(once)
-	b := once.Buffer()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 
-	stream.RemoveConsumer(cons)
+	bChan := make(chan []byte, 1)
+	go func() {
+		once := &core.OnceBuffer{}
+		_, _ = cons.WriteTo(once)
+		bChan <- once.Buffer()
+	}()
+
+	var b []byte
+	select {
+	case b = <-bChan:
+		if len(b) == 0 {
+			return nil, errors.New("failed to get frame, empty buffer")
+		}
+	case <-ctx.Done():
+		return nil, errors.New("timeout waiting for a keyframe")
+	}
 
 	switch cons.CodecName() {
 	case core.CodecH264, core.CodecH265:
 		ts := time.Now()
 		var err error
 		if b, err = ffmpeg.JPEGWithQuery(b, r.URL.Query()); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return nil, err
 		}
 		log.Debug().Msgf("[mjpeg] transcoding time=%s", time.Since(ts))
 	case core.CodecJPEG:
 		b = mjpeg.FixJPEG(b)
 	}
 
+	return b, nil
+}
+
+func sendImage(w http.ResponseWriter, b []byte) {
 	h := w.Header()
 	h.Set("Content-Type", "image/jpeg")
 	h.Set("Content-Length", strconv.Itoa(len(b)))
