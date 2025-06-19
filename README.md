@@ -8,6 +8,12 @@
   [![goreport](https://goreportcard.com/badge/github.com/AlexxIT/go2rtc)](https://goreportcard.com/report/github.com/AlexxIT/go2rtc)
 </h1>
 
+> **⚠️ WARNING: camera.ui specific fork**
+> 
+> This is a modified version of go2rtc that has been customized for [camera.ui](https://github.com/seydx/camera.ui). It includes changes that are not available in the official go2rtc release and may not be suitable for standalone use.
+> 
+> For general go2rtc usage, please use the [official repository](https://github.com/AlexxIT/go2rtc). This fork is specifically maintained for camera.ui integration.
+
 Ultimate camera streaming application with support RTSP, WebRTC, HomeKit, FFmpeg, RTMP, etc.
 
 ![](assets/go2rtc.png)
