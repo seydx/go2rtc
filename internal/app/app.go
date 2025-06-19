@@ -25,14 +25,11 @@ const usage = `Usage of go2rtc:
 
 func Init() {
 	var config flagConfig
-	var secret string
 	var daemon bool
 	var version bool
 
 	flag.Var(&config, "config", "")
 	flag.Var(&config, "c", "")
-	flag.StringVar(&secret, "secret", "go2rtc.secret", "")
-	flag.StringVar(&secret, "s", "go2rtc.secret", "")
 	flag.BoolVar(&daemon, "daemon", false, "")
 	flag.BoolVar(&daemon, "d", false, "")
 	flag.BoolVar(&version, "version", false, "")
