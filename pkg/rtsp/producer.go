@@ -3,6 +3,7 @@ package rtsp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 )
@@ -19,32 +20,20 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 
-	var channel byte
-
-	switch c.mode {
-	case core.ModeActiveProducer:
-		if c.state == StatePlay {
-			if err := c.Reconnect(); err != nil {
-				return nil, err
-			}
+	var rtspMedia *core.Media
+	for _, m := range c.Medias {
+		if m.Equal(media) {
+			rtspMedia = m
+			break
 		}
+	}
 
-		var err error
-		channel, err = c.SetupMedia(media)
-		if err != nil {
-			return nil, err
-		}
-
-		c.state = StateSetup
-	case core.ModePassiveConsumer:
-		// Backchannel
-		channel = byte(len(c.Senders)) * 2
-	default:
-		return nil, errors.New("rtsp: wrong mode for GetTrack")
+	if rtspMedia == nil {
+		return nil, fmt.Errorf("rtsp: could not get track media %s", media.String())
 	}
 
 	track := core.NewReceiver(media, codec)
-	track.ID = channel
+	track.ID = rtspMedia.Channel
 	c.Receivers = append(c.Receivers, track)
 
 	return track, nil

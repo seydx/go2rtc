@@ -1,6 +1,7 @@
 package rtsp
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/aac"
@@ -22,20 +23,19 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 
 	switch c.mode {
 	case core.ModeActiveProducer: // backchannel
-		c.stateMu.Lock()
-		defer c.stateMu.Unlock()
-
-		if c.state == StatePlay {
-			if err = c.Reconnect(); err != nil {
-				return
+		var rtspMedia *core.Media
+		for _, m := range c.Medias {
+			if m.Equal(media) {
+				rtspMedia = m
+				break
 			}
 		}
 
-		if channel, err = c.SetupMedia(media); err != nil {
-			return
+		if rtspMedia == nil {
+			return fmt.Errorf("rtsp: could not add track for media %s", media.String())
 		}
 
-		c.state = StateSetup
+		channel = rtspMedia.Channel
 
 	case core.ModePassiveConsumer:
 		channel = byte(len(c.Senders)) * 2

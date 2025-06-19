@@ -16,7 +16,8 @@ type Media struct {
 	Direction string   `json:"direction,omitempty"` // sendonly, recvonly
 	Codecs    []*Codec `json:"codecs,omitempty"`
 
-	ID string `json:"id,omitempty"` // MID for WebRTC, Control for RTSP
+	ID      string `json:"id,omitempty"` // MID for WebRTC, Control for RTSP
+	Channel byte   // Channel for RTSP
 }
 
 func (m *Media) String() string {

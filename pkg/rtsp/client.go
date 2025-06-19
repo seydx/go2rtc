@@ -193,6 +193,16 @@ func (c *Conn) Describe() error {
 
 	c.mode = core.ModeActiveProducer
 
+	for _, media := range c.Medias {
+		channel, err := c.SetupMedia(media)
+		if err != nil {
+			return err
+		}
+		media.Channel = channel
+	}
+
+	c.state = StateSetup
+
 	return nil
 }
 
