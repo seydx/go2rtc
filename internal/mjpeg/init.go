@@ -44,6 +44,7 @@ type cachedResult struct {
 	err       error
 	timestamp time.Time
 }
+
 var snapshotCache sync.Map
 
 func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
