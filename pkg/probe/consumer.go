@@ -47,3 +47,23 @@ func (p *Probe) AddTrack(media *core.Media, codec *core.Codec, track *core.Recei
 	p.Senders = append(p.Senders, sender)
 	return nil
 }
+
+func (p *Probe) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
+	receiver := core.NewReceiver(media, codec)
+	p.Receivers = append(p.Receivers, receiver)
+	return receiver, nil
+}
+
+func (p *Probe) Start() error {
+	return nil
+}
+
+func (p *Probe) Stop() error {
+	for _, receiver := range p.Receivers {
+		receiver.Close()
+	}
+	for _, sender := range p.Senders {
+		sender.Close()
+	}
+	return nil
+}
