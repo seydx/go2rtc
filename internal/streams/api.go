@@ -193,10 +193,7 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case "DELETE":
-		if err := DelPreload(stream); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		DelPreload(stream)
 
 		if err := app.PatchConfig([]string{"preload", src}, nil); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

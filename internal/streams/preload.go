@@ -1,7 +1,6 @@
 package streams
 
 import (
-	"errors"
 	"net/url"
 	"sync"
 
@@ -44,17 +43,14 @@ func AddPreload(stream *Stream, rawQuery string) error {
 	return nil
 }
 
-func DelPreload(stream *Stream) error {
+func DelPreload(stream *Stream) {
 	preloadsMu.Lock()
 	defer preloadsMu.Unlock()
 
 	if cons := preloads[stream]; cons != nil {
 		stream.RemoveConsumer(cons)
 		delete(preloads, stream)
-		return nil
 	}
-
-	return errors.New("streams: preload not found")
 }
 
 func HasPreload(stream *Stream) bool {
