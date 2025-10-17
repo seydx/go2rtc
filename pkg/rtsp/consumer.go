@@ -1,7 +1,6 @@
 package rtsp
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/aac"
@@ -23,19 +22,20 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 
 	switch c.mode {
 	case core.ModeActiveProducer: // backchannel
-		var rtspMedia *core.Media
-		for _, m := range c.Medias {
-			if m.Equal(media) {
-				rtspMedia = m
-				break
+		c.stateMu.Lock()
+		defer c.stateMu.Unlock()
+
+		if c.state == StatePlay {
+			if err = c.Reconnect(); err != nil {
+				return
 			}
 		}
 
-		if rtspMedia == nil {
-			return fmt.Errorf("rtsp: could not add track for media %s", media.String())
+		if channel, err = c.SetupMedia(media); err != nil {
+			return
 		}
 
-		channel = rtspMedia.Channel
+		c.state = StateSetup
 
 	case core.ModePassiveConsumer:
 		channel = byte(len(c.Senders)) * 2
@@ -89,21 +89,9 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 
 	flushBuf := func() {
 		//log.Printf("[rtsp] channel:%2d write_size:%6d buffer_size:%6d", channel, n, len(buf))
-
-		if c.Transport == "udp" {
-			if err := c.sendUDPRtpPacket(buf[:n]); err == nil {
-				c.Send += n
-			}
-		} else {
-			if err := c.conn.SetWriteDeadline(time.Now().Add(Timeout)); err != nil {
-				return
-			}
-
-			if _, err := c.conn.Write(buf[:n]); err == nil {
-				c.Send += n
-			}
+		if err := c.writeInterleavedData(buf[:n]); err != nil {
+			c.Send += n
 		}
-
 		n = 0
 	}
 
@@ -188,4 +176,26 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 	}
 
 	return handlerFunc
+}
+
+func (c *Conn) writeInterleavedData(data []byte) error {
+	if c.Transport != "udp" {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(Timeout))
+		_, err := c.conn.Write(data)
+		return err
+	}
+
+	for len(data) >= 4 && data[0] == '$' {
+		channel := data[1]
+		size := uint16(data[2])<<8 | uint16(data[3])
+		rtpData := data[4 : 4+size]
+
+		if _, err := c.WriteToUDP(rtpData, channel); err != nil {
+			return err
+		}
+
+		data = data[4+size:]
+	}
+
+	return nil
 }

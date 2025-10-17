@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/app"
-	"github.com/AlexxIT/go2rtc/pkg/shell"
 	"github.com/rs/zerolog"
 )
 
@@ -189,20 +187,10 @@ func ResponseJSON(w http.ResponseWriter, v any) {
 }
 
 func ResponsePrettyJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
+	w.Header().Set("Content-Type", MimeJSON)
+	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	err := enc.Encode(v)
-
-	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-	redactedJSON := shell.Redact(buf.String())
-	w.Write([]byte(redactedJSON))
+	_ = enc.Encode(v)
 }
 
 func Response(w http.ResponseWriter, body any, contentType string) {
@@ -228,7 +216,7 @@ var log zerolog.Logger
 
 func middlewareLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Trace().Msgf("[api] %s %s %s", r.Method, shell.Redact(r.URL.String()), r.RemoteAddr)
+		log.Trace().Msgf("[api] %s %s %s", r.Method, r.URL, r.RemoteAddr)
 		next.ServeHTTP(w, r)
 	})
 }
