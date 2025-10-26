@@ -214,3 +214,14 @@ func GetPosixTZ(current time.Time) string {
 
 	return prefix + fmt.Sprintf("%02d:%02d", offset/60, offset%60)
 }
+
+func GetPath(urlOrPath, defPath string) string {
+	if urlOrPath == "" || urlOrPath[0] == '/' {
+		return defPath
+	}
+	u, err := url.Parse(urlOrPath)
+	if err != nil {
+		return defPath
+	}
+	return GetPath(u.Path, defPath)
+}
