@@ -1,5 +1,5 @@
 {
-  "version": "1.9.11-cui.0",
+  "version": "1.9.11-cui.1",
   "devDependencies": {
     "eslint": "^8.44.0",
     "eslint-plugin-html": "^7.1.0"
