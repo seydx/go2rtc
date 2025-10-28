@@ -10,32 +10,34 @@ import (
 	"sync"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
-	"github.com/AlexxIT/go2rtc/pkg/pcm"
 	"github.com/AlexxIT/go2rtc/pkg/webrtc"
 	"github.com/pion/rtp"
 	pion "github.com/pion/webrtc/v4"
 )
 
 type Client struct {
-	api        TuyaAPI
-	conn       *webrtc.Conn
-	pc         *pion.PeerConnection
+	api       TuyaAPI
+	conn      *webrtc.Conn
+	pc        *pion.PeerConnection
+	connected core.Waiter
+	closed    bool
+
+	// HEVC only:
 	dc         *pion.DataChannel
 	videoSSRC  *uint32
 	audioSSRC  *uint32
 	streamType int
 	isHEVC     bool
-	connected  core.Waiter
-	closed     bool
 	handlersMu sync.RWMutex
 	handlers   map[uint32]func(*rtp.Packet)
 }
 
 type DataChannelMessage struct {
-	Type string `json:"type"`
+	Type string `json:"type"` // "codec", "start", "recv", "complete"
 	Msg  string `json:"msg"`
 }
 
+// RecvMessage contains SSRC values for video/audio streams
 type RecvMessage struct {
 	Video struct {
 		SSRC uint32 `json:"ssrc"`
@@ -159,7 +161,8 @@ func Dial(rawURL string) (core.Producer, error) {
 		}
 
 		if client.isHEVC {
-			// Tuya seems to answers always with H264 and PCMU/8000 and PCMA/8000 codecs, replace with real codecs
+			// We need to replace the SDP codecs with the real ones from Skill.
+			// The actual media comes via DataChannel, not RTP tracks.
 
 			for _, media := range client.conn.Medias {
 				if media.Kind == core.KindVideo {
@@ -202,9 +205,7 @@ func Dial(rawURL string) (core.Producer, error) {
 		client.Close(err)
 	}
 
-	// On HEVC, use DataChannel to receive video/audio
 	if client.isHEVC {
-		// Create a new DataChannel
 		maxRetransmits := uint16(5)
 		ordered := true
 		client.dc, err = client.pc.CreateDataChannel("fmp4Stream", &pion.DataChannelInit{
@@ -212,18 +213,22 @@ func Dial(rawURL string) (core.Producer, error) {
 			Ordered:        &ordered,
 		})
 
-		// Set up data channel handler
+		// DataChannel receives two types of messages:
+		// 1. String messages: Control messages (codec, recv)
+		// 2. Binary messages: RTP packets with video/audio
 		client.dc.OnMessage(func(msg pion.DataChannelMessage) {
 			if msg.IsString {
+				// Handle control messages (codec, recv, etc.)
 				if connected, err := client.probe(msg); err != nil {
 					client.Close(err)
 				} else if connected {
 					client.connected.Done(nil)
 				}
 			} else {
+				// Handle RTP packets - Route by SSRC retrieved from "recv" message
 				packet := &rtp.Packet{}
 				if err := packet.Unmarshal(msg.Data); err != nil {
-					// skip
+					// Skip invalid packets
 					return
 				}
 
@@ -339,6 +344,9 @@ func (c *Client) AddTrack(media *core.Media, codec *core.Codec, track *core.Rece
 		return errors.New("webrtc: can't get track")
 	}
 
+	// DISABLED: Speaker Protocol 312 command
+	// JavaScript client doesn't send this on first call either
+	// Only subsequent calls (when speakerChloron is set) send Protocol 312
 	// mqttClient := c.api.GetMqtt()
 	// if mqttClient != nil {
 	// 	_ = mqttClient.SendSpeaker(1)
@@ -347,21 +355,43 @@ func (c *Client) AddTrack(media *core.Media, codec *core.Codec, track *core.Rece
 	payloadType := codec.PayloadType
 
 	sender := core.NewSender(media, codec)
+
+	// Frame size affects audio delay with Tuya cameras:
+	// Browser sends standard 20ms frames (160 bytes for G.711), but this causes
+	// up to 4s delay on some Tuya cameras. Increasing to 240 bytes (30ms) reduces
+	// delay to ~2s. Higher values (320+ bytes) don't work and cause issues.
+	// Using 240 bytes (30ms) as optimal balance between latency and stability.
+	frameSize := 240
+
+	var buf []byte
+	var seq uint16
+	var ts uint32
+
 	sender.Handler = func(packet *rtp.Packet) {
-		c.conn.Send += packet.MarshalSize()
-		_ = localTrack.WriteRTP(payloadType, packet)
-	}
+		buf = append(buf, packet.Payload...)
 
-	switch track.Codec.Name {
-	case core.CodecPCMA, core.CodecPCMU, core.CodecPCM, core.CodecPCML:
-		// https://developer.tuya.com/en/docs/iot-device-dev/tuyaos-package-ipc-device?id=Kcn1px33iptn2#title-29-Why%20can%E2%80%99t%20WebRTC%20play%20audio%3F
-		frameSize := 240
-		if track.Codec.Name == core.CodecPCM {
-			frameSize = 560
+		for len(buf) >= frameSize {
+			payload := buf[:frameSize]
+
+			pkt := &rtp.Packet{
+				Header: rtp.Header{
+					Version:        2,
+					Marker:         true,
+					PayloadType:    payloadType,
+					SequenceNumber: seq,
+					Timestamp:      ts,
+					SSRC:           packet.SSRC,
+				},
+				Payload: payload,
+			}
+
+			seq++
+			ts += uint32(frameSize)
+			buf = buf[frameSize:]
+
+			c.conn.Send += pkt.MarshalSize()
+			_ = localTrack.WriteRTP(payloadType, pkt)
 		}
-
-		sender.Handler = pcm.RepackG711(false, frameSize, sender.Handler)
-		sender.Handler = pcm.TranscodeHandler(codec, track.Codec, sender.Handler)
 	}
 
 	sender.HandleRTP(track)
@@ -463,6 +493,7 @@ func (c *Client) probe(msg pion.DataChannelMessage) (bool, error) {
 
 	switch message.Type {
 	case "codec":
+		// Camera responded to our codec request - now request frame start
 		frameRequest, _ := json.Marshal(DataChannelMessage{
 			Type: "start",
 			Msg:  "frame",
@@ -474,6 +505,8 @@ func (c *Client) probe(msg pion.DataChannelMessage) (bool, error) {
 		}
 
 	case "recv":
+		// Camera sends SSRC values for video/audio streams
+		// We need these to route incoming RTP packets correctly
 		var recvMessage RecvMessage
 		if err := json.Unmarshal([]byte(message.Msg), &recvMessage); err != nil {
 			return false, err
@@ -484,6 +517,7 @@ func (c *Client) probe(msg pion.DataChannelMessage) (bool, error) {
 		c.videoSSRC = &videoSSRC
 		c.audioSSRC = &audioSSRC
 
+		// Send "complete" to tell camera we're ready to receive RTP packets
 		completeMsg, _ := json.Marshal(DataChannelMessage{
 			Type: "complete",
 			Msg:  "",
