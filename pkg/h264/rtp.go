@@ -21,6 +21,8 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 
 	buf := make([]byte, 0, 512*1024) // 512K
 
+	fmtpLineUpdated := false
+
 	return func(packet *rtp.Packet) {
 		if packet.Version == RTPPacketVersionAVC {
 			handler(packet)
@@ -101,6 +103,19 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 		}
 
 		//log.Printf("[AVC] %v, len: %d, ts: %10d, seq: %d", NALUTypes(payload), len(payload), packet.Timestamp, packet.SequenceNumber)
+
+		// Update FmtpLine from first keyframe with parameter sets
+		// This fixes MSE aspect ratio issues when RTSP cameras don't send SPS/PPS in DESCRIBE
+		if !fmtpLineUpdated && ContainsParameterSets(payload) {
+			newFmtpLine := GetFmtpLine(payload)
+			if newFmtpLine != "" {
+				codec.FmtpLine = newFmtpLine
+				// Re-extract SPS/PPS with updated FmtpLine
+				sps, pps = GetParameterSet(codec.FmtpLine)
+				ps = JoinNALU(sps, pps)
+			}
+			fmtpLineUpdated = true
+		}
 
 		clone := *packet
 		clone.Version = RTPPacketVersionAVC
