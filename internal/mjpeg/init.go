@@ -104,7 +104,7 @@ func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 }
 
 func fetchAndProcessSnapshot(r *http.Request) ([]byte, error) {
-	stream := streams.GetOrPatch(r.URL.Query())
+	stream, _ := streams.GetOrPatch(r.URL.Query())
 	if stream == nil {
 		return nil, errors.New(api.StreamNotFound)
 	}
@@ -232,7 +232,7 @@ func inputMjpeg(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlerWS(tr *ws.Transport, _ *ws.Message) error {
-	stream := streams.GetOrPatch(tr.Request.URL.Query())
+	stream, _ := streams.GetOrPatch(tr.Request.URL.Query())
 	if stream == nil {
 		return errors.New(api.StreamNotFound)
 	}

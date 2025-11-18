@@ -3,7 +3,9 @@ package homekit
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
@@ -13,58 +15,95 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/mdns"
 )
 
-func apiHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		sources, err := discovery()
-		if err != nil {
-			api.Error(w, err)
-			return
-		}
+func apiDiscovery(w http.ResponseWriter, r *http.Request) {
+	sources, err := discovery()
+	if err != nil {
+		api.Error(w, err)
+		return
+	}
 
-		urls := streams.FindPrefixURLs("homekit")
-		for id, u := range urls {
-			deviceID := u.Query().Get("device_id")
-			for _, source := range sources {
-				if strings.Contains(source.URL, deviceID) {
-					source.Location = id
-					break
-				}
-			}
-		}
-
+	urls := findHomeKitURLs()
+	for id, u := range urls {
+		deviceID := u.Query().Get("device_id")
 		for _, source := range sources {
-			if source.Location == "" {
-				source.Location = " "
+			if strings.Contains(source.URL, deviceID) {
+				source.Location = id
+				break
 			}
-		}
-
-		api.ResponseSources(w, sources)
-
-	case "POST":
-		if err := r.ParseMultipartForm(1024); err != nil {
-			api.Error(w, err)
-			return
-		}
-
-		source, err := apiPair(r.Form.Get("id"), r.Form.Get("url"))
-		if err != nil {
-			api.Error(w, err)
-			return
-		}
-
-		api.ResponseSource(w, source)
-
-	case "DELETE":
-		if err := r.ParseMultipartForm(1024); err != nil {
-			api.Error(w, err)
-			return
-		}
-
-		if err := apiUnpair(r.Form.Get("id")); err != nil {
-			api.Error(w, err)
 		}
 	}
+
+	for _, source := range sources {
+		if source.Location == "" {
+			source.Location = " "
+		}
+	}
+
+	api.ResponseSources(w, sources)
+}
+
+func apiHomekit(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case "GET":
+		if id := r.Form.Get("id"); id != "" {
+			if srv := servers[id]; srv != nil {
+				api.ResponsePrettyJSON(w, srv)
+			} else {
+				http.Error(w, "server not found", http.StatusNotFound)
+			}
+		} else {
+			api.ResponsePrettyJSON(w, servers)
+		}
+
+	case "POST":
+		id := r.Form.Get("id")
+		rawURL := r.Form.Get("src") + "&pin=" + r.Form.Get("pin")
+		if err := apiPair(id, rawURL); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+
+	case "DELETE":
+		id := r.Form.Get("id")
+		if err := apiUnpair(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+}
+
+func apiHomekitAccessories(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	stream := streams.Get(id)
+	if stream == nil {
+		http.Error(w, "", http.StatusNotFound)
+		return
+	}
+
+	rawURL := findHomeKitURL(stream.Sources())
+	if rawURL == "" {
+		http.Error(w, "", http.StatusBadRequest)
+		return
+	}
+
+	client, err := hap.Dial(rawURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer client.Close()
+
+	res, err := client.Get(hap.PathAccessories)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", api.MimeJSON)
+	_, _ = io.Copy(w, res.Body)
 }
 
 func discovery() ([]*api.Source, error) {
@@ -98,20 +137,15 @@ func discovery() ([]*api.Source, error) {
 	return sources, nil
 }
 
-func apiPair(id, url string) (*api.Source, error) {
+func apiPair(id, url string) error {
 	conn, err := hap.Pair(url)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	connURL := conn.URL()
-	streams.New(id, connURL)
+	streams.New(id, conn.URL())
 
-	if err := app.PatchConfig([]string{"streams", id}, connURL); err != nil {
-		return nil, err
-	}
-
-	return &api.Source{Name: id, URL: connURL}, nil
+	return app.PatchConfig([]string{"streams", id}, conn.URL())
 }
 
 func apiUnpair(id string) error {
@@ -120,7 +154,7 @@ func apiUnpair(id string) error {
 		return errors.New(api.StreamNotFound)
 	}
 
-	rawURL := streams.FindPrefixURL("homekit", stream.Sources())
+	rawURL := findHomeKitURL(stream.Sources())
 	if rawURL == "" {
 		return errors.New("not homekit source")
 	}
@@ -132,4 +166,16 @@ func apiUnpair(id string) error {
 	streams.Delete(id)
 
 	return app.PatchConfig([]string{"streams", id}, nil)
+}
+
+func findHomeKitURLs() map[string]*url.URL {
+	urls := map[string]*url.URL{}
+	for name, sources := range streams.GetAllSources() {
+		if rawURL := findHomeKitURL(sources); rawURL != "" {
+			if u, err := url.Parse(rawURL); err == nil {
+				urls[name] = u
+			}
+		}
+	}
+	return urls
 }

@@ -53,8 +53,8 @@ func apiStreams(w http.ResponseWriter, r *http.Request) {
 			name = src
 		}
 
-		if New(name, query["src"]...) == nil {
-			http.Error(w, "", http.StatusBadRequest)
+		if _, err := New(name, query["src"]...); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -76,8 +76,8 @@ func apiStreams(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// support {input} templates: https://github.com/AlexxIT/go2rtc#module-hass
-		if Patch(name, src) == nil {
-			http.Error(w, "", http.StatusBadRequest)
+		if _, err := Patch(name, src); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 
 	case "POST":
@@ -202,4 +202,8 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "", http.StatusMethodNotAllowed)
 	}
+}
+
+func apiSchemes(w http.ResponseWriter, r *http.Request) {
+	api.ResponseJSON(w, SupportedSchemes())
 }
