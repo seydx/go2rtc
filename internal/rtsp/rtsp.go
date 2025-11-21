@@ -207,6 +207,10 @@ func tcpHandler(conn *rtsp.Conn) {
 				conn.GOP = false
 			}
 
+			if s := query.Get("prebuffer"); s != "" {
+				conn.PrebufferOffset = core.Atoi(s)
+			}
+
 			if s := query.Get("pkt_size"); s != "" {
 				conn.PacketSize = uint16(core.Atoi(s))
 			}

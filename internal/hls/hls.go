@@ -49,7 +49,8 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	src := r.URL.Query().Get("src")
+	query := r.URL.Query()
+	src := query.Get("src")
 	stream := streams.Get(src)
 	if stream == nil {
 		http.Error(w, api.StreamNotFound, http.StatusNotFound)
@@ -59,16 +60,38 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 	var cons core.Consumer
 
 	// use fMP4 with codecs filter and TS without
-	medias := mp4.ParseQuery(r.URL.Query())
+	medias := mp4.ParseQuery(query)
 	if medias != nil {
 		c := mp4.NewConsumer(medias)
 		c.FormatName = "hls/fmp4"
 		c.WithRequest(r)
+
+		// Parse query parameters for GOP and prebuffer control
+		if s := query.Get("gop"); s != "" {
+			c.UseGOP = core.Atoi(s) != 0
+		} else {
+			c.UseGOP = true // Default: GOP enabled
+		}
+		if s := query.Get("prebuffer"); s != "" {
+			c.PrebufferOffset = core.Atoi(s)
+		}
+
 		cons = c
 	} else {
 		c := mpegts.NewConsumer()
 		c.FormatName = "hls/mpegts"
 		c.WithRequest(r)
+
+		// Parse query parameters for GOP and prebuffer control
+		if s := query.Get("gop"); s != "" {
+			c.UseGOP = core.Atoi(s) != 0
+		} else {
+			c.UseGOP = true // Default: GOP enabled
+		}
+		if s := query.Get("prebuffer"); s != "" {
+			c.PrebufferOffset = core.Atoi(s)
+		}
+
 		cons = c
 	}
 

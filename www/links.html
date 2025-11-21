@@ -49,23 +49,38 @@
             <li><a href="rtsp://${rtsp}/${src}">rtsp</a> with only one video and one audio / codecs: any</li>
             <li><a href="rtsp://${rtsp}/${src}?mp4">rtsp</a> for MP4 recording (Hass or Frigate) / codecs: H264, H265, AAC</li>
             <li><a href="rtsp://${rtsp}/${src}?video=all&audio=all">rtsp</a> with all tracks / codecs: any</li>
+            <li><a href="rtsp://${rtsp}/${src}?video">rtsp</a> video only (no audio) / codecs: any</li>
+            <li><a href="rtsp://${rtsp}/${src}?gop=0">rtsp</a> with GOP disabled (no cache burst) / codecs: any</li>
+            <li><a href="rtsp://${rtsp}/${src}?prebuffer=5">rtsp</a> with prebuffer (5 second delay) / codecs: any</li>
+            <li><a href="rtsp://${rtsp}/${src}?gop=0&prebuffer=5">rtsp</a> with GOP disabled + prebuffer / codecs: any</li>
+            <li><a href="rtsp://${rtsp}/${src}#backchannel=1">rtsp</a> with backchannel (two-way audio) / codecs: any</li>
 
             <pre>ffplay -fflags nobuffer -flags low_delay -rtsp_transport tcp "rtsp://${rtsp}/${src}"</pre>
 
             <h2>H264/H265 source</h2>
             <li><a href="stream.html?src=${src}&mode=webrtc">stream.html</a> WebRTC stream / browsers: all / codecs: H264, PCMU, PCMA, OPUS / +H265 in Safari</li>
+            <li><a href="stream.html?src=${src}&mode=webrtc&gop=0">stream.html</a> WebRTC with GOP disabled / browsers: all / codecs: H264, PCMU, PCMA, OPUS</li>
+            <li><a href="stream.html?src=${src}&mode=webrtc&prebuffer=5">stream.html</a> WebRTC with prebuffer (5s delay) / browsers: all / codecs: H264, PCMU, PCMA, OPUS</li>
             <li><a href="stream.html?src=${src}&mode=mse">stream.html</a> MSE stream / browsers: Chrome, Firefox, Safari Mac/iPad / codecs: H264, H265*, AAC, PCMA*, PCMU*, PCM* / +OPUS in Chrome and Firefox</li>
+            <li><a href="stream.html?src=${src}&mode=mse&gop=0">stream.html</a> MSE with GOP disabled / browsers: Chrome, Firefox, Safari Mac/iPad / codecs: H264, H265*, AAC</li>
+            <li><a href="stream.html?src=${src}&mode=mse&prebuffer=5">stream.html</a> MSE with prebuffer (5s delay) / browsers: Chrome, Firefox, Safari Mac/iPad / codecs: H264, H265*, AAC</li>
             <li><a href="api/stream.mp4?src=${src}">stream.mp4</a> legacy MP4 stream with AAC audio / browsers: Chrome, Firefox / codecs: H264, H265*, AAC</li>
+            <li><a href="api/stream.mp4?src=${src}&gop=0">stream.mp4</a> MP4 with GOP disabled / browsers: Chrome, Firefox / codecs: H264, H265*, AAC</li>
+            <li><a href="api/stream.mp4?src=${src}&prebuffer=5">stream.mp4</a> MP4 with prebuffer (5s delay) / browsers: Chrome, Firefox / codecs: H264, H265*, AAC</li>
             <li><a href="api/stream.mp4?src=${src}&mp4=flac">stream.mp4</a> modern MP4 stream with common audio / browsers: Chrome, Firefox / codecs: H264, H265*, AAC, FLAC (PCMA, PCMU, PCM)</li>
             <li><a href="api/stream.mp4?src=${src}&mp4=all">stream.mp4</a> MP4 stream with any audio / browsers: Chrome / codecs: H264, H265*, AAC, OPUS, MP3, FLAC (PCMA, PCMU, PCM)</li>
             <li><a href="api/frame.mp4?src=${src}">frame.mp4</a> snapshot in MP4-format / browsers: all / codecs: H264, H265*</li>
             <li><a href="api/stream.m3u8?src=${src}">stream.m3u8</a> legacy HLS/TS / browsers: Safari all, Chrome Android / codecs: H264</li>
+            <li><a href="api/stream.m3u8?src=${src}&gop=0">stream.m3u8</a> HLS/TS with GOP disabled / browsers: Safari all, Chrome Android / codecs: H264</li>
+            <li><a href="api/stream.m3u8?src=${src}&prebuffer=5">stream.m3u8</a> HLS/TS with prebuffer (5s delay) / browsers: Safari all, Chrome Android / codecs: H264</li>
             <li><a href="api/stream.m3u8?src=${src}&mp4">stream.m3u8</a> legacy HLS/fMP4 / browsers: Safari all, Chrome Android / codecs: H264, H265*, AAC</li>
             <li><a href="api/stream.m3u8?src=${src}&mp4=flac">stream.m3u8</a> modern HLS/fMP4 / browsers: Safari all, Chrome Android / codecs: H264, H265*, AAC, FLAC (PCMA, PCMU, PCM)</li>
 
             <h2>MJPEG source</h2>
             <li><a href="stream.html?src=${src}&mode=mjpeg">stream.html</a> with MJPEG mode / browsers: all / codecs: MJPEG, JPEG</li>
             <li><a href="api/stream.mjpeg?src=${src}">stream.mjpeg</a> MJPEG stream / browsers: all / codecs: MJPEG, JPEG</li>
+            <li><a href="api/stream.mjpeg?src=${src}&gop=0">stream.mjpeg</a> MJPEG with GOP disabled / browsers: all / codecs: MJPEG, JPEG</li>
+            <li><a href="api/stream.mjpeg?src=${src}&prebuffer=5">stream.mjpeg</a> MJPEG with prebuffer (5s delay) / browsers: all / codecs: MJPEG, JPEG</li>
             <li><a href="api/frame.jpeg?src=${src}">frame.jpeg</a> snapshot in JPEG-format / browsers: all / codecs: MJPEG, JPEG</li>
         `;
         });

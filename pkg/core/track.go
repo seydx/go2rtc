@@ -50,20 +50,43 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
 }
 
 func (r *Receiver) SetupGOP() {
+	// GOP is only for video codecs
 	if !r.Codec.IsVideo() {
 		// fmt.Printf("[RECEIVER] Receiver %d is not video codec, skipping GOP setup\n", r.id)
 		return
 	}
 
-	if r.codecHandler != nil {
-		// fmt.Printf("[RECEIVER] Receiver %d already has codec handler, skipping GOP setup\n", r.id)
-		return
+	// fmt.Printf("[RECEIVER] Receiver %d setting up GOP cache for codec %s\n",
+	// 	r.id, r.Codec.Name)
+
+	// Create codec handler if needed
+	if r.codecHandler == nil {
+		if handler := CreateCodecHandler(r.Codec); handler != nil {
+			r.codecHandler = handler
+			// fmt.Printf("[RECEIVER] Receiver %d created codec handler for GOP\n", r.id)
+		}
 	}
 
-	// fmt.Printf("[RECEIVER] Receiver %d setting up GOP for codec %s\n", r.id, r.Codec.Name)
+	// Setup GOP cache
+	if r.codecHandler != nil {
+		r.codecHandler.SetupGOP()
+	}
+}
 
-	if handler := CreateCodecHandler(r.Codec); handler != nil {
-		r.codecHandler = handler
+func (r *Receiver) SetupPrebuffer(durationSec int) {
+	// fmt.Printf("[RECEIVER] Receiver %d setting up prebuffer for codec %s (duration=%ds)\n",
+	// 	r.id, r.Codec.Name, durationSec)
+
+	// Setup prebuffer for both video and audio
+	if r.codecHandler == nil {
+		if handler := CreateCodecHandler(r.Codec); handler != nil {
+			r.codecHandler = handler
+			// fmt.Printf("[RECEIVER] Receiver %d created codec handler for prebuffer\n", r.id)
+		}
+	}
+
+	if r.codecHandler != nil {
+		r.codecHandler.SetupPrebuffer(durationSec)
 	}
 }
 
@@ -107,7 +130,8 @@ type Sender struct {
 	Packets int `json:"packets,omitempty"`
 	Drops   int `json:"drops,omitempty"`
 
-	UseGOP bool `json:"-"`
+	UseGOP          bool `json:"-"`
+	PrebufferOffset int  `json:"-"`
 
 	buf  chan *Packet
 	done chan struct{}
@@ -115,6 +139,9 @@ type Sender struct {
 	started         bool
 	waitingForCache bool
 	liveQueue       chan *Packet
+
+	// Prebuffer continuous reader
+	prebufferDone chan struct{}
 }
 
 func NewSender(media *Media, codec *Codec) *Sender {
@@ -148,6 +175,12 @@ func NewSender(media *Media, codec *Codec) *Sender {
 	s.SetOwner(s)
 
 	s.Input = func(packet *Packet) {
+		// Prebuffer mode: ignore live packets, sender reads from cache
+		if s.PrebufferOffset > 0 {
+			// fmt.Printf("[SENDER] Sender %d: Ignoring live packet in prebuffer mode\n", s.id)
+			return
+		}
+
 		if s.UseGOP {
 			if !s.started && s.Codec.IsVideo() {
 				// fmt.Printf("[SENDER] Sender %d not started, ignoring packet: sequence=%d, timestamp=%d, len=%d\n",
@@ -206,6 +239,8 @@ func (s *Sender) Start() {
 	defer s.mu.Unlock()
 
 	if s.buf == nil || s.done != nil {
+		// fmt.Printf("[SENDER] Sender %d: Start() called but returning early (buf==nil: %t, done!=nil: %t)\n",
+		// 	s.id, s.buf == nil, s.done != nil)
 		return
 	}
 	s.done = make(chan struct{})
@@ -220,7 +255,8 @@ func (s *Sender) Start() {
 
 	s.started = true
 
-	// fmt.Printf("[SENDER] Sender %d started\n", s.id)
+	// fmt.Printf("[SENDER] Sender %d started (PrebufferOffset=%d, UseGOP=%t, codec=%s)\n",
+	// 	s.id, s.PrebufferOffset, s.UseGOP, s.Codec.Name)
 
 	var codecHandler CodecHandler
 	if receiver, ok := s.parent.owner.(*Receiver); ok {
@@ -230,20 +266,35 @@ func (s *Sender) Start() {
 		}
 	}
 
+	if codecHandler == nil {
+		// fmt.Printf("[SENDER] Sender %d has no codec handler, skipping cache processing\n", s.id)
+		s.waitingForCache = false
+		return
+	}
+
+	// Prebuffer has priority over GOP and supports both video and audio
+	if s.PrebufferOffset > 0 {
+		// fmt.Printf("[SENDER] Sender %d using continuous prebuffer reading with offset %ds (codec=%s)\n",
+		// 	s.id, s.PrebufferOffset, s.Codec.Name)
+
+		s.prebufferDone = make(chan struct{})
+		s.waitingForCache = false
+
+		// Start continuous cache reader in codec handler
+		go codecHandler.SendPrebufferTo(s, s.PrebufferOffset, s.prebufferDone)
+
+		return
+	}
+
+	// GOP only for video
 	if !s.Codec.IsVideo() {
-		// fmt.Printf("[SENDER] Sender %d is not video codec, skipping cache processing\n", s.id)
+		// fmt.Printf("[SENDER] Sender %d is not video codec, skipping GOP processing\n", s.id)
 		s.waitingForCache = false
 		return
 	}
 
 	if !s.UseGOP {
 		// fmt.Printf("[SENDER] Sender %d is not using GOP, skipping cache processing\n", s.id)
-		s.waitingForCache = false
-		return
-	}
-
-	if codecHandler == nil {
-		// fmt.Printf("[SENDER] Sender %d has no codec handler, skipping cache processing\n", s.id)
 		s.waitingForCache = false
 		return
 	}
@@ -282,6 +333,10 @@ func (s *Sender) Close() {
 	if s.liveQueue != nil {
 		close(s.liveQueue)
 		s.liveQueue = nil
+	}
+	if s.prebufferDone != nil {
+		close(s.prebufferDone)
+		s.prebufferDone = nil
 	}
 	s.mu.Unlock()
 

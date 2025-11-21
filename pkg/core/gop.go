@@ -15,6 +15,10 @@ type GopCache struct {
 	currentGOPFrames int
 }
 
+func NewGOPCache() *GopCache {
+	return &GopCache{}
+}
+
 func (c *GopCache) Add(packet *Packet, isKeyframe bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
