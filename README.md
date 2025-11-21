@@ -218,14 +218,47 @@ Read more about [incoming sources](#incoming-sources)
 
 #### GOP Cache
 
-go2rtc has a built-in [GOP cache](https://en.wikipedia.org/wiki/Group_of_pictures) for all sources. It allows to reduce the delay of the stream by caching the last GOP (Group of Pictures) frames. This is useful for sources with high latency, such as some IP cameras. The cache is disabled by default and can be configured in the config file.
+go2rtc has a built-in [GOP cache](https://en.wikipedia.org/wiki/Group_of_pictures) for video tracks. It caches the last GOP (Group of Pictures) starting from the most recent keyframe. This allows new clients to start playback immediately without waiting for the next keyframe, reducing initial buffering time.
+
+The GOP cache is **disabled by default** and only applies to **video codecs** (not audio). Enable it per stream:
 
 ```yaml
 streams:
   unifi_camera: rtspx://192.168.1.123:7441/fD6ouM72bWoFijxK#gop=1
 ```
 
-**RTSP clients** can use the `?gop=0` query to request the stream without GOP cache even if it is enabled for the source in the config file.
+**All clients** (WebRTC, MSE, MP4, HLS, MJPEG, RTSP) can override the stream configuration using the `?gop=0` query parameter to disable GOP cache for that specific connection:
+
+```
+http://localhost:1984/stream.html?src=unifi_camera&gop=0
+```
+
+#### Prebuffer
+
+The prebuffer feature creates a time-based rolling buffer that stores recent packets from the stream. This allows clients to start playback from a point in the past, which is useful for reviewing events that just occurred or reducing live-edge buffering.
+
+Prebuffer works for both **video and audio** codecs and is configured at two levels:
+
+**Stream-level configuration** - defines the buffer duration (in seconds) maintained by go2rtc:
+
+```yaml
+streams:
+  # Keep a 10-second rolling buffer
+  tapo_camera: tapo://user:pass@192.168.1.123#prebuffer=10
+```
+
+**Client-level configuration** - specifies how far back (in seconds) the client wants to start playback:
+
+```
+# Start playback 5 seconds in the past
+http://localhost:1984/stream.html?src=tapo_camera&prebuffer=5
+```
+
+The client can request any offset up to the stream's configured buffer duration. For example, with `#prebuffer=10` configured on the stream, clients can use `?prebuffer=5`, `?prebuffer=8`, or any value up to `10` seconds.
+
+**Supported consumers**: WebRTC, MSE, MP4, HLS, MJPEG, RTSP
+
+**Note**: You can enable both features on a stream (`#gop=1#prebuffer=10`), but **prebuffer has priority** over GOP at the client level. If a client requests both (e.g., `?gop=1&prebuffer=5`), only prebuffer will be used. If a client requests no prebuffer (`?prebuffer=0` or omits the parameter), GOP will be used for instant live playback.
 
 #### Two-way audio
 
