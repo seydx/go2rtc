@@ -58,6 +58,7 @@ Ultimate camera streaming application with support RTSP, WebRTC, HomeKit, FFmpeg
 * [Configuration](#configuration)
   * [Module: Streams](#module-streams)
     * [GOP Cache](#gop-cache)
+    * [Prebuffer](#prebuffer)
     * [Two way audio](#two-way-audio)
     * [Source: RTSP](#source-rtsp)
     * [Source: RTMP](#source-rtmp)
@@ -263,6 +264,8 @@ http://localhost:1984/stream.html?src=tapo_camera&prebuffer=5
 ```
 
 The client can request any offset up to the stream's configured buffer duration. For example, with `#prebuffer=10` configured on the stream, clients can use `?prebuffer=5`, `?prebuffer=8`, or any value up to `10` seconds.
+
+**Maximum duration**: Both stream-level and client-level prebuffer values are capped at **15 seconds** to prevent excessive memory usage. Values exceeding this limit will be automatically reduced to 15 seconds.
 
 **Supported consumers**: WebRTC, MSE, MP4, HLS, MJPEG, RTSP
 

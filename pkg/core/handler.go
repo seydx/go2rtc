@@ -7,6 +7,11 @@ import (
 	"github.com/pion/rtp"
 )
 
+const (
+	// MaxPrebufferDuration is the maximum allowed prebuffer duration in seconds
+	MaxPrebufferDuration = 15
+)
+
 type CodecHandler interface {
 	ProcessPacket(packet *Packet)
 	SendCacheTo(s *Sender, playbackFPS int) (nextTimestamp uint32, lastSequence uint16)
@@ -226,6 +231,12 @@ func (ch *BaseCodecHandler) SetupGOP() {
 func (ch *BaseCodecHandler) SetupPrebuffer(durationSec int) {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
+
+	// Cap prebuffer duration to maximum allowed value
+	if durationSec > MaxPrebufferDuration {
+		durationSec = MaxPrebufferDuration
+	}
+
 	if ch.codec.ClockRate > 0 {
 		ch.prebufferCache = NewPrebufferCache(durationSec, ch.codec.ClockRate)
 	}
