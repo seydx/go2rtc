@@ -208,7 +208,7 @@ func tcpHandler(conn *rtsp.Conn) {
 			} else {
 				conn.UseGOP = true // Default: GOP enabled
 			}
-			if s := query.Get("prebuffer"); s != "" {
+			if query.Has("prebuffer") {
 				conn.UsePrebuffer = true
 			}
 

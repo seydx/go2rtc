@@ -107,7 +107,7 @@ func outputMjpeg(w http.ResponseWriter, r *http.Request) {
 	} else {
 		cons.UseGOP = true // Default: GOP enabled
 	}
-	if s := query.Get("prebuffer"); s != "" {
+	if query.Has("prebuffer") {
 		cons.UsePrebuffer = true
 	}
 

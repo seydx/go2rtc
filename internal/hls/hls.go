@@ -72,7 +72,7 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 		} else {
 			c.UseGOP = true // Default: GOP enabled
 		}
-		if s := query.Get("prebuffer"); s != "" {
+		if query.Has("prebuffer") {
 			c.UsePrebuffer = true
 		}
 
@@ -88,7 +88,7 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 		} else {
 			c.UseGOP = true // Default: GOP enabled
 		}
-		if s := query.Get("prebuffer"); s != "" {
+		if query.Has("prebuffer") {
 			c.UsePrebuffer = true
 		}
 
