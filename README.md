@@ -257,6 +257,8 @@ http://localhost:1984/stream.html?src=tapo_camera&prebuffer=5
 
 The client can request any offset up to the stream's configured buffer duration. For example, with `#prebuffer=10` configured on the stream, clients can use `?prebuffer=5`, `?prebuffer=8`, or any value up to `10` seconds.
 
+**Maximum duration**: Both stream-level and client-level prebuffer values are capped at **15 seconds** to prevent excessive memory usage. Values exceeding this limit will be automatically reduced to 15 seconds.
+
 **Supported consumers**: WebRTC, MSE, MP4, HLS, MJPEG, RTSP
 
 **Note**: You can enable both features on a stream (`#gop=1#prebuffer=10`), but **prebuffer has priority** over GOP at the client level. If a client requests both (e.g., `?gop=1&prebuffer=5`), only prebuffer will be used. If a client requests no prebuffer (`?prebuffer=0` or omits the parameter), GOP will be used for instant live playback.
