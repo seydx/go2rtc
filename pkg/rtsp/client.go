@@ -402,9 +402,6 @@ func (c *Conn) Close() error {
 		_ = c.OnClose()
 	}
 
-	// Close all senders and receivers
-	_ = c.Connection.Stop()
-
 	for _, conn := range c.udpConn {
 		_ = conn.Close()
 	}
