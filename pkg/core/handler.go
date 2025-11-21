@@ -11,6 +11,9 @@ type CodecHandler interface {
 	ProcessPacket(packet *Packet)
 	SendCacheTo(s *Sender, playbackFPS int) (nextTimestamp uint32, lastSequence uint16)
 	SendQueueTo(s *Sender, playbackFPS int, startTimestamp uint32, lastSequence uint16)
+	SendPrebufferTo(s *Sender, offsetSec int, done <-chan struct{})
+	SetupGOP()
+	SetupPrebuffer(durationSec int)
 	ClearCache()
 }
 
@@ -19,10 +22,11 @@ type Payloader interface {
 }
 
 type BaseCodecHandler struct {
-	codec        *Codec
-	gopCache     *GopCache
-	inputHandler HandlerFunc
-	mu           sync.RWMutex
+	codec          *Codec
+	gopCache       *GopCache
+	prebufferCache *PrebufferCache
+	inputHandler   HandlerFunc
+	mu             sync.RWMutex
 
 	isKeyframeFunc       func([]byte) bool
 	createRTPDepayFunc   func(*Codec, HandlerFunc) HandlerFunc
@@ -47,7 +51,6 @@ func NewCodecHandler(
 		createAVCCRepairFunc: createAVCCRepairFunc,
 		payloader:            payloader,
 		updateFmtpLineFunc:   updateFmtpLineFunc,
-		gopCache:             &GopCache{},
 	}
 
 	gopHandler := func(packet *Packet) {
@@ -59,7 +62,21 @@ func NewCodecHandler(
 			ch.fmtpLineUpdated = true
 		}
 
-		ch.gopCache.Add(packet, isKeyframe)
+		// Add to GOP cache if enabled
+		ch.mu.RLock()
+		gop := ch.gopCache
+		ch.mu.RUnlock()
+		if gop != nil {
+			gop.Add(packet, isKeyframe)
+		}
+
+		// Also add to prebuffer if enabled
+		ch.mu.RLock()
+		prebuffer := ch.prebufferCache
+		ch.mu.RUnlock()
+		if prebuffer != nil {
+			prebuffer.Add(packet, isKeyframe)
+		}
 	}
 
 	if ch.codec.IsRTP() {
@@ -210,11 +227,165 @@ func (ch *BaseCodecHandler) SendQueueTo(s *Sender, playbackFPS int, startTimesta
 	}
 }
 
+func (ch *BaseCodecHandler) SetupGOP() {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	ch.gopCache = NewGOPCache()
+}
+
+func (ch *BaseCodecHandler) SetupPrebuffer(durationSec int) {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if ch.codec.ClockRate > 0 {
+		ch.prebufferCache = NewPrebufferCache(durationSec, ch.codec.ClockRate)
+	}
+}
+
+func (ch *BaseCodecHandler) SendPrebufferTo(s *Sender, offsetSec int, done <-chan struct{}) {
+	// fmt.Printf("[HANDLER] Sender %d: Prebuffer cache reader started with offset %ds\n", s.id, offsetSec)
+
+	ch.mu.RLock()
+	cache := ch.prebufferCache
+	ch.mu.RUnlock()
+
+	if cache == nil {
+		// fmt.Printf("[HANDLER] Sender %d: No prebuffer cache available\n", s.id)
+		return
+	}
+
+	// Wait for cache to have content
+	for !cache.HasContent() {
+		select {
+		case <-done:
+			// fmt.Printf("[HANDLER] Sender %d: Prebuffer cache reader stopped\n", s.id)
+			return
+		case <-time.After(100 * time.Millisecond):
+			// Keep waiting
+		}
+	}
+
+	// Calculate starting position in cache
+	latestTS := cache.GetLatestTimestamp()
+	requestedOffset := uint32(offsetSec) * ch.codec.ClockRate
+
+	// Check actual available duration in cache
+	ch.mu.RLock()
+	oldestTS := uint32(0)
+	if len(cache.packets) > 0 {
+		oldestTS = cache.packets[0].Header.Timestamp
+	}
+	ch.mu.RUnlock()
+
+	availableDuration := latestTS - oldestTS
+	actualOffset := requestedOffset
+	if requestedOffset > availableDuration {
+		actualOffset = availableDuration
+		// fmt.Printf("[HANDLER] Sender %d: Requested offset %ds exceeds available duration, using %d ticks instead\n",
+		// 	s.id, offsetSec, actualOffset)
+	}
+
+	clientPosTS := latestTS - actualOffset
+
+	// fmt.Printf("[HANDLER] Sender %d: Starting to read from cache at original TS=%d (latest=%d, oldest=%d, offset=%d ticks)\n",
+	// 	s.id, clientPosTS, latestTS, oldestTS, actualOffset)
+
+	currentOutputTS := uint32(0)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	// Track last successful packet read for timeout detection
+	// This catches producer lags/stalls (not complete shutdown, that's handled by done channel)
+	lastPacketTime := time.Now()
+	noPacketTimeout := 3 * time.Second
+
+	for {
+		select {
+		case <-ticker.C:
+			// Get packets from cache starting at clientPosTS
+			ch.mu.RLock()
+			packets := cache.GetPacketsFromTimestamp(clientPosTS)
+			ch.mu.RUnlock()
+
+			if len(packets) == 0 {
+				// No new packets yet, check timeout
+				if time.Since(lastPacketTime) > noPacketTimeout {
+					// fmt.Printf("[HANDLER] Sender %d: No new packets for %v, assuming producer died, stopping\n",
+					// 	s.id, noPacketTimeout)
+					return
+				}
+				continue
+			}
+
+			// Reset timeout on successful packet read
+			lastPacketTime = time.Now()
+
+			// Send first packet
+			pkt := packets[0]
+
+			// Calculate increment based on timestamp difference
+			var tsIncrement uint32
+			if len(packets) > 1 {
+				nextTS := packets[1].Header.Timestamp
+				if nextTS >= pkt.Header.Timestamp {
+					tsIncrement = nextTS - pkt.Header.Timestamp
+				} else {
+					// Wraparound
+					tsIncrement = (0xFFFFFFFF - pkt.Header.Timestamp) + nextTS
+				}
+			} else {
+				// Use default increment
+				if ch.codec.IsVideo() {
+					tsIncrement = ch.codec.ClockRate / 30
+				} else {
+					tsIncrement = ch.codec.ClockRate / 50
+				}
+			}
+
+			// Create packet with recalculated timestamp
+			clone := &Packet{
+				Header:  pkt.Header,
+				Payload: pkt.Payload,
+			}
+			clone.Header.Timestamp = currentOutputTS
+
+			// fmt.Printf("[HANDLER] Sender %d: Sending packet from cache: origTS=%d, newTS=%d, increment=%d\n",
+			// 	s.id, pkt.Header.Timestamp, currentOutputTS, tsIncrement)
+
+			s.processPacket(clone)
+
+			// Advance position in cache
+			clientPosTS = pkt.Header.Timestamp + 1
+			currentOutputTS += tsIncrement
+
+			// Sleep based on increment to maintain realtime playback (interruptible)
+			if tsIncrement > 0 && ch.codec.ClockRate > 0 {
+				sleepDuration := time.Duration(float64(tsIncrement) / float64(ch.codec.ClockRate) * float64(time.Second))
+				if sleepDuration > 0 && sleepDuration < time.Second {
+					select {
+					case <-time.After(sleepDuration):
+						// Normal sleep completed
+					case <-done:
+						// fmt.Printf("[HANDLER] Sender %d: Prebuffer cache reader stopped during sleep\n", s.id)
+						return
+					}
+				}
+			}
+
+		case <-done:
+			// fmt.Printf("[HANDLER] Sender %d: Prebuffer cache reader stopped\n", s.id)
+			return
+		}
+	}
+}
+
 func (ch *BaseCodecHandler) ClearCache() {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 	if ch.gopCache != nil {
 		ch.gopCache.Clear()
+	}
+	if ch.prebufferCache != nil {
+		ch.prebufferCache.Clear()
 	}
 }
 

@@ -35,25 +35,64 @@ type Producer struct {
 	mu       sync.Mutex
 	workerID int
 
-	gopEnabled bool
+	gopEnabled        bool
+	prebufferDuration int
 }
 
 const SourceTemplate = "{input}"
 
-func NewProducer(source string) *Producer {
-	rawSource, gop, _ := strings.Cut(source, "#gop=")
-	gopEnabled := gop == "1"
+func parseStreamParams(source string) (rawURL string, gopEnabled bool, prebufferDuration int) {
+	rawURL = source
 
-	if strings.Contains(source, SourceTemplate) {
-		return &Producer{template: rawSource, gopEnabled: gopEnabled}
+	// Parse #gop=X
+	if idx := strings.Index(rawURL, "#gop="); idx >= 0 {
+		part := rawURL[idx+5:]
+		if nextIdx := strings.Index(part, "#"); nextIdx > 0 {
+			gopEnabled = part[:nextIdx] == "1"
+			rawURL = rawURL[:idx] + part[nextIdx:]
+		} else {
+			gopEnabled = part == "1"
+			rawURL = rawURL[:idx]
+		}
 	}
 
-	return &Producer{url: rawSource, gopEnabled: gopEnabled}
+	// Parse #prebuffer=X
+	if idx := strings.Index(rawURL, "#prebuffer="); idx >= 0 {
+		part := rawURL[idx+11:]
+		if nextIdx := strings.Index(part, "#"); nextIdx > 0 {
+			prebufferDuration = core.Atoi(part[:nextIdx])
+			rawURL = rawURL[:idx] + part[nextIdx:]
+		} else {
+			prebufferDuration = core.Atoi(part)
+			rawURL = rawURL[:idx]
+		}
+	}
+
+	return
+}
+
+func NewProducer(source string) *Producer {
+	rawSource, gopEnabled, prebufferDuration := parseStreamParams(source)
+
+	if strings.Contains(rawSource, SourceTemplate) {
+		return &Producer{
+			template:          rawSource,
+			gopEnabled:        gopEnabled,
+			prebufferDuration: prebufferDuration,
+		}
+	}
+
+	return &Producer{
+		url:               rawSource,
+		gopEnabled:        gopEnabled,
+		prebufferDuration: prebufferDuration,
+	}
 }
 
 func (p *Producer) SetSource(s string) {
-	rawSource, gop, _ := strings.Cut(s, "#gop=")
-	p.gopEnabled = gop == "1"
+	rawSource, gopEnabled, prebufferDuration := parseStreamParams(s)
+	p.gopEnabled = gopEnabled
+	p.prebufferDuration = prebufferDuration
 
 	if p.template == "" {
 		p.url = rawSource
@@ -111,6 +150,10 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 
 	if p.gopEnabled {
 		track.SetupGOP()
+	}
+
+	if p.prebufferDuration > 0 {
+		track.SetupPrebuffer(p.prebufferDuration)
 	}
 
 	p.receivers = append(p.receivers, track)
@@ -231,6 +274,10 @@ func (p *Producer) reconnect(workerID, retry int) {
 
 				if p.gopEnabled {
 					track.SetupGOP()
+				}
+
+				if p.prebufferDuration > 0 {
+					track.SetupPrebuffer(p.prebufferDuration)
 				}
 
 				receiver.Replace(track)
