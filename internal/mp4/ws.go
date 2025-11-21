@@ -26,6 +26,17 @@ func handlerWSMSE(tr *ws.Transport, msg *ws.Message) error {
 	cons.FormatName = "mse/fmp4"
 	cons.WithRequest(tr.Request)
 
+	// Parse query parameters for GOP and prebuffer control
+	query := tr.Request.URL.Query()
+	if s := query.Get("gop"); s != "" {
+		cons.UseGOP = core.Atoi(s) != 0
+	} else {
+		cons.UseGOP = true // Default: GOP enabled
+	}
+	if s := query.Get("prebuffer"); s != "" {
+		cons.PrebufferOffset = core.Atoi(s)
+	}
+
 	if err := stream.AddConsumer(cons); err != nil {
 		log.Debug().Err(err).Msg("[mp4] add consumer")
 		return err
