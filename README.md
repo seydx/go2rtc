@@ -52,6 +52,7 @@ Ultimate camera streaming application with support for RTSP, WebRTC, HomeKit, FF
 * [Configuration](#configuration)
   * [Module: Streams](#module-streams)
     * [GOP Cache](#gop-cache)
+    * [Prebuffer](#prebuffer)
     * [Two way audio](#two-way-audio)
     * [Source: RTSP](#source-rtsp)
     * [Source: RTMP](#source-rtmp)
