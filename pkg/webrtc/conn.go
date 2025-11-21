@@ -18,8 +18,8 @@ type Conn struct {
 
 	Mode core.Mode `json:"mode"`
 
-	UseGOP          bool
-	PrebufferOffset int
+	UseGOP       bool
+	UsePrebuffer bool
 
 	pc *webrtc.PeerConnection
 

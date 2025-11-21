@@ -154,8 +154,9 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 		conn.UseGOP = true // Default: GOP enabled
 	}
 	if s := query.Get("prebuffer"); s != "" {
-		conn.PrebufferOffset = core.Atoi(s)
+		conn.UsePrebuffer = true
 	}
+
 	conn.Listen(func(msg any) {
 		switch msg := msg.(type) {
 		case pion.PeerConnectionState:

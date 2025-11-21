@@ -20,8 +20,8 @@ type Consumer struct {
 	mu    sync.Mutex
 	start bool
 
-	UseGOP          bool
-	PrebufferOffset int
+	UseGOP       bool
+	UsePrebuffer bool
 
 	Rotate int `json:"-"`
 	ScaleX int `json:"-"`
@@ -69,7 +69,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 	codec := track.Codec.Clone()
 	handler := core.NewSender(media, codec)
 	handler.UseGOP = c.UseGOP
-	handler.PrebufferOffset = c.PrebufferOffset
+	handler.UsePrebuffer = c.UsePrebuffer
 
 	switch track.Codec.Name {
 	case core.CodecH264:

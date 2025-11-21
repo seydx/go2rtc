@@ -177,7 +177,6 @@ func tcpHandler(conn *rtsp.Conn) {
 			log.Debug().Str("stream", name).Msg("[rtsp] new consumer")
 
 			conn.SessionName = app.UserAgent
-			conn.GOP = true
 
 			query := conn.URL.Query()
 			conn.Medias = ParseQuery(query)
@@ -203,12 +202,14 @@ func tcpHandler(conn *rtsp.Conn) {
 				})
 			}
 
-			if query.Get("gop") == "0" {
-				conn.GOP = false
+			// Parse query parameters for GOP and prebuffer control
+			if s := query.Get("gop"); s != "" {
+				conn.UseGOP = core.Atoi(s) != 0
+			} else {
+				conn.UseGOP = true // Default: GOP enabled
 			}
-
 			if s := query.Get("prebuffer"); s != "" {
-				conn.PrebufferOffset = core.Atoi(s)
+				conn.UsePrebuffer = true
 			}
 
 			if s := query.Get("pkt_size"); s != "" {

@@ -41,7 +41,7 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 
 	sender := core.NewSender(media, codec)
 	sender.UseGOP = c.UseGOP
-	sender.PrebufferOffset = c.PrebufferOffset
+	sender.UsePrebuffer = c.UsePrebuffer
 	sender.Handler = func(packet *rtp.Packet) {
 		c.Send += packet.MarshalSize()
 		//important to send with remote PayloadType

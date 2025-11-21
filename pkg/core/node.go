@@ -41,6 +41,19 @@ func (n *Node) SetOwner(owner any) *Node {
 	return n
 }
 
+func (n *Node) GetOwner() any {
+	return n.owner
+}
+
+func (n *Node) GetChildren() []*Node {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	// Return copy to avoid concurrent modification
+	children := make([]*Node, len(n.childs))
+	copy(children, n.childs)
+	return children
+}
+
 func (n *Node) WithParent(parent *Node) *Node {
 	parent.AppendChild(n)
 	return n

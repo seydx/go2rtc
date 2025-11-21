@@ -34,7 +34,7 @@ func handlerWSMSE(tr *ws.Transport, msg *ws.Message) error {
 		cons.UseGOP = true // Default: GOP enabled
 	}
 	if s := query.Get("prebuffer"); s != "" {
-		cons.PrebufferOffset = core.Atoi(s)
+		cons.UsePrebuffer = true
 	}
 
 	if err := stream.AddConsumer(cons); err != nil {
