@@ -280,8 +280,11 @@ func (s *Sender) Start() {
 		s.prebufferDone = make(chan struct{})
 		s.waitingForCache = false
 
+		// Cap client prebuffer offset to maximum allowed value
+		offsetSec := min(s.PrebufferOffset, MaxPrebufferDuration)
+
 		// Start continuous cache reader in codec handler
-		go codecHandler.SendPrebufferTo(s, s.PrebufferOffset, s.prebufferDone)
+		go codecHandler.SendPrebufferTo(s, offsetSec, s.prebufferDone)
 
 		return
 	}
