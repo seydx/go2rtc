@@ -37,6 +37,5 @@ func CreateAudioHandler(codec *Codec) CodecHandler {
 		createRTPDepayFunc,
 		createAVCCRepairFunc,
 		nil, // No payloader needed
-		nil, // No fmtp update needed
 	)
 }

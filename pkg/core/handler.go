@@ -40,7 +40,6 @@ func NewCodecHandler(
 	createRTPDepayFunc func(*Codec, HandlerFunc) HandlerFunc,
 	createAVCCRepairFunc func(*Codec, HandlerFunc) HandlerFunc,
 	payloader Payloader,
-	updateFmtpLineFunc func(*Codec, []byte),
 ) CodecHandler {
 	ch := &BaseCodecHandler{
 		codec:                codec,
