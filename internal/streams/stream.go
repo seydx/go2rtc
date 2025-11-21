@@ -16,35 +16,36 @@ type Stream struct {
 }
 
 func NewStream(source any) *Stream {
+	s := new(Stream)
+
 	switch source := source.(type) {
 	case string:
-		return &Stream{
-			producers: []*Producer{NewProducer(source)},
-		}
+		prod := NewProducer(source)
+		s.producers = []*Producer{prod}
 	case []string:
-		s := new(Stream)
 		for _, str := range source {
-			s.producers = append(s.producers, NewProducer(str))
+			prod := NewProducer(str)
+			s.producers = append(s.producers, prod)
 		}
-		return s
 	case []any:
-		s := new(Stream)
 		for _, src := range source {
 			str, ok := src.(string)
 			if !ok {
 				log.Error().Msgf("[stream] NewStream: Expected string, got %v", src)
 				continue
 			}
-			s.producers = append(s.producers, NewProducer(str))
+			prod := NewProducer(str)
+			s.producers = append(s.producers, prod)
 		}
-		return s
 	case map[string]any:
 		return NewStream(source["url"])
 	case nil:
-		return new(Stream)
+		return s
 	default:
 		panic(core.Caller())
 	}
+
+	return s
 }
 
 func (s *Stream) Sources() []string {
@@ -104,6 +105,16 @@ func (s *Stream) RemoveProducer(prod core.Producer) {
 		}
 	}
 	s.mu.Unlock()
+}
+
+func (s *Stream) StartPrebufferReplay() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Start prebuffer replay on all producers that have prebuffer
+	for _, producer := range s.producers {
+		producer.StartPrebufferReplay()
+	}
 }
 
 func (s *Stream) stopProducers() {

@@ -23,15 +23,15 @@ type Conn struct {
 
 	// public
 
-	Backchannel     bool
-	GOP             bool
-	Media           string
-	OnClose         func() error
-	PacketSize      uint16
-	PrebufferOffset int
-	SessionName     string
-	Timeout         int
-	Transport       string // custom transport support, ex. RTSP over WebSocket
+	Backchannel  bool
+	UseGOP       bool
+	Media        string
+	OnClose      func() error
+	PacketSize   uint16
+	UsePrebuffer bool
+	SessionName  string
+	Timeout      int
+	Transport    string // custom transport support, ex. RTSP over WebSocket
 
 	URL *url.URL
 

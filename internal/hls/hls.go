@@ -72,8 +72,8 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 		} else {
 			c.UseGOP = true // Default: GOP enabled
 		}
-		if s := query.Get("prebuffer"); s != "" {
-			c.PrebufferOffset = core.Atoi(s)
+		if query.Has("prebuffer") {
+			c.UsePrebuffer = true
 		}
 
 		cons = c
@@ -88,8 +88,8 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 		} else {
 			c.UseGOP = true // Default: GOP enabled
 		}
-		if s := query.Get("prebuffer"); s != "" {
-			c.PrebufferOffset = core.Atoi(s)
+		if query.Has("prebuffer") {
+			c.UsePrebuffer = true
 		}
 
 		cons = c

@@ -21,6 +21,9 @@ type Receiver struct {
 	Packets int `json:"packets,omitempty"`
 
 	codecHandler CodecHandler
+
+	// PacketHook is called for every packet (for producer-level prebuffer)
+	PacketHook func(*Packet, byte) // packet, trackID
 }
 
 func NewReceiver(media *Media, codec *Codec) *Receiver {
@@ -35,6 +38,11 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
 		r.Bytes += len(packet.Payload)
 		r.Packets++
 
+		// Call packet hook for producer-level prebuffer (capture for storage)
+		if r.PacketHook != nil {
+			r.PacketHook(packet, r.ID)
+		}
+
 		if r.codecHandler != nil {
 			// fmt.Printf("[RECEIVER] Receiver %d received packet, sequence=%d, timestampe=%d, len=%d\n",
 			// 	r.id, packet.Header.SequenceNumber, packet.Header.Timestamp, len(packet.Payload))
@@ -42,6 +50,7 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
 			r.codecHandler.ProcessPacket(packet)
 		}
 
+		// Forward to all children (senders will filter based on their PrebufferOffset)
 		for _, child := range r.childs {
 			child.Input(packet)
 		}
@@ -70,23 +79,6 @@ func (r *Receiver) SetupGOP() {
 	// Setup GOP cache
 	if r.codecHandler != nil {
 		r.codecHandler.SetupGOP()
-	}
-}
-
-func (r *Receiver) SetupPrebuffer(durationSec int) {
-	// fmt.Printf("[RECEIVER] Receiver %d setting up prebuffer for codec %s (duration=%ds)\n",
-	// 	r.id, r.Codec.Name, durationSec)
-
-	// Setup prebuffer for both video and audio
-	if r.codecHandler == nil {
-		if handler := CreateCodecHandler(r.Codec); handler != nil {
-			r.codecHandler = handler
-			// fmt.Printf("[RECEIVER] Receiver %d created codec handler for prebuffer\n", r.id)
-		}
-	}
-
-	if r.codecHandler != nil {
-		r.codecHandler.SetupPrebuffer(durationSec)
 	}
 }
 
@@ -130,8 +122,8 @@ type Sender struct {
 	Packets int `json:"packets,omitempty"`
 	Drops   int `json:"drops,omitempty"`
 
-	UseGOP          bool `json:"-"`
-	PrebufferOffset int  `json:"-"`
+	UseGOP       bool `json:"-"`
+	UsePrebuffer bool `json:"-"`
 
 	buf  chan *Packet
 	done chan struct{}
@@ -139,9 +131,6 @@ type Sender struct {
 	started         bool
 	waitingForCache bool
 	liveQueue       chan *Packet
-
-	// Prebuffer continuous reader
-	prebufferDone chan struct{}
 }
 
 func NewSender(media *Media, codec *Codec) *Sender {
@@ -175,8 +164,8 @@ func NewSender(media *Media, codec *Codec) *Sender {
 	s.SetOwner(s)
 
 	s.Input = func(packet *Packet) {
-		// Prebuffer mode: ignore live packets, sender reads from cache
-		if s.PrebufferOffset > 0 {
+		// If this sender wants prebuffer, ignore live packets (will get replay packets instead)
+		if s.UsePrebuffer {
 			// fmt.Printf("[SENDER] Sender %d: Ignoring live packet in prebuffer mode\n", s.id)
 			return
 		}
@@ -255,9 +244,10 @@ func (s *Sender) Start() {
 
 	s.started = true
 
-	// fmt.Printf("[SENDER] Sender %d started (PrebufferOffset=%d, UseGOP=%t, codec=%s)\n",
-	// 	s.id, s.PrebufferOffset, s.UseGOP, s.Codec.Name)
+	// fmt.Printf("[SENDER] Sender %d started (UseGOP=%t, codec=%s)\n",
+	// 	s.id, s.UseGOP, s.Codec.Name)
 
+	// Get codecHandler for GOP cache (only needed for video)
 	var codecHandler CodecHandler
 	if receiver, ok := s.parent.owner.(*Receiver); ok {
 		if receiver.codecHandler != nil {
@@ -272,23 +262,6 @@ func (s *Sender) Start() {
 		return
 	}
 
-	// Prebuffer has priority over GOP and supports both video and audio
-	if s.PrebufferOffset > 0 {
-		// fmt.Printf("[SENDER] Sender %d using continuous prebuffer reading with offset %ds (codec=%s)\n",
-		// 	s.id, s.PrebufferOffset, s.Codec.Name)
-
-		s.prebufferDone = make(chan struct{})
-		s.waitingForCache = false
-
-		// Cap client prebuffer offset to maximum allowed value
-		offsetSec := min(s.PrebufferOffset, MaxPrebufferDuration)
-
-		// Start continuous cache reader in codec handler
-		go codecHandler.SendPrebufferTo(s, offsetSec, s.prebufferDone)
-
-		return
-	}
-
 	// GOP only for video
 	if !s.Codec.IsVideo() {
 		// fmt.Printf("[SENDER] Sender %d is not video codec, skipping GOP processing\n", s.id)
@@ -298,6 +271,13 @@ func (s *Sender) Start() {
 
 	if !s.UseGOP {
 		// fmt.Printf("[SENDER] Sender %d is not using GOP, skipping cache processing\n", s.id)
+		s.waitingForCache = false
+		return
+	}
+
+	// Skip GOP cache for prebuffer clients - they get packets from replay loop
+	if s.UsePrebuffer {
+		// fmt.Printf("[SENDER] Sender %d uses prebuffer, skipping GOP cache (will get packets from replay)\n", s.id)
 		s.waitingForCache = false
 		return
 	}
@@ -336,10 +316,6 @@ func (s *Sender) Close() {
 	if s.liveQueue != nil {
 		close(s.liveQueue)
 		s.liveQueue = nil
-	}
-	if s.prebufferDone != nil {
-		close(s.prebufferDone)
-		s.prebufferDone = nil
 	}
 	s.mu.Unlock()
 
