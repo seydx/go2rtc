@@ -236,11 +236,11 @@ http://localhost:1984/stream.html?src=unifi_camera&gop=0
 
 #### Prebuffer
 
-The prebuffer feature creates a time-based rolling buffer that stores recent packets from the stream. This allows clients to start playback from a point in the past, which is useful for reviewing events that just occurred or reducing live-edge buffering.
+The prebuffer feature creates a time-based rolling buffer that stores recent packets from the producer. This allows clients to start playback from a point in the past, which is useful for reviewing events that just occurred or reducing live-edge buffering.
 
-Prebuffer works for both **video and audio** codecs and is configured at two levels:
+Prebuffer works for both **video and audio** codecs and is configured at the producer level:
 
-**Stream-level configuration** - defines the buffer duration (in seconds) maintained by go2rtc:
+**Producer-level configuration** - defines the buffer duration (in seconds) maintained by the producer:
 
 ```yaml
 streams:
@@ -248,20 +248,20 @@ streams:
   tapo_camera: tapo://user:pass@192.168.1.123#prebuffer=10
 ```
 
-**Client-level configuration** - specifies how far back (in seconds) the client wants to start playback:
+**Client-level usage** - clients request prebuffer playback using a boolean parameter:
 
 ```
-# Start playback 5 seconds in the past
-http://localhost:1984/stream.html?src=tapo_camera&prebuffer=5
+# Start playback from the producer's configured prebuffer
+rtsp://localhost:8554/camera&prebuffer
 ```
 
-The client can request any offset up to the stream's configured buffer duration. For example, with `#prebuffer=10` configured on the stream, clients can use `?prebuffer=5`, `?prebuffer=8`, or any value up to `10` seconds.
+The client receives playback starting from the configured buffer duration (e.g., 10 seconds in the past for `#prebuffer=10`). The offset is determined by the producer configuration.
 
-**Maximum duration**: Both stream-level and client-level prebuffer values are capped at **15 seconds** to prevent excessive memory usage. Values exceeding this limit will be automatically reduced to 15 seconds.
+**Maximum duration**: The producer-level prebuffer value is capped at **15 seconds** to prevent excessive memory usage. Values exceeding this limit will be automatically reduced to 15 seconds.
 
 **Supported consumers**: WebRTC, MSE, MP4, HLS, MJPEG, RTSP
 
-**Note**: You can enable both features on a stream (`#gop=1#prebuffer=10`), but **prebuffer has priority** over GOP at the client level. If a client requests both (e.g., `?gop=1&prebuffer=5`), only prebuffer will be used. If a client requests no prebuffer (`?prebuffer=0` or omits the parameter), GOP will be used for instant live playback.
+**Note**: You can enable both features on a stream (`#gop=1#prebuffer=10`), but **prebuffer has priority** over GOP at the client level. If a client requests prebuffer (`?prebuffer`), it will use the prebuffer replay. If a client omits the parameter, GOP will be used for instant live playback with keyframe cache.
 
 #### Two-way audio
 
