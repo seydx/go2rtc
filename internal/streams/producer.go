@@ -31,19 +31,80 @@ type Producer struct {
 	receivers []*core.Receiver
 	senders   []*core.Receiver
 
-	state    state
-	mu       sync.Mutex
-	workerID int
+	state              state
+	mu                 sync.Mutex
+	workerID           int
+	backchannelEnabled bool // Whether this producer supports backchannel (default: true)
+	videoEnabled       bool // Whether this producer provides video (default: true)
+	audioEnabled       bool // Whether this producer provides audio (default: true)
+	videoExplicitlySet bool // Whether #video was explicitly set in URL
+	audioExplicitlySet bool // Whether #audio was explicitly set in URL
 }
 
 const SourceTemplate = "{input}"
 
 func NewProducer(source string) *Producer {
-	if strings.Contains(source, SourceTemplate) {
-		return &Producer{template: source}
+	// Parse #noVideo, #noAudio, #noBackchannel flags
+	backchannelEnabled := true // default: enabled
+	videoEnabled := true       // default: enabled
+	audioEnabled := true       // default: enabled
+	videoExplicitlySet := false
+	audioExplicitlySet := false
+
+	// Helper function to remove flag from source
+	removeFlag := func(src, flag string) string {
+		if idx := strings.Index(src, flag); idx >= 0 {
+			// Check if there's a # after the flag
+			end := idx + len(flag)
+			if end < len(src) && src[end] == '#' {
+				// Remove flag but keep the following #
+				return src[:idx] + src[end:]
+			}
+			// Flag is at the end, just remove it
+			return src[:idx]
+		}
+		return src
 	}
 
-	return &Producer{url: source}
+	// Parse #noBackchannel
+	if strings.Contains(source, "#noBackchannel") {
+		backchannelEnabled = false
+		source = removeFlag(source, "#noBackchannel")
+	}
+
+	// Parse #noVideo
+	if strings.Contains(source, "#noVideo") {
+		videoEnabled = false
+		videoExplicitlySet = true
+		source = removeFlag(source, "#noVideo")
+	}
+
+	// Parse #noAudio
+	if strings.Contains(source, "#noAudio") {
+		audioEnabled = false
+		audioExplicitlySet = true
+		source = removeFlag(source, "#noAudio")
+	}
+
+	if strings.Contains(source, SourceTemplate) {
+		return &Producer{
+			template:           source,
+			backchannelEnabled: backchannelEnabled,
+			videoEnabled:       videoEnabled,
+			audioEnabled:       audioEnabled,
+			videoExplicitlySet: videoExplicitlySet,
+			audioExplicitlySet: audioExplicitlySet,
+		}
+	}
+
+	return &Producer{
+		url:                source,
+		backchannelEnabled: backchannelEnabled,
+		videoEnabled:       videoEnabled,
+		audioEnabled:       audioEnabled,
+		videoExplicitlySet: videoExplicitlySet,
+		audioExplicitlySet: audioExplicitlySet,
+	}
 }
 
 func (p *Producer) SetSource(s string) {
