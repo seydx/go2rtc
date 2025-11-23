@@ -51,88 +51,15 @@ type Producer struct {
 
 const SourceTemplate = "{input}"
 
-func parseStreamParams(source string) (rawURL string, gopEnabled bool, prebufferDuration int) {
-	rawURL = source
-
-	// Parse #gop=X
-	if idx := strings.Index(rawURL, "#gop="); idx >= 0 {
-		part := rawURL[idx+5:]
-		if nextIdx := strings.Index(part, "#"); nextIdx > 0 {
-			gopEnabled = part[:nextIdx] == "1"
-			rawURL = rawURL[:idx] + part[nextIdx:]
-		} else {
-			gopEnabled = part == "1"
-			rawURL = rawURL[:idx]
-		}
-	}
-
-	// Parse #prebuffer=X
-	if idx := strings.Index(rawURL, "#prebuffer="); idx >= 0 {
-		part := rawURL[idx+11:]
-		if nextIdx := strings.Index(part, "#"); nextIdx > 0 {
-			prebufferDuration = core.Atoi(part[:nextIdx])
-			rawURL = rawURL[:idx] + part[nextIdx:]
-		} else {
-			prebufferDuration = core.Atoi(part)
-			rawURL = rawURL[:idx]
-		}
-	}
-
-	return
-}
-
 func NewProducer(source string) *Producer {
-	// Parse #noVideo, #noAudio, #noBackchannel flags
-	backchannelEnabled := true // default: enabled
-	videoEnabled := true       // default: enabled
-	audioEnabled := true       // default: enabled
-	videoExplicitlySet := false
-	audioExplicitlySet := false
-
-	// Helper function to remove flag from source
-	removeFlag := func(src, flag string) string {
-		if idx := strings.Index(src, flag); idx >= 0 {
-			// Check if there's a # after the flag
-			end := idx + len(flag)
-			if end < len(src) && src[end] == '#' {
-				// Remove flag but keep the following #
-				return src[:idx] + src[end:]
-			}
-			// Flag is at the end, just remove it
-			return src[:idx]
-		}
-		return src
-	}
-
-	// Parse #noBackchannel
-	if strings.Contains(source, "#noBackchannel") {
-		backchannelEnabled = false
-		source = removeFlag(source, "#noBackchannel")
-	}
-
-	// Parse #noVideo
-	if strings.Contains(source, "#noVideo") {
-		videoEnabled = false
-		videoExplicitlySet = true
-		source = removeFlag(source, "#noVideo")
-	}
-
-	// Parse #noAudio
-	if strings.Contains(source, "#noAudio") {
-		audioEnabled = false
-		audioExplicitlySet = true
-		source = removeFlag(source, "#noAudio")
-	}
-
-	rawSource, gopEnabled, prebufferDuration := parseStreamParams(source)
+	// Parse all stream parameters
+	rawSource, gopEnabled, prebufferDuration, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet := parseStreamParams(source)
 
 	if strings.Contains(rawSource, SourceTemplate) {
 		return &Producer{
-			
-			template:                    rawSource,
-			gopEnabled:        gopEnabled,
-			prebufferDuration: prebufferDuration,
-		,
+			template:           rawSource,
+			gopEnabled:         gopEnabled,
+			prebufferDuration:  prebufferDuration,
 			backchannelEnabled: backchannelEnabled,
 			videoEnabled:       videoEnabled,
 			audioEnabled:       audioEnabled,
@@ -142,11 +69,9 @@ func NewProducer(source string) *Producer {
 	}
 
 	return &Producer{
-		
-		url:                              rawSource,
-		gopEnabled:        gopEnabled,
-		prebufferDuration: prebufferDuration,
-	,
+		url:                rawSource,
+		gopEnabled:         gopEnabled,
+		prebufferDuration:  prebufferDuration,
 		backchannelEnabled: backchannelEnabled,
 		videoEnabled:       videoEnabled,
 		audioEnabled:       audioEnabled,
@@ -156,9 +81,14 @@ func NewProducer(source string) *Producer {
 }
 
 func (p *Producer) SetSource(s string) {
-	rawSource, gopEnabled, prebufferDuration := parseStreamParams(s)
+	rawSource, gopEnabled, prebufferDuration, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet := parseStreamParams(s)
 	p.gopEnabled = gopEnabled
 	p.prebufferDuration = prebufferDuration
+	p.backchannelEnabled = backchannelEnabled
+	p.videoEnabled = videoEnabled
+	p.audioEnabled = audioEnabled
+	p.videoExplicitlySet = videoExplicitlySet
+	p.audioExplicitlySet = audioExplicitlySet
 
 	if p.template == "" {
 		p.url = rawSource
@@ -279,6 +209,56 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
 	return json.Marshal(info)
 }
 
+// StartPrebufferReplay starts a single replay loop that reads packets sequentially
+// from the producer's prebuffer and routes them to the appropriate senders
+func (p *Producer) StartPrebufferReplay() {
+	p.mu.Lock()
+
+	if p.prebuffer == nil {
+		// log.Debug().Msgf("[streams] Producer %s: No prebuffer available", p.url)
+		p.mu.Unlock()
+		return
+	}
+
+	if p.prebufferDone != nil {
+		// log.Debug().Msgf("[streams] Producer %s: Prebuffer replay already running", p.url)
+		p.mu.Unlock()
+		return
+	}
+
+	// Use producer's configured prebuffer duration
+	offsetSec := p.prebufferDuration
+
+	// Check if prebuffer has enough data (at least 1 second)
+	availableDuration := p.prebuffer.GetAvailableDuration()
+	if availableDuration < 1 {
+		// log.Debug().Msgf("[streams] Producer %s: Prebuffer has only %ds (< 1s), disabling prebuffer for all consumers", p.url, availableDuration)
+
+		// Disable prebuffer on all senders - they should get live packets instead
+		for _, receiver := range p.receivers {
+			for _, child := range receiver.GetChildren() {
+				if sender, ok := child.GetOwner().(*core.Sender); ok {
+					if sender.UsePrebuffer {
+						// log.Debug().Msgf("[streams] Setting sender UsePrebuffer to false (not enough buffer data)")
+						sender.UsePrebuffer = false
+					}
+				}
+			}
+		}
+
+		p.mu.Unlock()
+		return
+	}
+
+	p.prebufferOffset = offsetSec
+	p.prebufferDone = make(chan struct{})
+
+	// log.Debug().Msgf("[streams] Producer %s: Starting prebuffer replay with offset=%ds (configured duration)", p.url, offsetSec)
+	p.mu.Unlock()
+
+	go p.prebufferReplayLoop()
+}
+
 // internals
 
 func (p *Producer) start() {
@@ -386,54 +366,37 @@ func (p *Producer) reconnect(workerID, retry int) {
 	go p.worker(conn, workerID)
 }
 
-// StartPrebufferReplay starts a single replay loop that reads packets sequentially
-// from the producer's prebuffer and routes them to the appropriate senders
-func (p *Producer) StartPrebufferReplay() {
+func (p *Producer) stop() {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	if p.prebuffer == nil {
-		// log.Debug().Msgf("[streams] Producer %s: No prebuffer available", p.url)
-		p.mu.Unlock()
+	switch p.state {
+	case stateExternal:
+		log.Trace().Msgf("[streams] skip stop external producer")
 		return
+	case stateNone:
+		log.Trace().Msgf("[streams] skip stop none producer")
+		return
+	case stateStart:
+		p.workerID++
 	}
 
+	log.Debug().Msgf("[streams] stop producer url=%s", p.url)
+
+	// Stop prebuffer replay if running
 	if p.prebufferDone != nil {
-		// log.Debug().Msgf("[streams] Producer %s: Prebuffer replay already running", p.url)
-		p.mu.Unlock()
-		return
+		close(p.prebufferDone)
+		p.prebufferDone = nil
 	}
 
-	// Use producer's configured prebuffer duration
-	offsetSec := p.prebufferDuration
-
-	// Check if prebuffer has enough data (at least 1 second)
-	availableDuration := p.prebuffer.GetAvailableDuration()
-	if availableDuration < 1 {
-		// log.Debug().Msgf("[streams] Producer %s: Prebuffer has only %ds (< 1s), disabling prebuffer for all consumers", p.url, availableDuration)
-
-		// Disable prebuffer on all senders - they should get live packets instead
-		for _, receiver := range p.receivers {
-			for _, child := range receiver.GetChildren() {
-				if sender, ok := child.GetOwner().(*core.Sender); ok {
-					if sender.UsePrebuffer {
-						// log.Debug().Msgf("[streams] Setting sender UsePrebuffer to false (not enough buffer data)")
-						sender.UsePrebuffer = false
-					}
-				}
-			}
-		}
-
-		p.mu.Unlock()
-		return
+	if p.conn != nil {
+		_ = p.conn.Stop()
+		p.conn = nil
 	}
 
-	p.prebufferOffset = offsetSec
-	p.prebufferDone = make(chan struct{})
-
-	// log.Debug().Msgf("[streams] Producer %s: Starting prebuffer replay with offset=%ds (configured duration)", p.url, offsetSec)
-	p.mu.Unlock()
-
-	go p.prebufferReplayLoop()
+	p.state = stateNone
+	p.receivers = nil
+	p.senders = nil
 }
 
 // prebufferReplayLoop is the single sequential replay loop for this producer
@@ -554,35 +517,83 @@ func (p *Producer) prebufferReplayLoop() {
 	}
 }
 
-func (p *Producer) stop() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func parseStreamParams(source string) (
+	rawURL string,
+	gopEnabled bool,
+	prebufferDuration int,
+	backchannelEnabled bool,
+	videoEnabled bool,
+	audioEnabled bool,
+	videoExplicitlySet bool,
+	audioExplicitlySet bool,
+) {
+	rawURL = source
 
-	switch p.state {
-	case stateExternal:
-		log.Trace().Msgf("[streams] skip stop external producer")
-		return
-	case stateNone:
-		log.Trace().Msgf("[streams] skip stop none producer")
-		return
-	case stateStart:
-		p.workerID++
+	// Defaults
+	backchannelEnabled = true
+	videoEnabled = true
+	audioEnabled = true
+	videoExplicitlySet = false
+	audioExplicitlySet = false
+
+	// Helper function to remove flag from source
+	removeFlag := func(src, flag string) string {
+		if idx := strings.Index(src, flag); idx >= 0 {
+			// Check if there's a # after the flag
+			end := idx + len(flag)
+			if end < len(src) && src[end] == '#' {
+				// Remove flag but keep the following #
+				return src[:idx] + src[end:]
+			}
+			// Flag is at the end, just remove it
+			return src[:idx]
+		}
+		return src
 	}
 
-	log.Debug().Msgf("[streams] stop producer url=%s", p.url)
-
-	// Stop prebuffer replay if running
-	if p.prebufferDone != nil {
-		close(p.prebufferDone)
-		p.prebufferDone = nil
+	// Parse #noBackchannel
+	if strings.Contains(rawURL, "#noBackchannel") {
+		backchannelEnabled = false
+		rawURL = removeFlag(rawURL, "#noBackchannel")
 	}
 
-	if p.conn != nil {
-		_ = p.conn.Stop()
-		p.conn = nil
+	// Parse #noVideo
+	if strings.Contains(rawURL, "#noVideo") {
+		videoEnabled = false
+		videoExplicitlySet = true
+		rawURL = removeFlag(rawURL, "#noVideo")
 	}
 
-	p.state = stateNone
-	p.receivers = nil
-	p.senders = nil
+	// Parse #noAudio
+	if strings.Contains(rawURL, "#noAudio") {
+		audioEnabled = false
+		audioExplicitlySet = true
+		rawURL = removeFlag(rawURL, "#noAudio")
+	}
+
+	// Parse #gop=X
+	if idx := strings.Index(rawURL, "#gop="); idx >= 0 {
+		part := rawURL[idx+5:]
+		if nextIdx := strings.Index(part, "#"); nextIdx > 0 {
+			gopEnabled = part[:nextIdx] == "1"
+			rawURL = rawURL[:idx] + part[nextIdx:]
+		} else {
+			gopEnabled = part == "1"
+			rawURL = rawURL[:idx]
+		}
+	}
+
+	// Parse #prebuffer=X
+	if idx := strings.Index(rawURL, "#prebuffer="); idx >= 0 {
+		part := rawURL[idx+11:]
+		if nextIdx := strings.Index(part, "#"); nextIdx > 0 {
+			prebufferDuration = core.Atoi(part[:nextIdx])
+			rawURL = rawURL[:idx] + part[nextIdx:]
+		} else {
+			prebufferDuration = core.Atoi(part)
+			rawURL = rawURL[:idx]
+		}
+	}
+
+	return
 }
