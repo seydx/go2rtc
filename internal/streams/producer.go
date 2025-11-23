@@ -31,6 +31,9 @@ type Producer struct {
 	receivers []*core.Receiver
 	senders   []*core.Receiver
 
+	// Mixers for backchannel - one per codec
+	mixers []*core.RTPMixer
+
 	state    state
 	mu       sync.Mutex
 	workerID int
@@ -118,9 +121,32 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 		return errors.New("add track from none state")
 	}
 
-	if err := p.conn.(core.Consumer).AddTrack(media, codec, track); err != nil {
+	// Check if we already have a mixer for this codec (for backchannel)
+	for _, mixer := range p.mixers {
+		if mixer.Codec.Match(codec) {
+			// Mixer exists, add this consumer receiver as a child of the mixer
+			// Consumer sends packets → Mixer normalizes → forwards to Sender
+			track.AppendChild(&mixer.Node)
+			p.senders = append(p.senders, track)
+			return nil
+		}
+	}
+
+	// No mixer exists yet, create one
+	mixer := core.NewRTPMixer(media, codec)
+
+	// Add consumer receiver as child of mixer
+	track.AppendChild(&mixer.Node)
+
+	// Pass mixer to underlying connection (RTSP/WebRTC/etc)
+	// The connection will create a sender and bind it to the mixer
+	// Mixer → Sender → Protocol (RTSP/WebRTC/etc)
+	if err := p.conn.(core.Consumer).AddTrack(media, codec, &core.Receiver{Node: mixer.Node, Media: media}); err != nil {
 		return err
 	}
+
+	// Store mixer for future consumers
+	p.mixers = append(p.mixers, mixer)
 
 	p.senders = append(p.senders, track)
 
