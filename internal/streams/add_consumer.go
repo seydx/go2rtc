@@ -18,6 +18,18 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 	// Step 1. Get consumer medias
 	consMedias := cons.GetMedias()
+
+	// Check if consumer requests backchannel (any recvonly media)
+	// Normal media (video/audio receive): sendonly
+	// Backchannel media (audio send back): recvonly
+	consumerRequestsBackchannel := false
+	for _, consMedia := range consMedias {
+		if consMedia.Direction == core.DirectionRecvonly {
+			consumerRequestsBackchannel = true
+			break
+		}
+	}
+
 	for _, consMedia := range consMedias {
 		log.Trace().Msgf("[streams] check cons=%d media=%s", consN, consMedia)
 
@@ -31,6 +43,31 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 			if prodErrors[prodN] != nil {
 				log.Trace().Msgf("[streams] skip cons=%d prod=%d", consN, prodN)
+				continue
+			}
+
+			// Skip producers with backchannel disabled when consumer requests backchannel
+			// Only skip completely if no explicit video/audio flags are set
+			if consumerRequestsBackchannel && !prod.backchannelEnabled && !prod.videoExplicitlySet && !prod.audioExplicitlySet {
+				log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests backchannel, producer has #noBackchannel)", consN, prodN)
+				continue
+			}
+
+			// Skip producers with video disabled when consumer requests normal video
+			if consMedia.Direction == core.DirectionSendonly && consMedia.Kind == core.KindVideo && !prod.videoEnabled {
+				log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests video, producer has #noVideo)", consN, prodN)
+				continue
+			}
+
+			// Skip producers with audio disabled when consumer requests normal audio
+			if consMedia.Direction == core.DirectionSendonly && consMedia.Kind == core.KindAudio && !prod.audioEnabled {
+				log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests audio, producer has #noAudio)", consN, prodN)
+				continue
+			}
+
+			// Skip producers with backchannel disabled when consumer requests backchannel for this specific media
+			if consMedia.Direction == core.DirectionRecvonly && !prod.backchannelEnabled {
+				log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests backchannel for this media, producer has #noBackchannel)", consN, prodN)
 				continue
 			}
 
@@ -55,6 +92,12 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 				switch prodMedia.Direction {
 				case core.DirectionRecvonly:
+					// Skip producers with backchannel disabled when consumer requests backchannel
+					if consMedia.Direction == core.DirectionSendonly && !prod.backchannelEnabled {
+						log.Trace().Msgf("[streams] skip cons=%d <= prod=%d (consumer requests backchannel, but producer has backchannel disabled)", consN, prodN)
+						continue
+					}
+
 					log.Trace().Msgf("[streams] match cons=%d <= prod=%d", consN, prodN)
 
 					// Step 4. Get recvonly track from producer
@@ -70,6 +113,12 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 					}
 
 				case core.DirectionSendonly:
+					// Skip producers with backchannel explicitly disabled
+					if !prod.backchannelEnabled {
+						log.Trace().Msgf("[streams] skip cons=%d => prod=%d (backchannel disabled)", consN, prodN)
+						continue
+					}
+
 					log.Trace().Msgf("[streams] match cons=%d => prod=%d", consN, prodN)
 
 					// Step 4. Get recvonly track from consumer (backchannel)
