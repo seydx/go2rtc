@@ -49,7 +49,7 @@ import (
 )
 
 func main() {
-	app.Version = "1.9.12-cui.7"
+	app.Version = "1.9.12-cui.8"
 
 	type module struct {
 		name string
