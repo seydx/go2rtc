@@ -12,6 +12,10 @@ var ErrCantGetTrack = errors.New("can't get track")
 type Receiver struct {
 	Node
 
+	// If set, Bind() will use this Node pointer instead of the embedded Node.
+	// This avoids Node copying for backchannel mixers where we need to bind to an existing Node.
+	ParentNode *Node `json:"-"`
+
 	// Deprecated: should be removed
 	Media *Media `json:"-"`
 	// Deprecated: should be removed
@@ -50,9 +54,14 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
 			r.codecHandler.ProcessPacket(packet)
 		}
 
-		// Forward to all children (senders will filter based on their PrebufferOffset)
-		for _, child := range r.childs {
-			child.Input(packet)
+		// Use custom Forward function if set (e.g., by mixer), otherwise forward to children
+		if r.Forward != nil {
+			r.Forward(packet)
+		} else {
+			// Forward to all children (senders will filter based on their PrebufferOffset)
+			for _, child := range r.childs {
+				child.Input(packet)
+			}
 		}
 	}
 	return r
@@ -105,6 +114,20 @@ func (r *Receiver) Close() {
 	if r.codecHandler != nil {
 		r.codecHandler.ClearCache()
 	}
+
+	// Before closing, check if this receiver has any mixer nodes as children
+	// If so, call RemoveParent on those mixers
+	r.Node.mu.Lock()
+	children := r.Node.childs
+	r.Node.mu.Unlock()
+
+	for _, child := range children {
+		// Check if this child is a mixer node (has RTPMixer as owner)
+		if mixer, ok := child.owner.(*RTPMixer); ok {
+			mixer.RemoveParent(&r.Node)
+		}
+	}
+
 	r.Node.Close()
 }
 
@@ -219,7 +242,11 @@ func (s *Sender) Bind(parent *Receiver) {
 }
 
 func (s *Sender) WithParent(parent *Receiver) *Sender {
-	s.Node.WithParent(&parent.Node)
+	if parent.ParentNode != nil {
+		s.Node.WithParent(parent.ParentNode)
+	} else {
+		s.Node.WithParent(&parent.Node)
+	}
 	return s
 }
 

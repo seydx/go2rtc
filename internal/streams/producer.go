@@ -31,10 +31,14 @@ type Producer struct {
 	receivers []*core.Receiver
 	senders   []*core.Receiver
 
+	// Mixers for backchannel - one per codec
+	mixers []*core.RTPMixer
+
 	state              state
 	mu                 sync.Mutex
 	workerID           int
 	backchannelEnabled bool // Whether this producer supports backchannel (default: true)
+	mixingEnabled      bool // Whether to enable audio mixing for multiple backchannel consumers (default: false)
 	videoEnabled       bool // Whether this producer provides video (default: true)
 	audioEnabled       bool // Whether this producer provides audio (default: true)
 	videoExplicitlySet bool // Whether #video was explicitly set in URL
@@ -53,7 +57,7 @@ const SourceTemplate = "{input}"
 
 func NewProducer(source string) *Producer {
 	// Parse all stream parameters
-	rawSource, gopEnabled, prebufferDuration, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet := parseStreamParams(source)
+	rawSource, gopEnabled, prebufferDuration, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet := parseStreamParams(source)
 
 	if strings.Contains(rawSource, SourceTemplate) {
 		return &Producer{
@@ -61,6 +65,7 @@ func NewProducer(source string) *Producer {
 			gopEnabled:         gopEnabled,
 			prebufferDuration:  prebufferDuration,
 			backchannelEnabled: backchannelEnabled,
+			mixingEnabled:      mixingEnabled,
 			videoEnabled:       videoEnabled,
 			audioEnabled:       audioEnabled,
 			videoExplicitlySet: videoExplicitlySet,
@@ -73,6 +78,7 @@ func NewProducer(source string) *Producer {
 		gopEnabled:         gopEnabled,
 		prebufferDuration:  prebufferDuration,
 		backchannelEnabled: backchannelEnabled,
+		mixingEnabled:      mixingEnabled,
 		videoEnabled:       videoEnabled,
 		audioEnabled:       audioEnabled,
 		videoExplicitlySet: videoExplicitlySet,
@@ -81,10 +87,11 @@ func NewProducer(source string) *Producer {
 }
 
 func (p *Producer) SetSource(s string) {
-	rawSource, gopEnabled, prebufferDuration, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet := parseStreamParams(s)
+	rawSource, gopEnabled, prebufferDuration, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet := parseStreamParams(s)
 	p.gopEnabled = gopEnabled
 	p.prebufferDuration = prebufferDuration
 	p.backchannelEnabled = backchannelEnabled
+	p.mixingEnabled = mixingEnabled
 	p.videoEnabled = videoEnabled
 	p.audioEnabled = audioEnabled
 	p.videoExplicitlySet = videoExplicitlySet
@@ -188,11 +195,42 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 		return errors.New("add track from none state")
 	}
 
-	if err := p.conn.(core.Consumer).AddTrack(media, codec, track); err != nil {
-		return err
-	}
+	// If mixing is enabled, use mixer for multiple backchannel consumers
+	if p.mixingEnabled {
+		// Check if we already have a mixer for this codec
+		for _, mixer := range p.mixers {
+			if mixer.Codec.Match(codec) {
+				// Register this consumer receiver as a parent
+				mixer.AddParent(&track.Node)
+				p.senders = append(p.senders, track)
+				return nil
+			}
+		}
 
-	p.senders = append(p.senders, track)
+		// No mixer exists yet, create one
+		mixer := core.NewRTPMixer(ffmpegBin, media, codec)
+		mixer.AddParent(&track.Node)
+
+		// Connect mixer to underlying protocol
+		consumer := p.conn.(core.Consumer)
+		if err := consumer.AddTrack(media, codec, &core.Receiver{
+			Node:       core.Node{Codec: codec},
+			ParentNode: &mixer.Node,
+			Media:      media,
+		}); err != nil {
+			return err
+		}
+
+		p.mixers = append(p.mixers, mixer)
+		p.senders = append(p.senders, track)
+	} else {
+		// Without mixing, directly pass track to underlying protocol
+		if err := p.conn.(core.Consumer).AddTrack(media, codec, track); err != nil {
+			return err
+		}
+
+		p.senders = append(p.senders, track)
+	}
 
 	if p.state == stateMedias {
 		p.state = stateTracks
@@ -202,9 +240,36 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 }
 
 func (p *Producer) MarshalJSON() ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if conn := p.conn; conn != nil {
-		return json.Marshal(conn)
+		connData, err := json.Marshal(conn)
+		if err != nil {
+			return nil, err
+		}
+
+		// If no mixers, return as-is
+		if len(p.mixers) == 0 {
+			return connData, nil
+		}
+
+		// Marshal mixers
+		mixersData, err := json.Marshal(p.mixers)
+		if err != nil {
+			return nil, err
+		}
+
+		// Simply append mixers field at the end
+		// Remove closing } and add mixers field
+		result := connData[:len(connData)-1] // Remove }
+		result = append(result, []byte(`,"mixers":`)...)
+		result = append(result, mixersData...)
+		result = append(result, '}')
+
+		return result, nil
 	}
+
 	info := map[string]string{"url": p.url}
 	return json.Marshal(info)
 }
@@ -522,6 +587,7 @@ func parseStreamParams(source string) (
 	gopEnabled bool,
 	prebufferDuration int,
 	backchannelEnabled bool,
+	mixingEnabled bool,
 	videoEnabled bool,
 	audioEnabled bool,
 	videoExplicitlySet bool,
@@ -531,6 +597,7 @@ func parseStreamParams(source string) (
 
 	// Defaults
 	backchannelEnabled = true
+	mixingEnabled = false // Opt-in with #mix
 	videoEnabled = true
 	audioEnabled = true
 	videoExplicitlySet = false
@@ -555,6 +622,12 @@ func parseStreamParams(source string) (
 	if strings.Contains(rawURL, "#noBackchannel") {
 		backchannelEnabled = false
 		rawURL = removeFlag(rawURL, "#noBackchannel")
+	}
+
+	// Parse #mix
+	if strings.Contains(rawURL, "#mix") {
+		mixingEnabled = true
+		rawURL = removeFlag(rawURL, "#mix")
 	}
 
 	// Parse #noVideo
