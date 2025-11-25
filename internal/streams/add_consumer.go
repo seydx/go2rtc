@@ -16,6 +16,10 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	var prodMedias []*core.Media
 	var prodStarts []*Producer
 
+	// Track what tracks previous producers have provided
+	prevHasAudio := false
+	prevHasVideo := false
+
 	// Step 1. Get consumer medias
 	consMedias := cons.GetMedias()
 
@@ -43,6 +47,18 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 			if prodErrors[prodN] != nil {
 				log.Trace().Msgf("[streams] skip cons=%d prod=%d", consN, prodN)
+				continue
+			}
+
+			// Check #requirePrevAudio - skip if previous producers don't have audio
+			if prod.requirePrevAudio && !prevHasAudio && prodN > 0 {
+				log.Trace().Msgf("[streams] skip cons=%d prod=%d (requires previous audio but none available)", consN, prodN)
+				continue
+			}
+
+			// Check #requirePrevVideo - skip if previous producers don't have video
+			if prod.requirePrevVideo && !prevHasVideo && prodN > 0 {
+				log.Trace().Msgf("[streams] skip cons=%d prod=%d (requires previous video but none available)", consN, prodN)
 				continue
 			}
 
@@ -110,6 +126,13 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 					if err = cons.AddTrack(consMedia, consCodec, track); err != nil {
 						log.Info().Err(err).Msg("[streams] can't add track")
 						continue
+					}
+
+					// Track what this producer provides for subsequent producers
+					if prodMedia.Kind == core.KindAudio {
+						prevHasAudio = true
+					} else if prodMedia.Kind == core.KindVideo {
+						prevHasVideo = true
 					}
 
 				case core.DirectionSendonly:

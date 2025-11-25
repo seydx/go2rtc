@@ -43,6 +43,8 @@ type Producer struct {
 	audioEnabled       bool // Whether this producer provides audio (default: true)
 	videoExplicitlySet bool // Whether #video was explicitly set in URL
 	audioExplicitlySet bool // Whether #audio was explicitly set in URL
+	requirePrevAudio   bool // Only start if previous producer has audio (#requirePrevAudio)
+	requirePrevVideo   bool // Only start if previous producer has video (#requirePrevVideo)
 
 	gopEnabled        bool
 	prebufferDuration int
@@ -57,7 +59,7 @@ const SourceTemplate = "{input}"
 
 func NewProducer(source string) *Producer {
 	// Parse all stream parameters
-	rawSource, gopEnabled, prebufferDuration, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet := parseStreamParams(source)
+	rawSource, gopEnabled, prebufferDuration, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(source)
 
 	if strings.Contains(rawSource, SourceTemplate) {
 		return &Producer{
@@ -70,6 +72,8 @@ func NewProducer(source string) *Producer {
 			audioEnabled:       audioEnabled,
 			videoExplicitlySet: videoExplicitlySet,
 			audioExplicitlySet: audioExplicitlySet,
+			requirePrevAudio:   requirePrevAudio,
+			requirePrevVideo:   requirePrevVideo,
 		}
 	}
 
@@ -83,11 +87,13 @@ func NewProducer(source string) *Producer {
 		audioEnabled:       audioEnabled,
 		videoExplicitlySet: videoExplicitlySet,
 		audioExplicitlySet: audioExplicitlySet,
+		requirePrevAudio:   requirePrevAudio,
+		requirePrevVideo:   requirePrevVideo,
 	}
 }
 
 func (p *Producer) SetSource(s string) {
-	rawSource, gopEnabled, prebufferDuration, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet := parseStreamParams(s)
+	rawSource, gopEnabled, prebufferDuration, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(s)
 	p.gopEnabled = gopEnabled
 	p.prebufferDuration = prebufferDuration
 	p.backchannelEnabled = backchannelEnabled
@@ -96,6 +102,8 @@ func (p *Producer) SetSource(s string) {
 	p.audioEnabled = audioEnabled
 	p.videoExplicitlySet = videoExplicitlySet
 	p.audioExplicitlySet = audioExplicitlySet
+	p.requirePrevAudio = requirePrevAudio
+	p.requirePrevVideo = requirePrevVideo
 
 	if p.template == "" {
 		p.url = rawSource
@@ -592,6 +600,8 @@ func parseStreamParams(source string) (
 	audioEnabled bool,
 	videoExplicitlySet bool,
 	audioExplicitlySet bool,
+	requirePrevAudio bool,
+	requirePrevVideo bool,
 ) {
 	rawURL = source
 
@@ -602,6 +612,8 @@ func parseStreamParams(source string) (
 	audioEnabled = true
 	videoExplicitlySet = false
 	audioExplicitlySet = false
+	requirePrevAudio = false
+	requirePrevVideo = false
 
 	// Helper function to remove flag from source
 	removeFlag := func(src, flag string) string {
@@ -666,6 +678,18 @@ func parseStreamParams(source string) (
 			prebufferDuration = core.Atoi(part)
 			rawURL = rawURL[:idx]
 		}
+	}
+
+	// Parse #requirePrevAudio
+	if strings.Contains(rawURL, "#requirePrevAudio") {
+		requirePrevAudio = true
+		rawURL = removeFlag(rawURL, "#requirePrevAudio")
+	}
+
+	// Parse #requirePrevVideo
+	if strings.Contains(rawURL, "#requirePrevVideo") {
+		requirePrevVideo = true
+		rawURL = removeFlag(rawURL, "#requirePrevVideo")
 	}
 
 	return
