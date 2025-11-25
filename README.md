@@ -281,6 +281,7 @@ Supported sources:
 - [Hikvision ISAPI](#source-isapi) cameras
 - [Roborock vacuums](#source-roborock) models with cameras
 - [Exec](#source-exec) audio on server
+- [Ring](#source-ring) cameras
 - [Tuya](#source-tuya) cameras
 - [Any Browser](#incoming-browser) as IP-camera
 
