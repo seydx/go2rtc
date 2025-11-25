@@ -39,6 +39,8 @@ type Producer struct {
 	audioEnabled       bool // Whether this producer provides audio (default: true)
 	videoExplicitlySet bool // Whether #video was explicitly set in URL
 	audioExplicitlySet bool // Whether #audio was explicitly set in URL
+	requirePrevAudio   bool // Only start if previous producer has audio (#requirePrevAudio)
+	requirePrevVideo   bool // Only start if previous producer has video (#requirePrevVideo)
 }
 
 const SourceTemplate = "{input}"
@@ -50,6 +52,8 @@ func NewProducer(source string) *Producer {
 	audioEnabled := true       // default: enabled
 	videoExplicitlySet := false
 	audioExplicitlySet := false
+	requirePrevAudio := false
+	requirePrevVideo := false
 
 	// Helper function to remove flag from source
 	removeFlag := func(src, flag string) string {
@@ -86,6 +90,18 @@ func NewProducer(source string) *Producer {
 		source = removeFlag(source, "#noAudio")
 	}
 
+	// Parse #requirePrevAudio - only start if previous producer has audio
+	if strings.Contains(source, "#requirePrevAudio") {
+		requirePrevAudio = true
+		source = removeFlag(source, "#requirePrevAudio")
+	}
+
+	// Parse #requirePrevVideo - only start if previous producer has video
+	if strings.Contains(source, "#requirePrevVideo") {
+		requirePrevVideo = true
+		source = removeFlag(source, "#requirePrevVideo")
+	}
+
 	if strings.Contains(source, SourceTemplate) {
 		return &Producer{
 			template:           source,
@@ -94,6 +110,8 @@ func NewProducer(source string) *Producer {
 			audioEnabled:       audioEnabled,
 			videoExplicitlySet: videoExplicitlySet,
 			audioExplicitlySet: audioExplicitlySet,
+			requirePrevAudio:   requirePrevAudio,
+			requirePrevVideo:   requirePrevVideo,
 		}
 	}
 
@@ -104,6 +122,8 @@ func NewProducer(source string) *Producer {
 		audioEnabled:       audioEnabled,
 		videoExplicitlySet: videoExplicitlySet,
 		audioExplicitlySet: audioExplicitlySet,
+		requirePrevAudio:   requirePrevAudio,
+		requirePrevVideo:   requirePrevVideo,
 	}
 }
 

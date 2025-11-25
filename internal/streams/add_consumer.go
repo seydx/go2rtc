@@ -15,6 +15,10 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	var prodMedias []*core.Media
 	var prodStarts []*Producer
 
+	// Track what tracks previous producers have provided
+	prevHasAudio := false
+	prevHasVideo := false
+
 	// Step 1. Get consumer medias
 	consMedias := cons.GetMedias()
 
@@ -34,6 +38,17 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 	producers:
 		for prodN, prod := range s.producers {
+			// Check #requirePrevAudio - skip if previous producers don't have audio
+			if prod.requirePrevAudio && !prevHasAudio && prodN > 0 {
+				log.Trace().Msgf("[streams] skip cons=%d prod=%d (requires previous audio but none available)", consN, prodN)
+				continue
+			}
+
+			// Check #requirePrevVideo - skip if previous producers don't have video
+			if prod.requirePrevVideo && !prevHasVideo && prodN > 0 {
+				log.Trace().Msgf("[streams] skip cons=%d prod=%d (requires previous video but none available)", consN, prodN)
+				continue
+			}
 			// check for loop request, ex. `camera1: ffmpeg:camera1`
 			if info, ok := cons.(core.Info); ok && prod.url == info.GetSource() {
 				log.Trace().Msgf("[streams] skip cons=%d prod=%d", consN, prodN)
@@ -111,6 +126,13 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 						continue
 					}
 
+					// Track what media types this producer provided
+					if prodMedia.Kind == core.KindAudio {
+						prevHasAudio = true
+					} else if prodMedia.Kind == core.KindVideo {
+						prevHasVideo = true
+					}
+
 				case core.DirectionSendonly:
 					// Skip producers with backchannel explicitly disabled
 					if !prod.backchannelEnabled {
@@ -130,6 +152,13 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 						log.Info().Err(err).Msg("[streams] can't add track")
 						prodErrors[prodN] = err
 						continue
+					}
+
+					// Track what media types this producer provided (for backchannel)
+					if consMedia.Kind == core.KindAudio {
+						prevHasAudio = true
+					} else if consMedia.Kind == core.KindVideo {
+						prevHasVideo = true
 					}
 				}
 
