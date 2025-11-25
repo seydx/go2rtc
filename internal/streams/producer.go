@@ -38,7 +38,7 @@ type Producer struct {
 	mu                 sync.Mutex
 	workerID           int
 	backchannelEnabled bool // Whether this producer supports backchannel (default: true)
-	mixingEnabled      bool // Whether to enable audio mixing for multiple backchannel consumers (default: false)
+	mixingEnabled      bool // Whether to enable audio mixing for multiple backchannel consumers (default: true)
 	videoEnabled       bool // Whether this producer provides video (default: true)
 	audioEnabled       bool // Whether this producer provides audio (default: true)
 	videoExplicitlySet bool // Whether #video was explicitly set in URL
@@ -597,7 +597,7 @@ func parseStreamParams(source string) (
 
 	// Defaults
 	backchannelEnabled = true
-	mixingEnabled = false // Opt-in with #mix
+	mixingEnabled = true
 	videoEnabled = true
 	audioEnabled = true
 	videoExplicitlySet = false
@@ -624,10 +624,10 @@ func parseStreamParams(source string) (
 		rawURL = removeFlag(rawURL, "#noBackchannel")
 	}
 
-	// Parse #mix
-	if strings.Contains(rawURL, "#mix") {
-		mixingEnabled = true
-		rawURL = removeFlag(rawURL, "#mix")
+	// Parse #noMix
+	if strings.Contains(rawURL, "#noMix") {
+		mixingEnabled = false
+		rawURL = removeFlag(rawURL, "#noMix")
 	}
 
 	// Parse #noVideo
