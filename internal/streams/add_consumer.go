@@ -96,6 +96,17 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 				log.Trace().Msgf("[streams] check cons=%d prod=%d media=%s", consN, prodN, prodMedia)
 				prodMedias = append(prodMedias, prodMedia)
 
+				// Track what this producer OFFERS (for #requirePrevAudio/Video)
+				// This must happen before matching, so subsequent producers know
+				// that previous ones have audio/video available for transcoding
+				if prodMedia.Direction == core.DirectionRecvonly {
+					if prodMedia.Kind == core.KindAudio {
+						prevHasAudio = true
+					} else if prodMedia.Kind == core.KindVideo {
+						prevHasVideo = true
+					}
+				}
+
 				// Step 3. Match consumer/producer codecs list
 				prodCodec, consCodec := prodMedia.MatchMedia(consMedia)
 				if prodCodec == nil {
@@ -126,13 +137,6 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 						continue
 					}
 
-					// Track what media types this producer provided
-					if prodMedia.Kind == core.KindAudio {
-						prevHasAudio = true
-					} else if prodMedia.Kind == core.KindVideo {
-						prevHasVideo = true
-					}
-
 				case core.DirectionSendonly:
 					// Skip producers with backchannel explicitly disabled
 					if !prod.backchannelEnabled {
@@ -152,13 +156,6 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 						log.Info().Err(err).Msg("[streams] can't add track")
 						prodErrors[prodN] = err
 						continue
-					}
-
-					// Track what media types this producer provided (for backchannel)
-					if consMedia.Kind == core.KindAudio {
-						prevHasAudio = true
-					} else if consMedia.Kind == core.KindVideo {
-						prevHasVideo = true
 					}
 				}
 
