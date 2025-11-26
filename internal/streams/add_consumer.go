@@ -98,6 +98,14 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 				log.Trace().Msgf("[streams] check cons=%d prod=%d media=%s", consN, prodN, prodMedia)
 				prodMedias = append(prodMedias, prodMedia)
 
+				if prodMedia.Direction == core.DirectionRecvonly {
+					if prodMedia.Kind == core.KindAudio {
+						prevHasAudio = true
+					} else if prodMedia.Kind == core.KindVideo {
+						prevHasVideo = true
+					}
+				}
+
 				// Step 3. Match consumer/producer codecs list
 				prodCodec, consCodec := prodMedia.MatchMedia(consMedia)
 				if prodCodec == nil {
@@ -126,13 +134,6 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 					if err = cons.AddTrack(consMedia, consCodec, track); err != nil {
 						log.Info().Err(err).Msg("[streams] can't add track")
 						continue
-					}
-
-					// Track what this producer provides for subsequent producers
-					if prodMedia.Kind == core.KindAudio {
-						prevHasAudio = true
-					} else if prodMedia.Kind == core.KindVideo {
-						prevHasVideo = true
 					}
 
 				case core.DirectionSendonly:
