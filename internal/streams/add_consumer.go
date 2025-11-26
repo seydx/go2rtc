@@ -116,12 +116,6 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 				switch prodMedia.Direction {
 				case core.DirectionRecvonly:
-					// Skip producers with backchannel disabled when consumer requests backchannel
-					if consMedia.Direction == core.DirectionSendonly && !prod.backchannelEnabled {
-						log.Trace().Msgf("[streams] skip cons=%d <= prod=%d (consumer requests backchannel, but producer has backchannel disabled)", consN, prodN)
-						continue
-					}
-
 					log.Trace().Msgf("[streams] match cons=%d <= prod=%d", consN, prodN)
 
 					// Step 4. Get recvonly track from producer
