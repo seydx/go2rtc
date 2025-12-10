@@ -40,7 +40,7 @@ func (c *Client) GetMedias() []*core.Media {
 
 func (c *Client) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
 	for _, track := range c.receivers {
-		if track.Codec == codec {
+		if track.Codec.Match(codec) {
 			return track, nil
 		}
 	}

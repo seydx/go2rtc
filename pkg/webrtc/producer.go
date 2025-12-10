@@ -9,7 +9,7 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 	core.Assert(media.Direction == core.DirectionRecvonly)
 
 	for _, track := range c.Receivers {
-		if track.Codec == codec {
+		if track.Codec.Match(codec) {
 			return track, nil
 		}
 	}
