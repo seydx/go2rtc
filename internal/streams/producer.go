@@ -149,7 +149,7 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 	}
 
 	for _, track := range p.receivers {
-		if track.Codec == codec {
+		if track.Codec.Match(codec) {
 			return track, nil
 		}
 	}
