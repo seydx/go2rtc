@@ -20,12 +20,7 @@ func Create(name string, query url.Values) *Probe {
 		media := &core.Media{Kind: core.KindAudio, Direction: core.DirectionRecvonly}
 
 		for _, name := range strings.Split(value, ",") {
-			name = strings.ToUpper(name)
-			switch name {
-			case "", "COPY":
-				name = core.CodecAny
-			}
-			media.Codecs = append(media.Codecs, &core.Codec{Name: name})
+			media.Codecs = append(media.Codecs, core.ParseQueryCodec(name))
 		}
 
 		medias = append(medias, media)
