@@ -75,6 +75,14 @@ func (c *Conn) Start() (err error) {
 			if err == nil {
 				c.state = StatePlay
 				ok = true
+
+				// Start all senders after Play for ActiveProducer mode
+				// (for PassiveConsumer/server mode, Start() is called in server.go)
+				if c.mode == core.ModeActiveProducer {
+					for _, sender := range c.Senders {
+						sender.Start()
+					}
+				}
 			}
 		}
 		c.stateMu.Unlock()
