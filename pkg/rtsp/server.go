@@ -178,7 +178,12 @@ func (c *Conn) Accept() error {
 						if i < len(c.Senders) {
 							c.Senders[i].Media.ID = MethodSetup
 						} else {
-							c.Receivers[i-len(c.Senders)].Media.ID = MethodSetup
+							receiverIdx := i - len(c.Senders)
+							c.Receivers[receiverIdx].Media.ID = MethodSetup
+							// Update receiver's channel ID to match the interleaved channel
+							// This is critical for backchannel: handleRawPacket routes data
+							// based on receiver.ID matching the incoming channel number
+							c.Receivers[receiverIdx].ID = byte(i * 2)
 						}
 						tr = fmt.Sprintf("RTP/AVP/TCP;unicast;interleaved=%d-%d", i*2, i*2+1)
 						res.Header.Set("Transport", tr)
