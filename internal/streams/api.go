@@ -144,15 +144,14 @@ func apiStreamsDOT(w http.ResponseWriter, r *http.Request) {
 }
 
 func apiPreload(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-	src := query.Get("src")
-
-	// check if stream exists
-	stream := Get(src)
-	if stream == nil {
-		http.Error(w, "", http.StatusNotFound)
+	// GET - return all preloads
+	if r.Method == "GET" {
+		api.ResponseJSON(w, GetPreloads())
 		return
 	}
+
+	query := r.URL.Query()
+	src := query.Get("src")
 
 	switch r.Method {
 	case "GET":
@@ -183,7 +182,7 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 
 		rawQuery := query.Encode()
 
-		if err := AddPreload(stream, rawQuery); err != nil {
+		if err := AddPreload(src, rawQuery); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -193,7 +192,10 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case "DELETE":
-		DelPreload(stream)
+		if err := DelPreload(src); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
 		if err := app.PatchConfig([]string{"preload", src}, nil); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

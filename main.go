@@ -44,6 +44,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/webrtc"
 	"github.com/AlexxIT/go2rtc/internal/webtorrent"
 	"github.com/AlexxIT/go2rtc/internal/wyoming"
+	"github.com/AlexxIT/go2rtc/internal/xiaomi"
 	"github.com/AlexxIT/go2rtc/internal/yandex"
 	"github.com/AlexxIT/go2rtc/pkg/shell"
 )
@@ -100,6 +101,7 @@ func main() {
 		{"roborock", roborock.Init},
 		{"tapo", tapo.Init},
 		{"tuya", tuya.Init},
+		{"xiaomi", xiaomi.Init},
 		{"yandex", yandex.Init},
 		// Helper modules
 		{"debug", debug.Init},
