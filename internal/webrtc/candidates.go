@@ -133,7 +133,7 @@ func candidateHandler(tr *ws.Transport, msg *ws.Message) error {
 	// process incoming candidate in sync function
 	tr.WithContext(func(ctx map[any]any) {
 		candidate := msg.String()
-		log.Trace().Str("candidate", candidate).Msg("[webrtc] remote")
+		// log.Trace().Str("candidate", candidate).Msg("[webrtc] remote")
 
 		if cons, ok := ctx["webrtc"].(*webrtc.Conn); ok {
 			// if webrtc.Server already initialized - process candidate
