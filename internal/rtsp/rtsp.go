@@ -192,6 +192,7 @@ func tcpHandler(conn *rtsp.Conn) {
 			// - ?backchannel=pcmu → any PCMU codec
 			// - ?backchannel=pcmu/8000 → specifically PCMU/8000
 			// - ?backchannel=opus/48000/2 → specifically OPUS/48000/2
+			// - ?backchannel=pcmu/8000,pcma/8000,opus → multiple codecs (preference order)
 			if query.Has("backchannel") {
 				backchannel := query.Get("backchannel")
 				var codecs []*core.Codec
@@ -209,8 +210,10 @@ func tcpHandler(conn *rtsp.Conn) {
 					// Empty value: ANY codec (use camera's first available)
 					codecs = []*core.Codec{{Name: core.CodecAny}}
 				default:
-					// Specific codec: parse from query value
-					codecs = []*core.Codec{core.ParseQueryCodec(backchannel)}
+					// Parse codec(s) from query value - supports comma-separated list
+					for _, codecStr := range strings.Split(backchannel, ",") {
+						codecs = append(codecs, core.ParseQueryCodec(codecStr))
+					}
 				}
 
 				conn.Medias = append(conn.Medias, &core.Media{
