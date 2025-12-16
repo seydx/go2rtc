@@ -67,3 +67,11 @@ func GetPreloads() map[string]*Preload {
 	defer preloadsMu.Unlock()
 	return maps.Clone(preloads)
 }
+
+func HasPreload(name string) bool {
+	preloadsMu.Lock()
+	defer preloadsMu.Unlock()
+
+	_, ok := preloads[name]
+	return ok
+}

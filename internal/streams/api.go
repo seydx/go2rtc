@@ -162,7 +162,7 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 			Src: src,
 		}
 
-		if ok := HasPreload(stream); ok {
+		if ok := HasPreload(src); ok {
 			response.Status = "started"
 			api.ResponseJSON(w, response)
 		} else {
