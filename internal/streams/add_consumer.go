@@ -3,6 +3,7 @@ package streams
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -22,6 +23,22 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 	// Step 1. Get consumer medias
 	consMedias := cons.GetMedias()
+
+	// Sort consumer medias: recvonly (backchannel) first, then sendonly (normal streams)
+	// This ensures backchannel tracks are added to producers BEFORE other producers
+	// (like ffmpeg) can start and trigger the producer to enter StatePlay.
+	// Without this, ffmpeg connecting to go2rtc can start the RTSP producer before
+	// the backchannel track is added, causing an unnecessary reconnect.
+	slices.SortStableFunc(consMedias, func(a, b *core.Media) int {
+		// recvonly (backchannel) comes before sendonly (normal streams)
+		if a.Direction == core.DirectionRecvonly && b.Direction != core.DirectionRecvonly {
+			return -1
+		}
+		if a.Direction != core.DirectionRecvonly && b.Direction == core.DirectionRecvonly {
+			return 1
+		}
+		return 0
+	})
 
 	// Check if consumer requests backchannel (any recvonly media)
 	// Normal media (video/audio receive): sendonly
