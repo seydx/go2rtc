@@ -3,7 +3,6 @@ module github.com/AlexxIT/go2rtc
 go 1.24.0
 
 require (
-	github.com/asticode/go-astits v1.14.0
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/expr-lang/expr v1.17.6
 	github.com/google/uuid v1.6.0
