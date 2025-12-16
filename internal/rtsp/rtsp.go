@@ -186,19 +186,37 @@ func tcpHandler(conn *rtsp.Conn) {
 				}
 			}
 
-			if query.Get("backchannel") == "1" {
+			// Handle backchannel query parameter:
+			// - ?backchannel or ?backchannel= → ANY codec (use camera's first available)
+			// - ?backchannel=1 → WebRTC-compatible defaults (OPUS, PCMU/8000, PCMA/8000)
+			// - ?backchannel=pcmu → any PCMU codec
+			// - ?backchannel=pcmu/8000 → specifically PCMU/8000
+			// - ?backchannel=opus/48000/2 → specifically OPUS/48000/2
+			if query.Has("backchannel") {
+				backchannel := query.Get("backchannel")
+				var codecs []*core.Codec
+
+				switch backchannel {
+				case "1":
+					// Legacy: WebRTC-compatible defaults (8000 Hz for telephony codecs)
+					codecs = []*core.Codec{
+						{Name: core.CodecOpus, ClockRate: 48000, Channels: 2},
+						{Name: core.CodecPCMU, ClockRate: 8000},
+						{Name: core.CodecPCMA, ClockRate: 8000},
+						{Name: core.CodecG722, ClockRate: 8000},
+					}
+				case "":
+					// Empty value: ANY codec (use camera's first available)
+					codecs = []*core.Codec{{Name: core.CodecAny}}
+				default:
+					// Specific codec: parse from query value
+					codecs = []*core.Codec{core.ParseQueryCodec(backchannel)}
+				}
+
 				conn.Medias = append(conn.Medias, &core.Media{
 					Kind:      core.KindAudio,
 					Direction: core.DirectionRecvonly,
-					Codecs: []*core.Codec{
-						{Name: core.CodecOpus, ClockRate: 48000, Channels: 2},
-						{Name: core.CodecPCM, ClockRate: 16000},
-						{Name: core.CodecPCMA, ClockRate: 16000},
-						{Name: core.CodecPCMU, ClockRate: 16000},
-						{Name: core.CodecPCM, ClockRate: 8000},
-						{Name: core.CodecPCMA, ClockRate: 8000},
-						{Name: core.CodecPCMU, ClockRate: 8000},
-					},
+					Codecs:    codecs,
 				})
 			}
 
