@@ -59,6 +59,10 @@ type Conn struct {
 	timestampOffset map[byte]uint32
 	seqOffset       map[byte]uint16
 	trackMu         sync.Mutex
+
+	// Track backchannel channels to allow codec sharing without reconnect
+	// Key: "kind:direction", Value: channel number
+	backchannelChannels map[string]byte
 }
 
 const (

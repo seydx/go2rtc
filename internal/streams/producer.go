@@ -21,6 +21,13 @@ const (
 	stateInternal
 )
 
+// backchannelTrack stores info about a backchannel track to enable codec sharing
+type backchannelTrack struct {
+	originalMedia *core.Media // Media with ALL supported codecs from producer
+	senderMedia   *core.Media // Media used by the protocol sender (for reuse check)
+	channel       byte        // Protocol channel (for RTSP interleaved)
+}
+
 type Producer struct {
 	core.Listener
 
@@ -33,6 +40,9 @@ type Producer struct {
 
 	// Mixers for backchannel - one per codec
 	mixers []*core.RTPMixer
+
+	// Track backchannel medias to share channels across codecs
+	backchannelTracks map[string]*backchannelTrack
 
 	state              state
 	mu                 sync.Mutex
@@ -234,7 +244,7 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 
 	// If mixing is enabled, use mixer for multiple backchannel consumers
 	if p.mixingEnabled {
-		// Check if we already have a mixer for this codec
+		// 1. Check if we already have a mixer for this exact codec
 		for _, mixer := range p.mixers {
 			if mixer.Codec.Match(codec) {
 				// Register this consumer receiver as a parent
@@ -245,30 +255,65 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 			}
 		}
 
-		// No mixer exists yet, create one
+		// 2. Check if we have an existing backchannel track that supports this codec
+		trackKey := media.Kind + ":" + media.Direction
+		if bt := p.backchannelTracks[trackKey]; bt != nil {
+			// Check if the original media supports this codec
+			if bt.originalMedia.MatchCodec(codec) != nil {
+				// Create new mixer for this codec
+				mixer := core.NewRTPMixer(ffmpegBin, media, codec)
+				mixer.AddParent(&track.Node)
+
+				// Create receiver and connect to underlying protocol using the SAME media
+				// The protocol will detect same media and reuse the channel
+				consumer := p.conn.(core.Consumer)
+				mixerReceiver := core.NewReceiver(bt.senderMedia, codec)
+				mixerReceiver.ParentNode = &mixer.Node
+				p.mu.Unlock()
+
+				// Call protocol's AddTrack - it should detect same media and reuse channel
+				if err := consumer.AddTrack(bt.senderMedia, codec, mixerReceiver); err != nil {
+					return err
+				}
+
+				p.mu.Lock()
+				p.mixers = append(p.mixers, mixer)
+				p.senders = append(p.senders, track)
+				p.mu.Unlock()
+				return nil
+			}
+		}
+
+		// 3. No existing track - create new mixer and set up backchannel track
 		mixer := core.NewRTPMixer(ffmpegBin, media, codec)
 		mixer.AddParent(&track.Node)
 
 		// Connect mixer to underlying protocol
-		// Get consumer reference and release lock BEFORE calling AddTrack
 		consumer := p.conn.(core.Consumer)
 		mixerReceiver := core.NewReceiver(media, codec)
 		mixerReceiver.ParentNode = &mixer.Node
 		p.mu.Unlock()
 
 		// Call underlying protocol's AddTrack WITHOUT holding the lock
-		// This prevents blocking API serialization during network operations
 		if err := consumer.AddTrack(media, codec, mixerReceiver); err != nil {
 			return err
 		}
 
-		// Reacquire lock to update state
+		// Reacquire lock to update state and store backchannel track info
 		p.mu.Lock()
 		p.mixers = append(p.mixers, mixer)
 		p.senders = append(p.senders, track)
+
+		// Store backchannel track info for future codec sharing
+		if p.backchannelTracks == nil {
+			p.backchannelTracks = make(map[string]*backchannelTrack)
+		}
+		p.backchannelTracks[trackKey] = &backchannelTrack{
+			originalMedia: media,
+			senderMedia:   media,
+		}
 	} else {
 		// Without mixing, directly pass track to underlying protocol
-		// Get consumer reference and release lock BEFORE calling AddTrack
 		consumer := p.conn.(core.Consumer)
 		p.mu.Unlock()
 
@@ -287,6 +332,24 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 	}
 
 	p.mu.Unlock()
+	return nil
+}
+
+// GetExistingBackchannelCodec returns the codec of an existing mixer for the given media kind/direction.
+// This allows new consumers with ANY codec to reuse existing mixers instead of creating new ones.
+func (p *Producer) GetExistingBackchannelCodec(media *core.Media) *core.Codec {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	trackKey := media.Kind + ":" + media.Direction
+	if bt := p.backchannelTracks[trackKey]; bt != nil {
+		// Return the first mixer's codec for this backchannel
+		for _, mixer := range p.mixers {
+			if mixer.Media.Kind == media.Kind {
+				return mixer.Codec
+			}
+		}
+	}
 	return nil
 }
 

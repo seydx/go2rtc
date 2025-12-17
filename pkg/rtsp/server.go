@@ -141,10 +141,24 @@ func (c *Conn) Accept() error {
 			}
 
 			for i, track := range c.Receivers {
+				kind := core.GetKind(track.Codec.Name)
+				// Backchannel (sendonly) is always audio, fallback if codec is unknown (e.g., ANY)
+				if kind == "" {
+					kind = core.KindAudio
+				}
+				// Use all codecs from track.Media if available, otherwise just the single codec
+				codecs := []*core.Codec{track.Codec}
+				if track.Media != nil && len(track.Media.Codecs) > 0 {
+					codecs = track.Media.Codecs
+					// Also update kind from media if it's still unknown
+					if kind == "" && track.Media.Kind != "" {
+						kind = track.Media.Kind
+					}
+				}
 				media := &core.Media{
-					Kind:      core.GetKind(track.Codec.Name),
+					Kind:      kind,
 					Direction: core.DirectionSendonly,
-					Codecs:    []*core.Codec{track.Codec},
+					Codecs:    codecs,
 					ID:        "trackID=" + strconv.Itoa(i+len(c.Senders)),
 				}
 				medias = append(medias, media)
