@@ -24,8 +24,6 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	consMedias := cons.GetMedias()
 
 	// Check if consumer requests backchannel (any recvonly media)
-	// Normal media (video/audio receive): sendonly
-	// Backchannel media (audio send back): recvonly
 	consumerRequestsBackchannel := false
 	for _, consMedia := range consMedias {
 		if consMedia.Direction == core.DirectionRecvonly {
@@ -34,128 +32,285 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 		}
 	}
 
-	for _, consMedia := range consMedias {
-		log.Trace().Msgf("[streams] check cons=%d media=%s", consN, consMedia)
+	// PHASE 1: Best-fit Producer Search
+	// Try to find a single producer that can satisfy ALL consumer medias.
+	// This avoids splitting video/audio across different producers.
 
-	producers:
-		for prodN, prod := range s.producers {
-			// check for loop request, ex. `camera1: ffmpeg:camera1`
-			if info, ok := cons.(core.Info); ok && prod.url == info.GetSource() {
-				log.Trace().Msgf("[streams] skip cons=%d prod=%d", consN, prodN)
-				continue
-			}
+	var bestFitProd *Producer
+	var bestFitProdN int = -1
 
-			if prodErrors[prodN] != nil {
-				log.Trace().Msgf("[streams] skip cons=%d prod=%d", consN, prodN)
-				continue
-			}
+	for prodN, prod := range s.producers {
+		// Skip-checks
+		if info, ok := cons.(core.Info); ok && prod.url == info.GetSource() {
+			log.Trace().Msgf("[streams] bestfit skip cons=%d prod=%d (loop)", consN, prodN)
+			continue
+		}
 
-			// Check #requirePrevAudio - skip if previous producers don't have audio
-			if prod.requirePrevAudio && !prevHasAudio && prodN > 0 {
-				log.Trace().Msgf("[streams] skip cons=%d prod=%d (requires previous audio but none available)", consN, prodN)
-				continue
-			}
+		if prodErrors[prodN] != nil {
+			continue
+		}
 
-			// Check #requirePrevVideo - skip if previous producers don't have video
-			if prod.requirePrevVideo && !prevHasVideo && prodN > 0 {
-				log.Trace().Msgf("[streams] skip cons=%d prod=%d (requires previous video but none available)", consN, prodN)
-				continue
-			}
+		// Check #requirePrevAudio/#requirePrevVideo - these producers can't be best-fit
+		// because they depend on previous producers
+		if prod.requirePrevAudio && prodN > 0 {
+			continue
+		}
+		if prod.requirePrevVideo && prodN > 0 {
+			continue
+		}
 
-			// Skip producers with backchannel disabled when consumer requests backchannel
-			// Only skip completely if no explicit video/audio flags are set
-			if consumerRequestsBackchannel && !prod.backchannelEnabled && !prod.videoExplicitlySet && !prod.audioExplicitlySet {
-				log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests backchannel, producer has #noBackchannel)", consN, prodN)
-				continue
-			}
+		// Skip producers with backchannel disabled when consumer requests backchannel
+		if consumerRequestsBackchannel && !prod.backchannelEnabled && !prod.videoExplicitlySet && !prod.audioExplicitlySet {
+			continue
+		}
 
-			// Skip producers with video disabled when consumer requests normal video
-			if consMedia.Direction == core.DirectionSendonly && consMedia.Kind == core.KindVideo && !prod.videoEnabled {
-				log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests video, producer has #noVideo)", consN, prodN)
-				continue
-			}
+		// Dial the producer to get its medias
+		if err = prod.Dial(); err != nil {
+			log.Trace().Err(err).Msgf("[streams] bestfit dial cons=%d prod=%d", consN, prodN)
+			prodErrors[prodN] = err
+			continue
+		}
 
-			// Skip producers with audio disabled when consumer requests normal audio
-			if consMedia.Direction == core.DirectionSendonly && consMedia.Kind == core.KindAudio && !prod.audioEnabled {
-				log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests audio, producer has #noAudio)", consN, prodN)
-				continue
-			}
+		// Check if this producer can satisfy ALL consumer medias
+		if canProducerSatisfyAll(prod, consMedias) {
+			bestFitProd = prod
+			bestFitProdN = prodN
+			log.Trace().Msgf("[streams] bestfit found cons=%d prod=%d", consN, prodN)
+			break // Use first best-fit producer
+		}
+	}
 
-			// Skip producers with backchannel disabled when consumer requests backchannel for this specific media
-			if consMedia.Direction == core.DirectionRecvonly && !prod.backchannelEnabled {
-				log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests backchannel for this media, producer has #noBackchannel)", consN, prodN)
-				continue
-			}
+	// PHASE 2: Track Matching
+	// If best-fit found: use only that producer for all tracks
+	// If not: fall back to track-by-track matching across producers
 
-			if err = prod.Dial(); err != nil {
-				log.Trace().Err(err).Msgf("[streams] dial cons=%d prod=%d", consN, prodN)
-				prodErrors[prodN] = err
-				continue
-			}
+	if bestFitProd != nil {
+		// Best-fit mode: Get ALL tracks from this single producer
+		log.Trace().Msgf("[streams] using bestfit prod=%d for all tracks", bestFitProdN)
 
-			// Step 2. Get producer medias (not tracks yet)
-			for _, prodMedia := range prod.GetMedias() {
-				log.Trace().Msgf("[streams] check cons=%d prod=%d media=%s", consN, prodN, prodMedia)
-				prodMedias = append(prodMedias, prodMedia)
+		for _, prodMedia := range bestFitProd.GetMedias() {
+			prodMedias = append(prodMedias, prodMedia)
 
-				if prodMedia.Direction == core.DirectionRecvonly {
-					if prodMedia.Kind == core.KindAudio {
-						prevHasAudio = true
-					} else if prodMedia.Kind == core.KindVideo {
-						prevHasVideo = true
-					}
+			if prodMedia.Direction == core.DirectionRecvonly {
+				if prodMedia.Kind == core.KindAudio {
+					prevHasAudio = true
+				} else if prodMedia.Kind == core.KindVideo {
+					prevHasVideo = true
 				}
+			}
+		}
 
-				// Step 3. Match consumer/producer codecs list
+		for _, consMedia := range consMedias {
+			// Find matching prodMedia from best-fit producer
+			for _, prodMedia := range bestFitProd.GetMedias() {
 				prodCodec, consCodec := prodMedia.MatchMedia(consMedia)
 				if prodCodec == nil {
-					continue
+					// For backchannel with mixing support, allow codec mismatch
+					// The mixer will handle transcoding
+					// Note: prodMedia.Direction=sendonly means producer sends TO camera (backchannel)
+					//       consMedia.Direction=recvonly means consumer receives FROM client (backchannel)
+					if prodMedia.Direction == core.DirectionSendonly &&
+						consMedia.Direction == core.DirectionRecvonly &&
+						prodMedia.Kind == consMedia.Kind &&
+						bestFitProd.mixingEnabled {
+						if len(prodMedia.Codecs) > 0 && len(consMedia.Codecs) > 0 {
+							prodCodec = prodMedia.Codecs[0]
+							consCodec = consMedia.Codecs[0]
+							log.Trace().Msgf("[streams] bestfit backchannel codec mismatch, mixer will transcode %s -> %s", consCodec.Name, prodCodec.Name)
+						} else {
+							continue
+						}
+					} else {
+						continue
+					}
 				}
 
 				var track *core.Receiver
 
 				switch prodMedia.Direction {
 				case core.DirectionRecvonly:
-					log.Trace().Msgf("[streams] match cons=%d <= prod=%d", consN, prodN)
+					log.Trace().Msgf("[streams] bestfit match cons=%d <= prod=%d", consN, bestFitProdN)
 
-					// Step 4. Get recvonly track from producer
-					if track, err = prod.GetTrack(prodMedia, prodCodec); err != nil {
+					if track, err = bestFitProd.GetTrack(prodMedia, prodCodec); err != nil {
 						log.Info().Err(err).Msg("[streams] can't get track")
-						prodErrors[prodN] = err
+						prodErrors[bestFitProdN] = err
 						continue
 					}
-					// Step 5. Add track to consumer
 					if err = cons.AddTrack(consMedia, consCodec, track); err != nil {
 						log.Info().Err(err).Msg("[streams] can't add track")
 						continue
 					}
 
 				case core.DirectionSendonly:
-					// Skip producers with backchannel explicitly disabled
-					if !prod.backchannelEnabled {
-						log.Trace().Msgf("[streams] skip cons=%d => prod=%d (backchannel disabled)", consN, prodN)
+					if !bestFitProd.backchannelEnabled {
 						continue
 					}
 
-					log.Trace().Msgf("[streams] match cons=%d => prod=%d", consN, prodN)
+					log.Trace().Msgf("[streams] bestfit match cons=%d => prod=%d", consN, bestFitProdN)
 
-					// Step 4. Get recvonly track from consumer (backchannel)
 					if track, err = cons.(core.Producer).GetTrack(consMedia, consCodec); err != nil {
 						log.Info().Err(err).Msg("[streams] can't get track")
 						continue
 					}
-					// Step 5. Add track to producer
-					if err = prod.AddTrack(prodMedia, prodCodec, track); err != nil {
+					if err = bestFitProd.AddTrack(prodMedia, prodCodec, track); err != nil {
 						log.Info().Err(err).Msg("[streams] can't add track")
-						prodErrors[prodN] = err
+						prodErrors[bestFitProdN] = err
 						continue
 					}
 				}
 
-				prodStarts = append(prodStarts, prod)
+				prodStarts = append(prodStarts, bestFitProd)
 
 				if !consMedia.MatchAll() {
-					break producers
+					break // Next consMedia
+				}
+			}
+		}
+	} else {
+		// Fallback mode: Track-by-track matching across all producers
+		log.Trace().Msgf("[streams] no bestfit, using track-by-track matching")
+
+		for _, consMedia := range consMedias {
+			log.Trace().Msgf("[streams] check cons=%d media=%s", consN, consMedia)
+
+		producers:
+			for prodN, prod := range s.producers {
+				// check for loop request, ex. `camera1: ffmpeg:camera1`
+				if info, ok := cons.(core.Info); ok && prod.url == info.GetSource() {
+					log.Trace().Msgf("[streams] skip cons=%d prod=%d", consN, prodN)
+					continue
+				}
+
+				if prodErrors[prodN] != nil {
+					log.Trace().Msgf("[streams] skip cons=%d prod=%d", consN, prodN)
+					continue
+				}
+
+				// Check #requirePrevAudio - skip if previous producers don't have audio
+				if prod.requirePrevAudio && !prevHasAudio && prodN > 0 {
+					log.Trace().Msgf("[streams] skip cons=%d prod=%d (requires previous audio but none available)", consN, prodN)
+					continue
+				}
+
+				// Check #requirePrevVideo - skip if previous producers don't have video
+				if prod.requirePrevVideo && !prevHasVideo && prodN > 0 {
+					log.Trace().Msgf("[streams] skip cons=%d prod=%d (requires previous video but none available)", consN, prodN)
+					continue
+				}
+
+				// Skip producers with backchannel disabled when consumer requests backchannel
+				if consumerRequestsBackchannel && !prod.backchannelEnabled && !prod.videoExplicitlySet && !prod.audioExplicitlySet {
+					log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests backchannel, producer has #noBackchannel)", consN, prodN)
+					continue
+				}
+
+				// Skip producers with video disabled when consumer requests normal video
+				if consMedia.Direction == core.DirectionSendonly && consMedia.Kind == core.KindVideo && !prod.videoEnabled {
+					log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests video, producer has #noVideo)", consN, prodN)
+					continue
+				}
+
+				// Skip producers with audio disabled when consumer requests normal audio
+				if consMedia.Direction == core.DirectionSendonly && consMedia.Kind == core.KindAudio && !prod.audioEnabled {
+					log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests audio, producer has #noAudio)", consN, prodN)
+					continue
+				}
+
+				// Skip producers with backchannel disabled when consumer requests backchannel for this specific media
+				if consMedia.Direction == core.DirectionRecvonly && !prod.backchannelEnabled {
+					log.Trace().Msgf("[streams] skip cons=%d prod=%d (consumer requests backchannel for this media, producer has #noBackchannel)", consN, prodN)
+					continue
+				}
+
+				if err = prod.Dial(); err != nil {
+					log.Trace().Err(err).Msgf("[streams] dial cons=%d prod=%d", consN, prodN)
+					prodErrors[prodN] = err
+					continue
+				}
+
+				// Step 2. Get producer medias (not tracks yet)
+				for _, prodMedia := range prod.GetMedias() {
+					log.Trace().Msgf("[streams] check cons=%d prod=%d media=%s", consN, prodN, prodMedia)
+					prodMedias = append(prodMedias, prodMedia)
+
+					if prodMedia.Direction == core.DirectionRecvonly {
+						switch prodMedia.Kind {
+						case core.KindAudio:
+							prevHasAudio = true
+						case core.KindVideo:
+							prevHasVideo = true
+						}
+					}
+
+					// Step 3. Match consumer/producer codecs list
+					prodCodec, consCodec := prodMedia.MatchMedia(consMedia)
+					if prodCodec == nil {
+						// For backchannel with mixing support, allow codec mismatch
+						// The mixer will handle transcoding (e.g., OPUS from consumer -> PCMA to camera)
+						// Note: prodMedia.Direction=sendonly means producer sends TO camera (backchannel)
+						//       consMedia.Direction=recvonly means consumer receives FROM client (backchannel)
+						if prodMedia.Direction == core.DirectionSendonly &&
+							consMedia.Direction == core.DirectionRecvonly &&
+							prodMedia.Kind == consMedia.Kind &&
+							prod.mixingEnabled {
+							// Use producer's codec as output target, consumer's codec as input
+							if len(prodMedia.Codecs) > 0 && len(consMedia.Codecs) > 0 {
+								prodCodec = prodMedia.Codecs[0]
+								consCodec = consMedia.Codecs[0]
+								log.Trace().Msgf("[streams] backchannel codec mismatch, mixer will transcode %s -> %s", consCodec.Name, prodCodec.Name)
+							} else {
+								continue
+							}
+						} else {
+							continue
+						}
+					}
+
+					var track *core.Receiver
+
+					switch prodMedia.Direction {
+					case core.DirectionRecvonly:
+						log.Trace().Msgf("[streams] match cons=%d <= prod=%d", consN, prodN)
+
+						// Step 4. Get recvonly track from producer
+						if track, err = prod.GetTrack(prodMedia, prodCodec); err != nil {
+							log.Info().Err(err).Msg("[streams] can't get track")
+							prodErrors[prodN] = err
+							continue
+						}
+						// Step 5. Add track to consumer
+						if err = cons.AddTrack(consMedia, consCodec, track); err != nil {
+							log.Info().Err(err).Msg("[streams] can't add track")
+							continue
+						}
+
+					case core.DirectionSendonly:
+						// Skip producers with backchannel explicitly disabled
+						if !prod.backchannelEnabled {
+							log.Trace().Msgf("[streams] skip cons=%d => prod=%d (backchannel disabled)", consN, prodN)
+							continue
+						}
+
+						log.Trace().Msgf("[streams] match cons=%d => prod=%d", consN, prodN)
+
+						// Step 4. Get recvonly track from consumer (backchannel)
+						if track, err = cons.(core.Producer).GetTrack(consMedia, consCodec); err != nil {
+							log.Info().Err(err).Msg("[streams] can't get track")
+							continue
+						}
+						// Step 5. Add track to producer
+						if err = prod.AddTrack(prodMedia, prodCodec, track); err != nil {
+							log.Info().Err(err).Msg("[streams] can't add track")
+							prodErrors[prodN] = err
+							continue
+						}
+					}
+
+					prodStarts = append(prodStarts, prod)
+
+					if !consMedia.MatchAll() {
+						break producers
+					}
 				}
 			}
 		}
@@ -185,9 +340,58 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	return nil
 }
 
+// canProducerSatisfyAll checks if a single producer can satisfy ALL consumer medias.
+// This is used for best-fit producer matching to avoid splitting tracks across producers.
+func canProducerSatisfyAll(prod *Producer, consMedias []*core.Media) bool {
+	prodMedias := prod.GetMedias()
+
+	for _, consMedia := range consMedias {
+		found := false
+
+		// Check if any prodMedia can satisfy this consMedia
+		for _, prodMedia := range prodMedias {
+			// Check producer flags for this specific media type
+			if consMedia.Direction == core.DirectionSendonly {
+				if consMedia.Kind == core.KindVideo && !prod.videoEnabled {
+					continue
+				}
+				if consMedia.Kind == core.KindAudio && !prod.audioEnabled {
+					continue
+				}
+			}
+			if consMedia.Direction == core.DirectionRecvonly && !prod.backchannelEnabled {
+				continue
+			}
+
+			prodCodec, _ := prodMedia.MatchMedia(consMedia)
+			if prodCodec != nil {
+				found = true
+				break
+			}
+
+			// For backchannel with mixing support, allow codec mismatch
+			// The mixer will handle transcoding
+			// Note: prodMedia.Direction=sendonly means producer sends TO camera (backchannel)
+			//       consMedia.Direction=recvonly means consumer receives FROM client (backchannel)
+			if prodMedia.Direction == core.DirectionSendonly &&
+				consMedia.Direction == core.DirectionRecvonly &&
+				prodMedia.Kind == consMedia.Kind &&
+				prod.mixingEnabled {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (s *Stream) checkAndStartPrebuffer(cons core.Consumer) {
 	// Use reflection to check if consumer has UsePrebuffer field
-	// This works for all consumer types: WebRTC, RTSP, HLS, MP4, MSE, etc.
 	var usePrebuffer bool
 
 	consValue := reflect.ValueOf(cons)
