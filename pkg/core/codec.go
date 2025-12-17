@@ -124,6 +124,12 @@ func (c *Codec) Clone() *Codec {
 }
 
 func (c *Codec) Match(remote *Codec) bool {
+	// Check if either side is a wildcard (ANY matches everything)
+	switch c.Name {
+	case CodecAll, CodecAny:
+		return true
+	}
+
 	switch remote.Name {
 	case CodecAll, CodecAny:
 		return true

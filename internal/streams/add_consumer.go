@@ -153,12 +153,42 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 					log.Trace().Msgf("[streams] match cons=%d => prod=%d", consN, prodN)
 
+					// For backchannel: if consumer uses ANY codec, prefer existing mixer codec
+					// This avoids creating multiple mixers for the same backchannel
+					trackMedia := consMedia
+					trackCodec := consCodec
+					for _, c := range consMedia.Codecs {
+						if c.Name == core.CodecAny || c.Name == core.CodecAll {
+							// Check if producer already has a mixer for this backchannel
+							if existingCodec := prod.GetExistingBackchannelCodec(prodMedia); existingCodec != nil {
+								// Reuse existing mixer's codec
+								trackMedia = &core.Media{
+									Kind:      prodMedia.Kind,
+									Direction: consMedia.Direction,
+									Codecs:    []*core.Codec{existingCodec},
+								}
+								trackCodec = existingCodec
+								prodCodec = existingCodec // Use existing codec for AddTrack too
+								log.Trace().Msgf("[streams] reusing existing backchannel codec: %s", existingCodec.Name)
+							} else {
+								// No existing mixer - use producer's media with all codecs
+								trackMedia = &core.Media{
+									Kind:      prodMedia.Kind,
+									Direction: consMedia.Direction,
+									Codecs:    prodMedia.Codecs,
+								}
+								trackCodec = prodMedia.Codecs[0]
+							}
+							break
+						}
+					}
+
 					// Get recvonly track from consumer (backchannel)
-					if track, err = cons.(core.Producer).GetTrack(consMedia, consCodec); err != nil {
+					if track, err = cons.(core.Producer).GetTrack(trackMedia, trackCodec); err != nil {
 						log.Info().Err(err).Msg("[streams] can't get track")
 						continue
 					}
-					// Add track to producer
+					// Add track to producer - it will handle channel sharing internally
 					if err = prod.AddTrack(prodMedia, prodCodec, track); err != nil {
 						log.Info().Err(err).Msg("[streams] can't add track")
 						prodErrors[prodN] = err
