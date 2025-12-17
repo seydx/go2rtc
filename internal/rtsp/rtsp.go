@@ -186,34 +186,12 @@ func tcpHandler(conn *rtsp.Conn) {
 				}
 			}
 
-			// Handle backchannel query parameter:
-			// - ?backchannel or ?backchannel= → ANY codec (use camera's first available)
-			// - ?backchannel=1 → WebRTC-compatible defaults (OPUS, PCMU/8000, PCMA/8000)
-			// - ?backchannel=pcmu → any PCMU codec
-			// - ?backchannel=pcmu/8000 → specifically PCMU/8000
-			// - ?backchannel=opus/48000/2 → specifically OPUS/48000/2
-			// - ?backchannel=pcmu/8000,pcma/8000,opus → multiple codecs (preference order)
 			if query.Has("backchannel") {
 				backchannel := query.Get("backchannel")
 				var codecs []*core.Codec
 
-				switch backchannel {
-				case "1":
-					// Legacy: WebRTC-compatible defaults (8000 Hz for telephony codecs)
-					codecs = []*core.Codec{
-						{Name: core.CodecOpus, ClockRate: 48000, Channels: 2},
-						{Name: core.CodecPCMU, ClockRate: 8000},
-						{Name: core.CodecPCMA, ClockRate: 8000},
-						{Name: core.CodecG722, ClockRate: 8000},
-					}
-				case "":
-					// Empty value: ANY codec (use camera's first available)
-					codecs = []*core.Codec{{Name: core.CodecAny}}
-				default:
-					// Parse codec(s) from query value - supports comma-separated list
-					for _, codecStr := range strings.Split(backchannel, ",") {
-						codecs = append(codecs, core.ParseQueryCodec(codecStr))
-					}
+				for _, codecStr := range strings.Split(backchannel, ",") {
+					codecs = append(codecs, core.ParseQueryCodec(codecStr))
 				}
 
 				conn.Medias = append(conn.Medias, &core.Media{

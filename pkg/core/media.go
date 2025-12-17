@@ -58,13 +58,6 @@ func (m *Media) MatchMedia(remote *Media) (codec, remoteCodec *Codec) {
 	for _, codec = range m.Codecs {
 		for _, remoteCodec = range remote.Codecs {
 			if codec.Match(remoteCodec) {
-				// If one codec is ANY/ALL, use the concrete codec for both
-				// This ensures mixers and tracks are created with actual codecs
-				if codec.Name == CodecAll || codec.Name == CodecAny {
-					codec = remoteCodec
-				} else if remoteCodec.Name == CodecAll || remoteCodec.Name == CodecAny {
-					remoteCodec = codec
-				}
 				return
 			}
 		}
@@ -130,62 +123,24 @@ func MarshalSDP(name string, medias []*Media) ([]byte, error) {
 			continue
 		}
 
+		codec := media.Codecs[0]
+
+		switch codec.Name {
+		case CodecELD:
+			name = CodecAAC
+		case CodecPCML:
+			name = CodecPCM // beacuse we using pcm.LittleToBig for RTSP server
+		default:
+			name = codec.Name
+		}
+
 		md := &sdp.MediaDescription{
 			MediaName: sdp.MediaName{
 				Media:  media.Kind,
 				Protos: []string{"RTP", "AVP"},
 			},
 		}
-
-		// Track used payload types within this media to assign unique dynamic types
-		usedPT := make(map[byte]bool)
-		nextDynamicPT := byte(96) // Dynamic payload types start at 96
-
-		// Add all codecs to the media description
-		for _, codec := range media.Codecs {
-			codecName := codec.Name
-			switch codec.Name {
-			case CodecELD:
-				codecName = CodecAAC
-			case CodecPCML:
-				codecName = CodecPCM // because we using pcm.LittleToBig for RTSP server
-			}
-
-			// Determine the payload type to use
-			pt := codec.PayloadType
-
-			// Check if this is a well-known static payload type
-			isStaticPT := false
-			switch codec.Name {
-			case CodecPCMU:
-				if codec.ClockRate == 8000 {
-					pt = 0
-					isStaticPT = true
-				}
-			case CodecPCMA:
-				if codec.ClockRate == 8000 {
-					pt = 8
-					isStaticPT = true
-				}
-			case CodecG722:
-				if codec.ClockRate == 8000 {
-					pt = 9
-					isStaticPT = true
-				}
-			}
-
-			// If not a static PT and either PT is 0 (unset) or already used, assign a new dynamic PT
-			if !isStaticPT && (pt == 0 || usedPT[pt]) {
-				for usedPT[nextDynamicPT] {
-					nextDynamicPT++
-				}
-				pt = nextDynamicPT
-				nextDynamicPT++
-			}
-
-			usedPT[pt] = true
-			md.WithCodec(pt, codecName, codec.ClockRate, uint16(codec.Channels), codec.FmtpLine)
-		}
+		md.WithCodec(codec.PayloadType, name, codec.ClockRate, uint16(codec.Channels), codec.FmtpLine)
 
 		if media.Direction != "" {
 			md.WithPropertyAttribute(media.Direction)

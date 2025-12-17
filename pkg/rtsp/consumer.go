@@ -19,47 +19,23 @@ func (c *Conn) GetMedias() []*core.Media {
 
 func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) (err error) {
 	var channel byte
-	var reuseChannel bool
 
 	switch c.mode {
 	case core.ModeActiveProducer: // backchannel
 		c.stateMu.Lock()
 		defer c.stateMu.Unlock()
 
-		// Check if we already have a channel for the same backchannel media
-		// If yes, reuse the channel to avoid reconnect
-		trackKey := media.Kind + ":" + media.Direction
-		if c.backchannelChannels != nil {
-			if existingChannel, ok := c.backchannelChannels[trackKey]; ok {
-				// Check if the media supports this codec
-				if media.MatchCodec(codec) != nil {
-					// Reuse existing channel - no reconnect needed!
-					channel = existingChannel
-					reuseChannel = true
-				}
-			}
-		}
-
-		if !reuseChannel {
-			// No existing channel for this media - need setup
-			if c.state == StatePlay {
-				if err = c.Reconnect(); err != nil {
-					return
-				}
-			}
-
-			if channel, err = c.SetupMedia(media); err != nil {
+		if c.state == StatePlay {
+			if err = c.Reconnect(); err != nil {
 				return
 			}
-
-			// Store the channel for future reuse
-			if c.backchannelChannels == nil {
-				c.backchannelChannels = make(map[string]byte)
-			}
-			c.backchannelChannels[trackKey] = channel
-
-			c.state = StateSetup
 		}
+
+		if channel, err = c.SetupMedia(media); err != nil {
+			return
+		}
+
+		c.state = StateSetup
 
 	case core.ModePassiveConsumer:
 		channel = byte(len(c.Senders)) * 2
