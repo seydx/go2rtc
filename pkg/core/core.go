@@ -35,6 +35,10 @@ const (
 	CodecELD  = "ELD" // AAC-ELD
 	CodecFLAC = "FLAC"
 
+	// G726 ADPCM variants (G726-16, G726-24, G726-32, G726-40)
+	// The number indicates bitrate in kbit/s
+	CodecG726 = "G726"
+
 	CodecAll = "ALL"
 	CodecAny = "ANY"
 )

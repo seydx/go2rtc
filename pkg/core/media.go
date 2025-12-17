@@ -98,6 +98,12 @@ func GetKind(name string) string {
 	case CodecPCMU, CodecPCMA, CodecAAC, CodecOpus, CodecG722, CodecMP3, CodecPCM, CodecPCML, CodecELD, CodecFLAC:
 		return KindAudio
 	}
+
+	// G726 variants: G726-16, G726-24, G726-32, G726-40
+	if strings.HasPrefix(name, CodecG726) {
+		return KindAudio
+	}
+
 	return ""
 }
 
@@ -171,7 +177,13 @@ func UnmarshalMedia(md *sdp.MediaDescription) *Media {
 	}
 
 	for _, format := range md.MediaName.Formats {
-		m.Codecs = append(m.Codecs, UnmarshalCodec(md, format))
+		codec := UnmarshalCodec(md, format)
+		// Filter out G726 variants with non-8kHz sample rate for sendonly (backchannel)
+		if m.Direction == DirectionSendonly &&
+			strings.HasPrefix(codec.Name, CodecG726) && codec.ClockRate != 8000 {
+			continue
+		}
+		m.Codecs = append(m.Codecs, codec)
 	}
 
 	return m
@@ -220,6 +232,76 @@ func ParseQueryCodec(s string) *Codec {
 	}
 
 	codec := &Codec{Name: baseName}
+
+	// Set defaults for known codecs if not specified in query
+	if len(parts) < 2 {
+		switch baseName {
+		// Audio codecs with static payload types
+		case CodecPCMU:
+			codec.ClockRate = 8000
+			codec.PayloadType = 0
+		case CodecPCMA:
+			codec.ClockRate = 8000
+			codec.PayloadType = 8
+		case CodecG722:
+			codec.ClockRate = 8000 // Note: actual sample rate is 16kHz but RTP uses 8000
+			codec.PayloadType = 9
+		case CodecMP3:
+			codec.ClockRate = 90000
+			codec.PayloadType = 14
+		// Audio codecs with dynamic payload types
+		case CodecOpus:
+			codec.ClockRate = 48000
+			codec.Channels = 2
+			codec.PayloadType = 111
+		case CodecAAC:
+			codec.ClockRate = 44100
+			codec.Channels = 2
+			codec.PayloadType = 96
+		case CodecELD:
+			codec.ClockRate = 44100
+			codec.Channels = 2
+			codec.PayloadType = 96
+		case CodecPCM: // L16 big endian
+			codec.ClockRate = 44100
+			codec.Channels = 2
+			codec.PayloadType = 97
+		case CodecPCML: // L16 little endian
+			codec.ClockRate = 44100
+			codec.Channels = 2
+			codec.PayloadType = 97
+		case CodecFLAC:
+			codec.ClockRate = 44100
+			codec.Channels = 2
+			codec.PayloadType = 98
+		// Video codecs with static payload types
+		case CodecJPEG:
+			codec.ClockRate = 90000
+			codec.PayloadType = 26
+		// Video codecs with dynamic payload types
+		case CodecH264:
+			codec.ClockRate = 90000
+			codec.PayloadType = 96
+		case CodecH265:
+			codec.ClockRate = 90000
+			codec.PayloadType = 96
+		case CodecVP8:
+			codec.ClockRate = 90000
+			codec.PayloadType = 96
+		case CodecVP9:
+			codec.ClockRate = 90000
+			codec.PayloadType = 96
+		case CodecAV1:
+			codec.ClockRate = 90000
+			codec.PayloadType = 96
+		default:
+			// G726 variants: G726, G726-16, G726-24, G726-32, G726-40
+			if strings.HasPrefix(baseName, CodecG726) {
+				codec.ClockRate = 8000
+				codec.PayloadType = 96
+			}
+		}
+	}
 
 	if len(parts) >= 2 {
 		codec.ClockRate = uint32(Atoi(parts[1]))

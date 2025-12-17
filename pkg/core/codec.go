@@ -76,6 +76,12 @@ func FFmpegCodecName(name string) string {
 	case CodecMP3:
 		return "mp3"
 	}
+
+	// G726 variants: G726-16, G726-24, G726-32, G726-40
+	if strings.HasPrefix(name, CodecG726) {
+		return "g726"
+	}
+
 	return name
 }
 
@@ -254,7 +260,9 @@ func ParseCodecString(s string) *Codec {
 	var codec Codec
 
 	ss := strings.Split(s, "/")
-	switch strings.ToLower(ss[0]) {
+	name := strings.ToLower(ss[0])
+
+	switch name {
 	case "pcm_s16be", "s16be", "pcm":
 		codec.Name = CodecPCM
 	case "pcm_s16le", "s16le", "pcml":
@@ -269,15 +277,22 @@ func ParseCodecString(s string) *Codec {
 		codec.Name = CodecOpus
 	case "flac":
 		codec.Name = CodecFLAC
+	case "g722":
+		codec.Name = CodecG722
 	default:
-		return nil
+		// G726 variants: g726, g726-16, g726-24, g726-32, g726-40
+		if strings.HasPrefix(name, "g726") {
+			codec.Name = strings.ToUpper(name) // Keep variant suffix (G726-40)
+		} else {
+			return nil
+		}
 	}
 
 	if len(ss) >= 2 {
 		codec.ClockRate = uint32(Atoi(ss[1]))
 	}
 	if len(ss) >= 3 {
-		codec.Channels = uint8(Atoi(ss[1]))
+		codec.Channels = uint8(Atoi(ss[2]))
 	}
 
 	return &codec

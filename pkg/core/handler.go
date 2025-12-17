@@ -234,6 +234,12 @@ func RegisterCodecHandler(codecName string, factory func(*Codec) CodecHandler) {
 func CreateCodecHandler(codec *Codec) CodecHandler {
 	managerMutex.RLock()
 	factory, exists := codecHandlerFactories[codec.Name]
+
+	// Fallback for G726 variants (G726-16, G726-24, G726-32, G726-40)
+	if !exists && len(codec.Name) > 4 && codec.Name[:4] == "G726" {
+		factory, exists = codecHandlerFactories[CodecG726]
+	}
+
 	managerMutex.RUnlock()
 
 	if !exists {
