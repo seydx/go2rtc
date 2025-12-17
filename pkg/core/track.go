@@ -276,10 +276,12 @@ func (s *Sender) Start() {
 
 	// Get codecHandler for GOP cache (only needed for video)
 	var codecHandler CodecHandler
-	if receiver, ok := s.parent.owner.(*Receiver); ok {
-		if receiver.codecHandler != nil {
-			codecHandler = receiver.codecHandler
-			// fmt.Printf("[SENDER] Sender %d using codec handler from Receiver %d\n", s.id, receiver.id)
+	if s.parent != nil {
+		if receiver, ok := s.parent.owner.(*Receiver); ok {
+			if receiver.codecHandler != nil {
+				codecHandler = receiver.codecHandler
+				// fmt.Printf("[SENDER] Sender %d using codec handler from Receiver %d\n", s.id, receiver.id)
+			}
 		}
 	}
 
