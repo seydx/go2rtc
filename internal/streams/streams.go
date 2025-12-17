@@ -16,9 +16,9 @@ var ffmpegBin string
 
 func Init() {
 	var cfg struct {
-		Streams map[string]any  `yaml:"streams"`
-		Publish map[string]any  `yaml:"publish"`
-		Preload yaml.OrderedMap `yaml:"preload"`
+		Streams map[string]any    `yaml:"streams"`
+		Publish map[string]any    `yaml:"publish"`
+		Preload yaml.OrderedMap   `yaml:"preload"`
 		FFmpeg  map[string]string `yaml:"ffmpeg"`
 	}
 
