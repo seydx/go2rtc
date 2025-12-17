@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,10 +33,11 @@ type RTPMixer struct {
 	Node
 
 	Media *Media
-	Codec *Codec
+	Codec *Codec // Output codec (determined by first parent)
 
-	parents     []*Node
-	parentPorts map[uint32]int // Map parent ID to its FFmpeg port
+	parents      []*Node
+	parentCodecs map[uint32]*Codec // Input codec per parent (for transcoding)
+	parentPorts  map[uint32]int    // Map parent ID to its FFmpeg port
 
 	// Per-parent RTP state for FFmpeg communication (each parent needs independent seq/ts)
 	parentSequencer map[uint32]rtp.Sequencer
@@ -69,6 +71,7 @@ func NewRTPMixer(ffmpegBinary string, media *Media, codec *Codec) *RTPMixer {
 		Node:            Node{id: NewID(), Codec: codec},
 		Media:           media,
 		Codec:           codec,
+		parentCodecs:    make(map[uint32]*Codec),
 		parentPorts:     make(map[uint32]int),
 		parentSequencer: make(map[uint32]rtp.Sequencer),
 		parentTimestamp: make(map[uint32]uint32),
@@ -84,10 +87,11 @@ func NewRTPMixer(ffmpegBinary string, media *Media, codec *Codec) *RTPMixer {
 	return m
 }
 
-func (m *RTPMixer) AddParent(parent *Node) {
+func (m *RTPMixer) AddParentWithCodec(parent *Node, codec *Codec) {
 	m.mu.Lock()
 	oldCount := len(m.parents)
 	m.parents = append(m.parents, parent)
+	m.parentCodecs[parent.id] = codec
 	newCount := len(m.parents)
 	m.mu.Unlock()
 
@@ -123,6 +127,7 @@ func (m *RTPMixer) RemoveParent(parent *Node) {
 
 	// Clear parent state
 	delete(m.parentPorts, parent.id)
+	delete(m.parentCodecs, parent.id)
 	delete(m.parentSequencer, parent.id)
 	delete(m.parentTimestamp, parent.id)
 	delete(m.parentBytes, parent.id)
@@ -280,6 +285,8 @@ func (m *RTPMixer) startFFmpeg() error {
 		return fmt.Errorf("failed to generate SDP: %w", err)
 	}
 
+	// log.Printf("[mixer] id=%d SDP:\n%s", m.id, string(sdpContent))
+
 	udpServer, err := udp.NewUDPServer()
 	if err != nil {
 		return fmt.Errorf("failed to create UDP server: %w", err)
@@ -291,11 +298,19 @@ func (m *RTPMixer) startFFmpeg() error {
 	m.mu.Unlock()
 
 	outputCodec := FFmpegCodecName(m.Codec.Name)
+	var audioBitrate string
 	switch m.Codec.Name {
 	case CodecELD:
 		outputCodec = "libfdk_aac"
 	case CodecG722:
 		outputCodec = "pcm_s16le"
+	default:
+		// G726 variants: G726-16, G726-24, G726-32, G726-40
+		// Extract bitrate from codec name (e.g., "G726-40" → "40k")
+		if strings.HasPrefix(m.Codec.Name, CodecG726+"-") {
+			bitrate := strings.TrimPrefix(m.Codec.Name, CodecG726+"-")
+			audioBitrate = bitrate + "k"
+		}
 	}
 
 	sampleRate := m.Codec.ClockRate
@@ -311,15 +326,47 @@ func (m *RTPMixer) startFFmpeg() error {
 		Output:        fmt.Sprintf("-f rtp rtp://127.0.0.1:%d", udpServer.Port()),
 	}
 
-	args.AddCodec(fmt.Sprintf("-ar %d -c:a %s", sampleRate, outputCodec))
+	codecArgs := fmt.Sprintf("-ar %d -c:a %s", sampleRate, outputCodec)
+	if audioBitrate != "" {
+		codecArgs += " -b:a " + audioBitrate
+	}
+	// AAC requires global_header
+	if m.Codec.Name == CodecAAC || m.Codec.Name == CodecELD {
+		codecArgs += " -flags +global_header"
+	}
+	// G726 specific options
+	if strings.HasPrefix(m.Codec.Name, CodecG726) {
+		// code_size: 2=G726-16, 3=G726-24, 4=G726-32, 5=G726-40
+		codeSize := "5" // default to G726-40
+		if strings.HasPrefix(m.Codec.Name, CodecG726+"-") {
+			bitrate := strings.TrimPrefix(m.Codec.Name, CodecG726+"-")
+			switch bitrate {
+			case "16":
+				codeSize = "2"
+			case "24":
+				codeSize = "3"
+			case "32":
+				codeSize = "4"
+			case "40":
+				codeSize = "5"
+			}
+		}
+		codecArgs += " -code_size " + codeSize
+	}
+	args.AddCodec(codecArgs)
+
+	// log.Printf("[mixer] id=%d cmd: %s", m.id, args.String())
 
 	m.ffmpegCmd = shell.NewCommand(args.String())
 	m.ffmpegCmd.Stdin = bytes.NewReader(sdpContent)
+	// m.ffmpegCmd.Stderr = os.Stderr
 
 	if err := m.ffmpegCmd.Start(); err != nil {
 		udpServer.Close()
 		return fmt.Errorf("failed to start FFmpeg: %w", err)
 	}
+
+	// log.Printf("[mixer] id=%d FFmpeg started, output port=%d", m.id, udpServer.Port())
 
 	// Start reader
 	go m.readFromFFmpeg()
@@ -368,6 +415,8 @@ func (m *RTPMixer) monitorFFmpeg() {
 }
 
 func (m *RTPMixer) stopFFmpeg() {
+	// log.Printf("[mixer] id=%d stopFFmpeg called", m.id)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -391,11 +440,14 @@ func (m *RTPMixer) stopFFmpeg() {
 
 	m.parentPorts = make(map[uint32]int)
 	m.parentSequencer = make(map[uint32]rtp.Sequencer)
+
+	// log.Printf("[mixer] id=%d FFmpeg stopped", m.id)
 }
 
 func (m *RTPMixer) generateSDP() ([]byte, error) {
 	m.mu.Lock()
 	parents := m.parents
+	parentCodecs := maps.Clone(m.parentCodecs)
 	m.mu.Unlock()
 
 	if len(parents) == 0 {
@@ -425,8 +477,14 @@ func (m *RTPMixer) generateSDP() ([]byte, error) {
 		m.parentPorts[parent.id] = port
 		m.mu.Unlock()
 
+		// Get the codec for this specific parent (for transcoding support)
+		codec := parentCodecs[parent.id]
+		if codec == nil {
+			codec = m.Codec // Fallback to output codec
+		}
+
 		// Codec name for SDP
-		codecName := m.Codec.Name
+		codecName := codec.Name
 		switch codecName {
 		case CodecELD:
 			codecName = CodecAAC
@@ -442,7 +500,8 @@ func (m *RTPMixer) generateSDP() ([]byte, error) {
 			},
 		}
 
-		md.WithCodec(m.Codec.PayloadType, codecName, m.Codec.ClockRate, uint16(m.Codec.Channels), m.Codec.FmtpLine)
+		// Each port is a separate RTP session, so same payload types are fine
+		md.WithCodec(codec.PayloadType, codecName, codec.ClockRate, uint16(codec.Channels), codec.FmtpLine)
 		md.WithPropertyAttribute(DirectionRecvonly)
 
 		sd.MediaDescriptions = append(sd.MediaDescriptions, md)
@@ -454,17 +513,21 @@ func (m *RTPMixer) generateSDP() ([]byte, error) {
 func (m *RTPMixer) readFromFFmpeg() {
 	buf := make([]byte, defaultMTU)
 
+	// log.Printf("[mixer] id=%d readFromFFmpeg started", m.id)
+
 	for {
 		m.mu.Lock()
 		server := m.udpServer
 		m.mu.Unlock()
 
 		if server == nil {
+			// log.Printf("[mixer] id=%d readFromFFmpeg stopped (no server), received=%d forwarded=%d", m.id, packetsReceived, packetsForwarded)
 			return
 		}
 
 		n, _, err := server.ReadFrom(buf)
 		if err != nil {
+			// log.Printf("[mixer] id=%d readFromFFmpeg error: %v, received=%d forwarded=%d", m.id, err, packetsReceived, packetsForwarded)
 			return
 		}
 
@@ -488,6 +551,7 @@ func (m *RTPMixer) sendToFFmpeg(packet *Packet, parentID uint32) error {
 	m.mu.Lock()
 	port, exists := m.parentPorts[parentID]
 	server := m.udpServer
+	codec := m.parentCodecs[parentID]
 
 	sequencer, hasSequencer := m.parentSequencer[parentID]
 	if !hasSequencer {
@@ -497,8 +561,14 @@ func (m *RTPMixer) sendToFFmpeg(packet *Packet, parentID uint32) error {
 
 	packet.SequenceNumber = sequencer.NextSequenceNumber()
 
+	// Use parent's codec for frame size calculation
+	frameSize := frameSizeForCodec(codec)
+	if codec == nil {
+		frameSize = m.frameSize()
+	}
+
 	timestamp := m.parentTimestamp[parentID]
-	m.parentTimestamp[parentID] = timestamp + m.frameSize()
+	m.parentTimestamp[parentID] = timestamp + frameSize
 	packet.Timestamp = timestamp
 
 	m.mu.Unlock()
@@ -552,17 +622,34 @@ func (m *RTPMixer) sendKeepalive() {
 }
 
 func (m *RTPMixer) sendSilence(parentID uint32) error {
+	m.mu.Lock()
+	codec := m.parentCodecs[parentID]
+	m.mu.Unlock()
+
+	if codec == nil {
+		codec = m.Codec
+	}
+
 	packet := &Packet{}
 	packet.Version = 2
-	packet.PayloadType = m.Codec.PayloadType
+	packet.PayloadType = codec.PayloadType
 	packet.SSRC = 0
-	packet.Payload = make([]byte, m.frameSize())
+	packet.Payload = make([]byte, frameSizeForCodec(codec))
 
 	return m.sendToFFmpeg(packet, parentID)
 }
 
 func (m *RTPMixer) frameSize() uint32 {
-	switch m.Codec.Name {
+	return frameSizeForCodec(m.Codec)
+}
+
+// frameSizeForCodec calculates the frame size (in samples) for 20ms of audio
+func frameSizeForCodec(codec *Codec) uint32 {
+	if codec == nil {
+		return 160 // Default 8kHz
+	}
+
+	switch codec.Name {
 	case CodecOpus:
 		return 960 // Opus @ 48kHz: 20ms = 960 samples
 	case CodecAAC, CodecELD:
@@ -571,8 +658,8 @@ func (m *RTPMixer) frameSize() uint32 {
 
 	// For all other codecs, calculate based on ClockRate
 	// 20ms = ClockRate / 50
-	if m.Codec.ClockRate > 0 {
-		return m.Codec.ClockRate / timestampDivisor20ms
+	if codec.ClockRate > 0 {
+		return codec.ClockRate / timestampDivisor20ms
 	}
 
 	// Fallback to 8kHz default (160 samples)

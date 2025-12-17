@@ -234,20 +234,22 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 
 	// If mixing is enabled, use mixer for multiple backchannel consumers
 	if p.mixingEnabled {
-		// Check if we already have a mixer for this codec
+		// Check if we already have ANY mixer for audio backchannel
+		// Reuse existing mixer even if codec is different - FFmpeg will transcode
 		for _, mixer := range p.mixers {
-			if mixer.Codec.Match(codec) {
-				// Register this consumer receiver as a parent
-				mixer.AddParent(&track.Node)
+			if mixer.Media.Kind == media.Kind {
+				// Add this consumer as parent with its codec
+				// The mixer will handle transcoding if codecs differ
+				mixer.AddParentWithCodec(&track.Node, codec)
 				p.senders = append(p.senders, track)
 				p.mu.Unlock()
 				return nil
 			}
 		}
 
-		// No mixer exists yet, create one
+		// No mixer exists yet, create one with the first consumer's codec as output
 		mixer := core.NewRTPMixer(ffmpegBin, media, codec)
-		mixer.AddParent(&track.Node)
+		mixer.AddParentWithCodec(&track.Node, codec)
 
 		// Connect mixer to underlying protocol
 		// Get consumer reference and release lock BEFORE calling AddTrack
@@ -697,11 +699,23 @@ func parseStreamParams(source string) (
 		rawURL = removeFlag(rawURL, "#noVideo")
 	}
 
+	// Parse #video= (used by ffmpeg, e.g. #video=copy)
+	// This sets the flag but doesn't remove the param (ffmpeg needs it)
+	if strings.Contains(rawURL, "#video=") {
+		videoExplicitlySet = true
+	}
+
 	// Parse #noAudio
 	if strings.Contains(rawURL, "#noAudio") {
 		audioEnabled = false
 		audioExplicitlySet = true
 		rawURL = removeFlag(rawURL, "#noAudio")
+	}
+
+	// Parse #audio= (used by ffmpeg, e.g. #audio=opus)
+	// This sets the flag but doesn't remove the param (ffmpeg needs it)
+	if strings.Contains(rawURL, "#audio=") {
+		audioExplicitlySet = true
 	}
 
 	// Parse #gop=X
