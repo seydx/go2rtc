@@ -8,6 +8,7 @@ import (
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
+	"github.com/AlexxIT/go2rtc/pkg/yaml"
 	"github.com/rs/zerolog"
 )
 
@@ -15,9 +16,9 @@ var ffmpegBin string
 
 func Init() {
 	var cfg struct {
-		Streams map[string]any    `yaml:"streams"`
-		Publish map[string]any    `yaml:"publish"`
-		Preload map[string]string `yaml:"preload"`
+		Streams map[string]any  `yaml:"streams"`
+		Publish map[string]any  `yaml:"publish"`
+		Preload yaml.OrderedMap `yaml:"preload"`
 		FFmpeg  map[string]string `yaml:"ffmpeg"`
 	}
 
@@ -39,7 +40,7 @@ func Init() {
 	api.HandleFunc("api/preload", apiPreload)
 	api.HandleFunc("api/schemes", apiSchemes)
 
-	if cfg.Publish == nil && cfg.Preload == nil {
+	if cfg.Publish == nil && len(cfg.Preload.Keys) == 0 {
 		return
 	}
 
@@ -50,8 +51,9 @@ func Init() {
 				Publish(stream, dst)
 			}
 		}
-		for name, rawQuery := range cfg.Preload {
-			if err := AddPreload(name, rawQuery); err != nil {
+		// Process preloads in the order defined in config
+		for _, name := range cfg.Preload.Keys {
+			if err := AddPreload(name, cfg.Preload.Values[name]); err != nil {
 				log.Error().Err(err).Caller().Send()
 			}
 		}
