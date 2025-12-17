@@ -142,12 +142,19 @@ producers:
 }
 
 func (s *Stream) MarshalJSON() ([]byte, error) {
+	s.mu.Lock()
+	// Copy references while holding lock, then release before marshaling
+	// to avoid blocking during slow producer operations
+	producers := s.producers
+	consumers := s.consumers
+	s.mu.Unlock()
+
 	var info = struct {
 		Producers []*Producer     `json:"producers"`
 		Consumers []core.Consumer `json:"consumers"`
 	}{
-		Producers: s.producers,
-		Consumers: s.consumers,
+		Producers: producers,
+		Consumers: consumers,
 	}
 	return json.Marshal(info)
 }

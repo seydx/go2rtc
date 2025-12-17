@@ -193,3 +193,14 @@ func GetAllSources() map[string][]string {
 	streamsMu.Unlock()
 	return sources
 }
+
+// GetAll returns a copy of all streams for safe iteration/marshaling
+func GetAll() map[string]*Stream {
+	streamsMu.Lock()
+	result := make(map[string]*Stream, len(streams))
+	for name, stream := range streams {
+		result[name] = stream
+	}
+	streamsMu.Unlock()
+	return result
+}

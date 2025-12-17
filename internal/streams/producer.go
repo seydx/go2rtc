@@ -114,17 +114,37 @@ func (p *Producer) SetSource(s string) {
 
 func (p *Producer) Dial() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
-	if p.state == stateNone {
-		conn, err := GetProducer(p.url)
-		if err != nil {
-			return err
-		}
-
-		p.conn = conn
-		p.state = stateMedias
+	if p.state != stateNone {
+		p.mu.Unlock()
+		return nil
 	}
+
+	// Get URL before releasing lock
+	url := p.url
+
+	// Release lock before potentially blocking GetProducer call
+	// This prevents blocking API serialization during slow producer startup (e.g., ffmpeg)
+	p.mu.Unlock()
+
+	conn, err := GetProducer(url)
+	if err != nil {
+		return err
+	}
+
+	// Reacquire lock to update state
+	p.mu.Lock()
+
+	// Check if someone else already dialed while we were waiting
+	if p.state != stateNone {
+		p.mu.Unlock()
+		_ = conn.Stop() // Close the connection we just made
+		return nil
+	}
+
+	p.conn = conn
+	p.state = stateMedias
+	p.mu.Unlock()
 
 	return nil
 }
