@@ -142,38 +142,47 @@ func (p *Producer) GetMedias() []*core.Media {
 
 func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.state == stateNone {
+		p.mu.Unlock()
 		return nil, errors.New("get track from none state")
 	}
 
 	for _, track := range p.receivers {
 		if track.Codec.Match(codec) {
+			p.mu.Unlock()
 			return track, nil
 		}
 	}
 
-	track, err := p.conn.GetTrack(media, codec)
+	// Get conn reference and release lock BEFORE calling GetTrack
+	conn := p.conn
+	gopEnabled := p.gopEnabled
+	prebufferDuration := p.prebufferDuration
+	p.mu.Unlock()
+
+	// Call underlying protocol's GetTrack WITHOUT holding the lock
+	track, err := conn.GetTrack(media, codec)
 	if err != nil {
 		return nil, err
 	}
 
-	if p.gopEnabled {
+	if gopEnabled {
 		track.SetupGOP()
 	}
 
+	// Reacquire lock to update state
+	p.mu.Lock()
+
 	// Setup producer-level prebuffer if configured
-	if p.prebufferDuration > 0 {
+	if prebufferDuration > 0 {
 		if p.prebuffer == nil {
 			// Create producer prebuffer (first track with prebuffer enabled)
-			p.prebuffer = core.NewStreamPrebuffer(p.prebufferDuration)
-			// log.Debug().Msgf("[streams] Created producer prebuffer with %ds duration", p.prebufferDuration)
+			p.prebuffer = core.NewStreamPrebuffer(prebufferDuration)
 		}
 
 		// Set packet hook to capture packets for producer prebuffer
 		trackID := track.ID
-		// log.Debug().Msgf("[streams] Setup packet hook for trackID=%d, codec=%s", trackID, codec.Name)
 		track.PacketHook = func(packet *core.Packet, id byte) {
 			// Clone packet to avoid race conditions
 			clone := &core.Packet{
@@ -181,7 +190,6 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 				Payload: make([]byte, len(packet.Payload)),
 			}
 			copy(clone.Payload, packet.Payload)
-			// log.Trace().Msgf("[streams] Captured packet trackID=%d, size=%d bytes", trackID, len(clone.Payload))
 			p.prebuffer.Add(clone, trackID)
 		}
 	}
@@ -192,14 +200,15 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 		p.state = stateTracks
 	}
 
+	p.mu.Unlock()
 	return track, nil
 }
 
 func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.state == stateNone {
+		p.mu.Unlock()
 		return errors.New("add track from none state")
 	}
 
@@ -211,6 +220,7 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 				// Register this consumer receiver as a parent
 				mixer.AddParent(&track.Node)
 				p.senders = append(p.senders, track)
+				p.mu.Unlock()
 				return nil
 			}
 		}
@@ -220,21 +230,35 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 		mixer.AddParent(&track.Node)
 
 		// Connect mixer to underlying protocol
+		// Get consumer reference and release lock BEFORE calling AddTrack
 		consumer := p.conn.(core.Consumer)
 		mixerReceiver := core.NewReceiver(media, codec)
 		mixerReceiver.ParentNode = &mixer.Node
+		p.mu.Unlock()
+
+		// Call underlying protocol's AddTrack WITHOUT holding the lock
+		// This prevents blocking API serialization during network operations
 		if err := consumer.AddTrack(media, codec, mixerReceiver); err != nil {
 			return err
 		}
 
+		// Reacquire lock to update state
+		p.mu.Lock()
 		p.mixers = append(p.mixers, mixer)
 		p.senders = append(p.senders, track)
 	} else {
 		// Without mixing, directly pass track to underlying protocol
-		if err := p.conn.(core.Consumer).AddTrack(media, codec, track); err != nil {
+		// Get consumer reference and release lock BEFORE calling AddTrack
+		consumer := p.conn.(core.Consumer)
+		p.mu.Unlock()
+
+		// Call underlying protocol's AddTrack WITHOUT holding the lock
+		if err := consumer.AddTrack(media, codec, track); err != nil {
 			return err
 		}
 
+		// Reacquire lock to update state
+		p.mu.Lock()
 		p.senders = append(p.senders, track)
 	}
 
@@ -242,26 +266,32 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 		p.state = stateTracks
 	}
 
+	p.mu.Unlock()
 	return nil
 }
 
 func (p *Producer) MarshalJSON() ([]byte, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	// Copy references while holding lock, then release before marshaling
+	// to avoid blocking API if Dial/reconnect is holding the lock
+	conn := p.conn
+	mixers := p.mixers
+	url := p.url
+	p.mu.Unlock()
 
-	if conn := p.conn; conn != nil {
+	if conn != nil {
 		connData, err := json.Marshal(conn)
 		if err != nil {
 			return nil, err
 		}
 
 		// If no mixers, return as-is
-		if len(p.mixers) == 0 {
+		if len(mixers) == 0 {
 			return connData, nil
 		}
 
 		// Marshal mixers
-		mixersData, err := json.Marshal(p.mixers)
+		mixersData, err := json.Marshal(mixers)
 		if err != nil {
 			return nil, err
 		}
@@ -276,7 +306,7 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
 		return result, nil
 	}
 
-	info := map[string]string{"url": p.url}
+	info := map[string]string{"url": url}
 	return json.Marshal(info)
 }
 

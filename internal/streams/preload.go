@@ -28,12 +28,13 @@ func AddPreload(name, rawQuery string) error {
 		return err
 	}
 
+	// Get stream and remove existing preload under lock
 	preloadsMu.Lock()
-	defer preloadsMu.Unlock()
-
 	if p := preloads[name]; p != nil {
 		p.stream.RemoveConsumer(p.Cons)
+		delete(preloads, name)
 	}
+	preloadsMu.Unlock()
 
 	stream := Get(name)
 	if stream == nil {
@@ -41,11 +42,16 @@ func AddPreload(name, rawQuery string) error {
 	}
 	cons := probe.Create("preload", query)
 
+	// Don't hold preloadsMu lock during this call to avoid blocking API
 	if err = stream.AddConsumer(cons); err != nil {
 		return err
 	}
 
+	// Update preloads map under lock
+	preloadsMu.Lock()
 	preloads[name] = &Preload{stream: stream, Cons: cons, Query: rawQuery}
+	preloadsMu.Unlock()
+
 	return nil
 }
 

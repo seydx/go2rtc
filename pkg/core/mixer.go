@@ -40,6 +40,7 @@ type RTPMixer struct {
 	// Per-parent RTP state for FFmpeg communication (each parent needs independent seq/ts)
 	parentSequencer map[uint32]rtp.Sequencer
 	parentTimestamp map[uint32]uint32
+	parentBytes     map[uint32]int // Per-parent byte tracking for visualization
 
 	// RTP packet normalization (for single-parent mode output)
 	sequencer rtp.Sequencer
@@ -71,6 +72,7 @@ func NewRTPMixer(ffmpegBinary string, media *Media, codec *Codec) *RTPMixer {
 		parentPorts:     make(map[uint32]int),
 		parentSequencer: make(map[uint32]rtp.Sequencer),
 		parentTimestamp: make(map[uint32]uint32),
+		parentBytes:     make(map[uint32]int),
 		lastPacketTime:  make(map[uint32]int64),
 		sequencer:       rtp.NewRandomSequencer(),
 		ffmpegBinary:    ffmpegBinary,
@@ -123,6 +125,7 @@ func (m *RTPMixer) RemoveParent(parent *Node) {
 	delete(m.parentPorts, parent.id)
 	delete(m.parentSequencer, parent.id)
 	delete(m.parentTimestamp, parent.id)
+	delete(m.parentBytes, parent.id)
 	delete(m.lastPacketTime, parent.id)
 
 	newCount := len(m.parents)
@@ -149,25 +152,35 @@ func (m *RTPMixer) Close() {
 
 func (m *RTPMixer) MarshalJSON() ([]byte, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Clean up dead parents before marshaling
-	m.parents = m.getActiveParents()
+	// Copy data while holding lock, then release before marshaling
+	// to avoid nested lock acquisition
+	parents := make([]*Node, len(m.parents))
+	copy(parents, m.parents)
+	childs := make([]*Node, len(m.childs))
+	copy(childs, m.childs)
+	id := m.id
+	codec := m.Codec
+	bytes := m.Bytes
+	packets := m.Packets
+	parentBytes := maps.Clone(m.parentBytes)
+	m.mu.Unlock()
 
 	data := struct {
-		ID      uint32   `json:"id"`
-		Codec   *Codec   `json:"codec"`
-		Parents []uint32 `json:"parents,omitempty"`
-		Childs  []uint32 `json:"childs,omitempty"`
-		Bytes   int      `json:"bytes,omitempty"`
-		Packets int      `json:"packets,omitempty"`
+		ID          uint32         `json:"id"`
+		Codec       *Codec         `json:"codec"`
+		Parents     []uint32       `json:"parents,omitempty"`
+		ParentBytes map[uint32]int `json:"parent_bytes,omitempty"`
+		Childs      []uint32       `json:"childs,omitempty"`
+		Bytes       int            `json:"bytes,omitempty"`
+		Packets     int            `json:"packets,omitempty"`
 	}{
-		ID:      m.id,
-		Codec:   m.Codec,
-		Parents: nodeIDs(m.parents),
-		Childs:  nodeIDs(m.childs),
-		Bytes:   m.Bytes,
-		Packets: m.Packets,
+		ID:          id,
+		Codec:       codec,
+		Parents:     nodeIDs(parents),
+		ParentBytes: parentBytes,
+		Childs:      nodeIDs(childs),
+		Bytes:       bytes,
+		Packets:     packets,
 	}
 
 	return json.Marshal(data)
@@ -194,6 +207,7 @@ func (m *RTPMixer) handlePacketFromParent(packet *Packet, parentID uint32) {
 	m.mu.Lock()
 	m.Bytes += len(packet.Payload)
 	m.Packets++
+	m.parentBytes[parentID] += len(packet.Payload)
 	m.mu.Unlock()
 }
 

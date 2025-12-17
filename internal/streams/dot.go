@@ -56,12 +56,13 @@ func humanBytes(i int) string {
 }
 
 type node struct {
-	ID      uint32         `json:"id"`
-	Codec   map[string]any `json:"codec"`
-	Parent  uint32         `json:"parent"`
-	Parents []uint32       `json:"parents"`
-	Childs  []uint32       `json:"childs"`
-	Bytes   int            `json:"bytes"`
+	ID          uint32         `json:"id"`
+	Codec       map[string]any `json:"codec"`
+	Parent      uint32         `json:"parent"`
+	Parents     []uint32       `json:"parents"`
+	ParentBytes map[uint32]int `json:"parent_bytes"`
+	Childs      []uint32       `json:"childs"`
+	Bytes       int            `json:"bytes"`
 	//Packets uint32         `json:"packets"`
 	//Drops   uint32         `json:"drops"`
 }
@@ -133,7 +134,8 @@ func (c *conn) appendDOT(dot []byte, group string) []byte {
 	for _, mixer := range c.Mixers {
 		dot = mixer.appendDOT(dot, "mixer")
 		for _, parentID := range mixer.Parents {
-			dot = fmt.Appendf(dot, "%d -> %d;\n", parentID, mixer.ID)
+			bytes := mixer.ParentBytes[parentID]
+			dot = fmt.Appendf(dot, "%d -> %d [label=%q];\n", parentID, mixer.ID, humanBytes(bytes))
 		}
 	}
 	return dot
