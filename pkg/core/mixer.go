@@ -248,19 +248,28 @@ func (m *RTPMixer) needsFFmpeg() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Need FFmpeg for mixing when 2+ parents
-	if len(m.parents) >= 2 {
-		return true
-	}
+	// Count valid parents (excluding wildcard codecs like ANY/ALL)
+	validParents := 0
+	needsTranscode := false
 
-	// Need FFmpeg for transcoding when any parent codec differs from output
 	for _, parentCodec := range m.parentCodecs {
+		// Skip wildcard codecs - they can't be decoded by FFmpeg
+		if parentCodec != nil && (parentCodec.Name == CodecAny || parentCodec.Name == CodecAll) {
+			continue
+		}
+		validParents++
 		if m.needsTranscode(parentCodec) {
-			return true
+			needsTranscode = true
 		}
 	}
 
-	return false
+	// Need FFmpeg for mixing when 2+ valid parents
+	if validParents >= 2 {
+		return true
+	}
+
+	// Need FFmpeg for transcoding when any valid parent codec differs from output
+	return needsTranscode
 }
 
 func (m *RTPMixer) needsTranscode(inputCodec *Codec) bool {
@@ -301,9 +310,15 @@ func (m *RTPMixer) restartFFmpeg() error {
 }
 
 func (m *RTPMixer) startFFmpeg() error {
-	sdpContent, err := m.generateSDP()
+	sdpContent, numInputs, err := m.generateSDP()
 	if err != nil {
 		return fmt.Errorf("failed to generate SDP: %w", err)
+	}
+
+	// If no valid inputs for FFmpeg (all parents have wildcard codecs), don't start
+	if numInputs == 0 {
+		// log.Printf("[mixer] id=%d no valid inputs for FFmpeg, skipping", m.id)
+		return nil
 	}
 
 	// log.Printf("[mixer] id=%d SDP:\n%s", m.id, string(sdpContent))
@@ -313,10 +328,6 @@ func (m *RTPMixer) startFFmpeg() error {
 		return fmt.Errorf("failed to create UDP server: %w", err)
 	}
 	m.udpServer = udpServer
-
-	m.mu.Lock()
-	numParents := len(m.parents)
-	m.mu.Unlock()
 
 	outputCodec := FFmpegCodecName(m.Codec.Name)
 	var audioBitrate string
@@ -343,7 +354,7 @@ func (m *RTPMixer) startFFmpeg() error {
 		Bin:           m.ffmpegBinary,
 		Global:        "-hide_banner",
 		Input:         "-protocol_whitelist pipe,rtp,udp,file,crypto -listen_timeout 1 -f sdp -i pipe:0",
-		FilterComplex: fmt.Sprintf("amix=inputs=%d:duration=longest:dropout_transition=0", numParents),
+		FilterComplex: fmt.Sprintf("amix=inputs=%d:duration=first:dropout_transition=0", numInputs),
 		Output:        fmt.Sprintf("-f rtp rtp://127.0.0.1:%d", udpServer.Port()),
 	}
 
@@ -469,14 +480,14 @@ func (m *RTPMixer) stopFFmpeg() {
 	// log.Printf("[mixer] id=%d FFmpeg stopped", m.id)
 }
 
-func (m *RTPMixer) generateSDP() ([]byte, error) {
+func (m *RTPMixer) generateSDP() ([]byte, int, error) {
 	m.mu.Lock()
 	parents := m.parents
 	parentCodecs := maps.Clone(m.parentCodecs)
 	m.mu.Unlock()
 
 	if len(parents) == 0 {
-		return nil, fmt.Errorf("no parents")
+		return nil, 0, fmt.Errorf("no parents")
 	}
 
 	sd := &sdp.SessionDescription{
@@ -492,21 +503,31 @@ func (m *RTPMixer) generateSDP() ([]byte, error) {
 		TimeDescriptions: []sdp.TimeDescription{{Timing: sdp.Timing{}}},
 	}
 
+	numInputs := 0
 	for _, parent := range parents {
+		// Get the codec for this specific parent (for transcoding support)
+		codec := parentCodecs[parent.id]
+		if codec == nil {
+			codec = m.Codec // Fallback to output codec
+		}
+
+		// Skip parents with wildcard codecs (ANY/ALL) - FFmpeg can't decode these
+		// These are placeholders that match anything but don't represent real audio
+		if codec.Name == CodecAny || codec.Name == CodecAll {
+			// log.Printf("[mixer] id=%d skipping parent %d with wildcard codec %s", m.id, parent.id, codec.Name)
+			continue
+		}
+
 		port, err := udp.GetFreePort()
 		if err != nil {
-			return nil, fmt.Errorf("failed to allocate port: %w", err)
+			return nil, 0, fmt.Errorf("failed to allocate port: %w", err)
 		}
 
 		m.mu.Lock()
 		m.parentPorts[parent.id] = port
 		m.mu.Unlock()
 
-		// Get the codec for this specific parent (for transcoding support)
-		codec := parentCodecs[parent.id]
-		if codec == nil {
-			codec = m.Codec // Fallback to output codec
-		}
+		numInputs++
 
 		// Codec name for SDP
 		codecName := codec.Name
@@ -532,7 +553,8 @@ func (m *RTPMixer) generateSDP() ([]byte, error) {
 		sd.MediaDescriptions = append(sd.MediaDescriptions, md)
 	}
 
-	return sd.Marshal()
+	sdpBytes, err := sd.Marshal()
+	return sdpBytes, numInputs, err
 }
 
 func (m *RTPMixer) readFromFFmpeg() {
@@ -552,13 +574,11 @@ func (m *RTPMixer) readFromFFmpeg() {
 		m.mu.Unlock()
 
 		if server == nil {
-			// log.Printf("[mixer] id=%d readFromFFmpeg stopped (no server), received=%d forwarded=%d", m.id, packetsReceived, packetsForwarded)
 			return
 		}
 
 		n, _, err := server.ReadFrom(buf)
 		if err != nil {
-			// log.Printf("[mixer] id=%d readFromFFmpeg error: %v, received=%d forwarded=%d", m.id, err, packetsReceived, packetsForwarded)
 			return
 		}
 
