@@ -46,13 +46,13 @@ type Producer struct {
 	requirePrevAudio   bool // Only start if previous producer has audio (#requirePrevAudio)
 	requirePrevVideo   bool // Only start if previous producer has video (#requirePrevVideo)
 
-	gopEnabled        bool
+	// Producer-level prebuffer for replay (owns all tracks)
+	prebuffer         *core.StreamPrebuffer
+	prebufferDone     chan struct{}
+	prebufferOffset   int // Client-requested offset for replay
 	prebufferDuration int
 
-	// Producer-level prebuffer for replay (owns all tracks)
-	prebuffer       *core.StreamPrebuffer
-	prebufferDone   chan struct{}
-	prebufferOffset int // Client-requested offset for replay
+	gopEnabled bool
 }
 
 const SourceTemplate = "{input}"
@@ -238,18 +238,19 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 		// Reuse existing mixer even if codec is different - FFmpeg will transcode
 		for _, mixer := range p.mixers {
 			if mixer.Media.Kind == media.Kind {
-				// Add this consumer as parent with its codec
-				// The mixer will handle transcoding if codecs differ
-				mixer.AddParentWithCodec(&track.Node, codec)
+				// Add this consumer as parent with its actual codec (e.g., Opus from browser)
+				// The mixer will handle transcoding if codecs differ from output codec
+				mixer.AddParentWithCodec(&track.Node, track.Codec)
 				p.senders = append(p.senders, track)
 				p.mu.Unlock()
 				return nil
 			}
 		}
 
-		// No mixer exists yet, create one with the first consumer's codec as output
+		// No mixer exists yet, create one with the producer's codec as output (e.g., AAC for camera)
 		mixer := core.NewRTPMixer(ffmpegBin, media, codec)
-		mixer.AddParentWithCodec(&track.Node, codec)
+		// Add parent with its actual codec (e.g., Opus from browser) - mixer will transcode to output
+		mixer.AddParentWithCodec(&track.Node, track.Codec)
 
 		// Connect mixer to underlying protocol
 		// Get consumer reference and release lock BEFORE calling AddTrack
@@ -517,9 +518,15 @@ func (p *Producer) stop() {
 		p.conn = nil
 	}
 
+	// Close all mixers
+	for _, mixer := range p.mixers {
+		mixer.Close()
+	}
+
 	p.state = stateNone
 	p.receivers = nil
 	p.senders = nil
+	p.mixers = nil
 }
 
 // prebufferReplayLoop is the single sequential replay loop for this producer
