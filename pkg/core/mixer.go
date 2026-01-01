@@ -2,12 +2,12 @@ package core
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"net"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -219,19 +219,55 @@ func (m *RTPMixer) handlePacketFromParent(packet *Packet, parentID uint32) {
 func (m *RTPMixer) handleTopologyChange(oldCount, newCount int) {
 	if newCount == 0 {
 		m.Close()
-	} else if newCount >= 2 && oldCount < 2 {
-		if err := m.restartFFmpeg(); err != nil {
+		return
+	}
+
+	needsFFmpegNow := m.needsFFmpeg()
+
+	m.mu.Lock()
+	ffmpegRunning := m.ffmpegCmd != nil
+	m.mu.Unlock()
+
+	if needsFFmpegNow && !ffmpegRunning {
+		if err := m.startFFmpeg(); err != nil {
 			fmt.Fprintf(os.Stderr, "[mixer id=%d] Error starting FFmpeg: %v\n", m.id, err)
 		} else {
 			go m.monitorFFmpeg()
 		}
-	} else if oldCount >= 2 && newCount < 2 {
+	} else if !needsFFmpegNow && ffmpegRunning {
 		m.stopFFmpeg()
-	} else if newCount >= 2 {
+	} else if needsFFmpegNow && ffmpegRunning && oldCount != newCount {
+		// Topology changed while FFmpeg running - restart to reconfigure
 		if err := m.restartFFmpeg(); err != nil {
 			fmt.Fprintf(os.Stderr, "[mixer id=%d] Error restarting FFmpeg: %v\n", m.id, err)
 		}
 	}
+}
+
+func (m *RTPMixer) needsFFmpeg() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Need FFmpeg for mixing when 2+ parents
+	if len(m.parents) >= 2 {
+		return true
+	}
+
+	// Need FFmpeg for transcoding when any parent codec differs from output
+	for _, parentCodec := range m.parentCodecs {
+		if m.needsTranscode(parentCodec) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (m *RTPMixer) needsTranscode(inputCodec *Codec) bool {
+	if inputCodec == nil || m.Codec == nil {
+		return false
+	}
+	return !inputCodec.Match(m.Codec)
 }
 
 func (m *RTPMixer) forwardDirect(packet *Packet) {
@@ -248,20 +284,6 @@ func (m *RTPMixer) forwardDirect(packet *Packet) {
 	}
 }
 
-func (m *RTPMixer) getActiveParents() []*Node {
-	var activeParents []*Node
-	for _, parent := range m.parents {
-		parent.mu.Lock()
-		hasMixer := slices.Contains(parent.childs, &m.Node)
-		parent.mu.Unlock()
-
-		if hasMixer {
-			activeParents = append(activeParents, parent)
-		}
-	}
-	return activeParents
-}
-
 func (m *RTPMixer) restartFFmpeg() error {
 	// Mark as intentional restart so monitor doesn't try to restart too
 	m.mu.Lock()
@@ -270,9 +292,8 @@ func (m *RTPMixer) restartFFmpeg() error {
 
 	m.stopFFmpeg()
 
-	// Check if we have enough parents to mix
-	activeParents := m.getActiveParents()
-	if len(activeParents) < 2 {
+	// Check if FFmpeg is still needed
+	if !m.needsFFmpeg() {
 		return nil
 	}
 
@@ -307,8 +328,8 @@ func (m *RTPMixer) startFFmpeg() error {
 	default:
 		// G726 variants: G726-16, G726-24, G726-32, G726-40
 		// Extract bitrate from codec name (e.g., "G726-40" → "40k")
-		if strings.HasPrefix(m.Codec.Name, CodecG726+"-") {
-			bitrate := strings.TrimPrefix(m.Codec.Name, CodecG726+"-")
+		if after, ok := strings.CutPrefix(m.Codec.Name, CodecG726+"-"); ok {
+			bitrate := after
 			audioBitrate = bitrate + "k"
 		}
 	}
@@ -327,6 +348,10 @@ func (m *RTPMixer) startFFmpeg() error {
 	}
 
 	codecArgs := fmt.Sprintf("-ar %d -c:a %s", sampleRate, outputCodec)
+	// Set output channels if specified (e.g., mono for camera backchannel)
+	if m.Codec.Channels > 0 {
+		codecArgs += fmt.Sprintf(" -ac %d", m.Codec.Channels)
+	}
 	if audioBitrate != "" {
 		codecArgs += " -b:a " + audioBitrate
 	}
@@ -338,8 +363,8 @@ func (m *RTPMixer) startFFmpeg() error {
 	if strings.HasPrefix(m.Codec.Name, CodecG726) {
 		// code_size: 2=G726-16, 3=G726-24, 4=G726-32, 5=G726-40
 		codeSize := "5" // default to G726-40
-		if strings.HasPrefix(m.Codec.Name, CodecG726+"-") {
-			bitrate := strings.TrimPrefix(m.Codec.Name, CodecG726+"-")
+		if after, ok := strings.CutPrefix(m.Codec.Name, CodecG726+"-"); ok {
+			bitrate := after
 			switch bitrate {
 			case "16":
 				codeSize = "2"
@@ -394,10 +419,10 @@ func (m *RTPMixer) monitorFFmpeg() {
 		m.mu.Lock()
 		wasIntentional := m.intentionalRestart
 		m.intentionalRestart = false // Reset flag
-		stillNeeded := len(m.parents) >= 2 && !m.closing
+		closing := m.closing
 		m.mu.Unlock()
 
-		if !stillNeeded {
+		if closing || !m.needsFFmpeg() {
 			return
 		}
 
@@ -513,6 +538,12 @@ func (m *RTPMixer) generateSDP() ([]byte, error) {
 func (m *RTPMixer) readFromFFmpeg() {
 	buf := make([]byte, defaultMTU)
 
+	// Check if output codec is AAC and expects raw (not RTP) format
+	// FFmpeg outputs RTP AAC with AU headers, but if codec expects raw AAC we need to strip them
+	stripAUHeaders := m.Codec != nil && m.Codec.Name == CodecAAC && !m.Codec.IsRTP()
+	// log.Printf("[mixer] id=%d readFromFFmpeg: stripAUHeaders=%v codec=%s isRTP=%v",
+	// 	m.id, stripAUHeaders, m.Codec.Name, m.Codec.IsRTP())
+
 	// log.Printf("[mixer] id=%d readFromFFmpeg started", m.id)
 
 	for {
@@ -543,7 +574,58 @@ func (m *RTPMixer) readFromFFmpeg() {
 			continue
 		}
 
+		// Strip AU headers from AAC RTP output (RFC 3640) if codec expects raw AAC
+		// Forward each AU as separate packet (cameras expect 1 frame per packet)
+		if stripAUHeaders {
+			m.forwardAACFrames(packet)
+		} else {
+			m.forwardDirect(packet)
+		}
+	}
+}
+
+// forwardAACFrames parses RFC 3640 AU headers and forwards each AAC frame as separate packet
+// This is necessary because cameras expect 1 frame per packet, but FFmpeg may bundle multiple
+func (m *RTPMixer) forwardAACFrames(packet *Packet) {
+	payload := packet.Payload
+	if len(payload) < 4 {
 		m.forwardDirect(packet)
+		return
+	}
+
+	// First 2 bytes: AU headers length in bits
+	headerSizeBytes := binary.BigEndian.Uint16(payload) >> 3
+
+	// Sanity check
+	if headerSizeBytes == 0 || len(payload) < int(2+headerSizeBytes) {
+		m.forwardDirect(packet)
+		return
+	}
+
+	headers := payload[2 : 2+headerSizeBytes]
+	units := payload[2+headerSizeBytes:]
+	// numAUs := int(headerSizeBytes / 2)
+
+	// log.Printf("[mixer] id=%d AAC packet: %d AUs in %d bytes", m.id, numAUs, len(payload))
+
+	// Forward each AU as separate packet
+	for len(headers) >= 2 {
+		unitSize := binary.BigEndian.Uint16(headers) >> 3
+		if int(unitSize) > len(units) {
+			break
+		}
+
+		// Create new packet for this AU
+		auPacket := &Packet{}
+		auPacket.Header = packet.Header
+		auPacket.Version = 0 // RTPPacketVersionAAC
+		auPacket.Payload = units[:unitSize]
+
+		// log.Printf("[mixer] id=%d forwarding AU: %d bytes", m.id, len(auPacket.Payload))
+		m.forwardDirect(auPacket)
+
+		headers = headers[2:]
+		units = units[unitSize:]
 	}
 }
 
