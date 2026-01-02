@@ -108,13 +108,13 @@ func Dial(host, uid, authKey, enr string, verbose bool) (*Conn, error) {
 		verbose:        verbose,
 		ctx:            ctx,
 		cancel:         cancel,
-		mainBuf:    make(chan []byte, 64),
-		speakerBuf: make(chan []byte, 64),
-		packetQueue: make(chan *Packet, 128),
-		done:        make(chan struct{}),
-		ioctrl:      make(chan []byte, 16),
-		ackReceived: make(chan struct{}, 1),
-		errors:      make(chan error, 1),
+		mainBuf:        make(chan []byte, 64),
+		speakerBuf:     make(chan []byte, 64),
+		packetQueue:    make(chan *Packet, 128),
+		done:           make(chan struct{}),
+		ioctrl:         make(chan []byte, 16),
+		ackReceived:    make(chan struct{}, 1),
+		errors:         make(chan error, 1),
 	}
 
 	if err = c.discovery(); err != nil {

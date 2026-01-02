@@ -129,6 +129,9 @@ func buildStreamURL(cam *wyze.Camera) string {
 		query.Set("dtls", "true")
 	}
 
+	// Remove before merge
+	query.Set("verbose", "true")
+
 	return fmt.Sprintf("wyze://%s?%s", host, query.Encode())
 }
 
