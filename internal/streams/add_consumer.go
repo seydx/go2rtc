@@ -71,10 +71,10 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 			continue
 		}
 
-			if cons.IsClosed() {
-				log.Trace().Msgf("[streams] consumer closed during dial cons=%d prod=%d", consN, prodN)
-				break producers
-			}
+		if cons.IsClosed() {
+			log.Trace().Msgf("[streams] consumer closed during dial cons=%d prod=%d", consN, prodN)
+			break
+		}
 
 		// Check if this producer can satisfy ALL consumer medias
 		if canProducerSatisfyAll(prod, consMedias) {
@@ -97,9 +97,10 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 			prodMedias = append(prodMedias, prodMedia)
 
 			if prodMedia.Direction == core.DirectionRecvonly {
-				if prodMedia.Kind == core.KindAudio {
+				switch prodMedia.Kind {
+				case core.KindAudio:
 					prevHasAudio = true
-				} else if prodMedia.Kind == core.KindVideo {
+				case core.KindVideo:
 					prevHasVideo = true
 				}
 			}
@@ -288,6 +289,11 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 				log.Trace().Err(err).Msgf("[streams] dial prod=%d", prodN)
 				prodErrors[prodN] = err
 				continue
+			}
+
+			if cons.IsClosed() {
+				log.Trace().Msgf("[streams] consumer closed during dial cons=%d prod=%d", consN, prodN)
+				break
 			}
 
 			medias := prod.GetMedias()
