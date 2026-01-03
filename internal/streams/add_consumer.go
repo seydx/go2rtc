@@ -71,6 +71,11 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 			continue
 		}
 
+			if cons.IsClosed() {
+				log.Trace().Msgf("[streams] consumer closed during dial cons=%d prod=%d", consN, prodN)
+				break producers
+			}
+
 		// Check if this producer can satisfy ALL consumer medias
 		if canProducerSatisfyAll(prod, consMedias) {
 			bestFitProd = prod
@@ -536,6 +541,11 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	// stop producers if they don't have readers
 	if s.pending.Add(-1) == 0 {
 		s.stopProducers()
+	}
+
+	// Check if consumer was closed during dial
+	if cons.IsClosed() {
+		return errors.New("streams: consumer closed during dial")
 	}
 
 	if len(prodStarts) == 0 {

@@ -172,6 +172,11 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 	conn.Protocol = "ws"
 	conn.UserAgent = tr.Request.UserAgent()
 
+	tr.OnClose(func() {
+		conn.CloseTransport()
+	})
+
+
 	// Parse query parameters for GOP and prebuffer control
 	if s := query.Get("gop"); s != "" {
 		conn.UseGOP = core.Atoi(s) != 0
