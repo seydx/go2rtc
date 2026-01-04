@@ -190,7 +190,7 @@ func tcpHandler(conn *rtsp.Conn) {
 				backchannel := query.Get("backchannel")
 				var codecs []*core.Codec
 
-				for _, codecStr := range strings.Split(backchannel, ",") {
+				for codecStr := range strings.SplitSeq(backchannel, ",") {
 					codecs = append(codecs, core.ParseQueryCodec(codecStr))
 				}
 
