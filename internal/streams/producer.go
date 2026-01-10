@@ -14,6 +14,7 @@ type state byte
 
 const (
 	stateNone state = iota
+	stateDialing // Dial in progress, other goroutines should wait
 	stateMedias
 	stateTracks
 	stateStart
@@ -36,6 +37,8 @@ type Producer struct {
 
 	state              state
 	mu                 sync.Mutex
+	dialDone           chan struct{} // Closed when dial completes (success or failure)
+	dialErr            error         // Error from dial attempt (if any)
 	workerID           int
 	backchannelEnabled bool // Whether this producer supports backchannel (default: true)
 	mixingEnabled      bool // Whether to enable audio mixing for multiple backchannel consumers (default: true)
@@ -115,38 +118,51 @@ func (p *Producer) SetSource(s string) {
 func (p *Producer) Dial() error {
 	p.mu.Lock()
 
-	if p.state != stateNone {
+	switch p.state {
+	case stateNone:
+		// We're the first - start dialing
+		p.state = stateDialing
+		p.dialDone = make(chan struct{})
+		p.dialErr = nil
+		url := p.url
+		p.mu.Unlock()
+
+		// Do the actual dial without holding the lock
+		conn, err := GetProducer(url)
+
+		// Reacquire lock to update state
+		p.mu.Lock()
+		if err != nil {
+			p.dialErr = err
+			p.state = stateNone
+			close(p.dialDone)
+			p.mu.Unlock()
+			return err
+		}
+
+		p.conn = conn
+		p.state = stateMedias
+		close(p.dialDone)
 		p.mu.Unlock()
 		return nil
-	}
 
-	// Get URL before releasing lock
-	url := p.url
+	case stateDialing:
+		// Someone else is dialing - wait for them to finish
+		dialDone := p.dialDone
+		p.mu.Unlock()
 
-	// Release lock before potentially blocking GetProducer call
-	// This prevents blocking API serialization during slow producer startup (e.g., ffmpeg)
-	p.mu.Unlock()
+		<-dialDone // Wait for dial to complete
 
-	conn, err := GetProducer(url)
-	if err != nil {
+		p.mu.Lock()
+		err := p.dialErr
+		p.mu.Unlock()
 		return err
-	}
 
-	// Reacquire lock to update state
-	p.mu.Lock()
-
-	// Check if someone else already dialed while we were waiting
-	if p.state != stateNone {
+	default:
+		// Already connected (stateMedias, stateTracks, stateStart, etc.)
 		p.mu.Unlock()
-		_ = conn.Stop() // Close the connection we just made
 		return nil
 	}
-
-	p.conn = conn
-	p.state = stateMedias
-	p.mu.Unlock()
-
-	return nil
 }
 
 func (p *Producer) GetMedias() []*core.Media {
