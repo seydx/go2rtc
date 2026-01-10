@@ -103,6 +103,12 @@ func Dial(host, uid, authKey, enr, mac string, verbose bool) (*Conn, error) {
 	hash := sha256.Sum256([]byte(enr))
 	psk := hash[:]
 
+	if verbose {
+		fmt.Printf("[PSK] ENR string: %q (len=%d)\n", enr, len(enr))
+		fmt.Printf("[PSK] SHA256(ENR): %x\n", hash)
+		fmt.Printf("[PSK] PSK (32 bytes): %x\n", psk)
+	}
+
 	c := &Conn{
 		udpConn:        conn,
 		addr:           &net.UDPAddr{IP: net.ParseIP(host), Port: DefaultPort},
@@ -1334,6 +1340,17 @@ func (c *Conn) buildNewProtoPacket(seq, ticket uint16, isResponse bool) []byte {
 	authBytes := h.Sum(nil)
 	copy(pkt[32:52], authBytes)
 
+	if c.verbose {
+		fmt.Printf("[AUTH] Discovery Auth Debug:\n")
+		fmt.Printf("[AUTH]   ENR: %s\n", c.enr)
+		fmt.Printf("[AUTH]   MAC: %s\n", c.mac)
+		fmt.Printf("[AUTH]   UID: %s\n", c.uid)
+		fmt.Printf("[AUTH]   AuthKey: %x\n", authKey)
+		fmt.Printf("[AUTH]   HMAC Key (UID+AuthKey): %x\n", key)
+		fmt.Printf("[AUTH]   Hash Input (32 bytes): %x\n", pkt[:32])
+		fmt.Printf("[AUTH]   Auth Bytes: %x\n", authBytes)
+	}
+
 	return pkt
 }
 
@@ -1360,13 +1377,24 @@ func (c *Conn) buildNewProtoDTLS(payload []byte, channel byte) []byte {
 	binary.LittleEndian.PutUint32(pkt[24:], 1) // Always 1 for DTLS wrapper
 	copy(pkt[NewProtoHeaderSize:], payload)
 
-	// Add Auth bytes at the end: HMAC-SHA1(UID+AuthKey, packet_header)
+	// Add Auth bytes at the end: HMAC-SHA1(UID+AuthKey, header only)
 	authKey := crypto.CalculateAuthKey(c.enr, c.mac)
 	key := append([]byte(c.uid), authKey...)
 	h := hmac.New(sha1.New, key)
-	h.Write(pkt[:NewProtoHeaderSize]) // Hash the header portion
+	h.Write(pkt[:NewProtoHeaderSize]) // Hash the header portion only
 	authBytes := h.Sum(nil)
 	copy(pkt[NewProtoHeaderSize+len(payload):], authBytes)
+
+	if c.verbose {
+		fmt.Printf("[AUTH] DTLS Auth Debug:\n")
+		fmt.Printf("[AUTH]   ENR: %s\n", c.enr)
+		fmt.Printf("[AUTH]   MAC: %s\n", c.mac)
+		fmt.Printf("[AUTH]   UID: %s\n", c.uid)
+		fmt.Printf("[AUTH]   AuthKey: %x\n", authKey)
+		fmt.Printf("[AUTH]   HMAC Key (UID+AuthKey): %x\n", key)
+		fmt.Printf("[AUTH]   Hash Input (Header 28 bytes): %x\n", pkt[:NewProtoHeaderSize])
+		fmt.Printf("[AUTH]   Auth Bytes: %x\n", authBytes)
+	}
 
 	return pkt
 }
