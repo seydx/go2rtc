@@ -100,13 +100,12 @@ func Dial(host, uid, authKey, enr, mac string, verbose bool) (*Conn, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	hash := sha256.Sum256([]byte(enr))
-	psk := hash[:]
+	psk := derivePSK(enr)
 
 	if verbose {
-		fmt.Printf("[PSK] ENR string: %q (len=%d)\n", enr, len(enr))
-		fmt.Printf("[PSK] SHA256(ENR): %x\n", hash)
-		fmt.Printf("[PSK] PSK (32 bytes): %x\n", psk)
+		hash := sha256.Sum256([]byte(enr))
+		fmt.Printf("[PSK] ENR: %q → SHA256: %x\n", enr, hash)
+		fmt.Printf("[PSK] PSK: %x\n", psk)
 	}
 
 	c := &Conn{
@@ -1768,6 +1767,28 @@ func (c *Conn) logAudioTX(frame []byte, codec uint16, payloadLen int, timestampU
 		}
 		fmt.Printf("\n")
 	}
+}
+
+func derivePSK(enr string) []byte {
+	// TUTK SDK treats the PSK as a NULL-terminated C string, so if SHA256(ENR)
+	// contains a 0x00 byte, the PSK is truncated at that position.
+	// This matches iOS Wyze app behavior discovered via Frida instrumentation.
+
+	hash := sha256.Sum256([]byte(enr))
+
+	// Find first NULL byte - TUTK uses strlen() on binary PSK
+	pskLen := 32
+	for i := range 32 {
+		if hash[i] == 0x00 {
+			pskLen = i
+			break
+		}
+	}
+
+	// Create PSK: bytes up to first 0x00, rest padded with zeros
+	psk := make([]byte, 32)
+	copy(psk[:pskLen], hash[:pskLen])
+	return psk
 }
 
 func genRandomID() []byte {
