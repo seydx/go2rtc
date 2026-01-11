@@ -14,7 +14,7 @@ type state byte
 
 const (
 	stateNone state = iota
-	stateDialing // Dial in progress, other goroutines should wait
+	stateDialing
 	stateMedias
 	stateTracks
 	stateStart
