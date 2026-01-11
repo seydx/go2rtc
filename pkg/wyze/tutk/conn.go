@@ -454,8 +454,7 @@ func (c *Conn) discovery() error {
 					}
 
 					if c.verbose {
-						fmt.Printf("[NEW] Camera detected! ticket=0x%04x sessionID=%s\n",
-							ticket, hex.EncodeToString(c.sessionID))
+						fmt.Printf("[NEW] RX Discovery Response seq=1 (%d bytes):\n%s", n, hexDump(buf[:n]))
 					}
 
 					_ = c.udpConn.SetDeadline(time.Time{})
@@ -577,7 +576,8 @@ func (c *Conn) newProtoComplete() error {
 
 			if cmd == CmdNewProtoDiscovery && dir == 0xFFFF && seq == 3 {
 				if c.verbose {
-					fmt.Printf("[NEW] seq=3 received, discovery complete!\n")
+					fmt.Printf("[NEW] RX Echo Response seq=3 (%d bytes):\n%s", n, hexDump(buf[:n]))
+					fmt.Printf("[NEW] Discovery complete!\n")
 				}
 				c.addr = addr
 				return nil
