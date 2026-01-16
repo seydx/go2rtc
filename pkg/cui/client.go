@@ -14,6 +14,12 @@ type Client struct {
 	URL string
 }
 
+const (
+	maxRetries  = 10
+	retryDelay  = 1 * time.Second
+	httpTimeout = 10 * time.Second
+)
+
 func NewClient(rawURL string) (*Client, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -30,30 +36,50 @@ func NewClient(rawURL string) (*Client, error) {
 		tr := http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
-		client = http.Client{Transport: &tr, Timeout: 10 * time.Second}
+		client = http.Client{Transport: &tr, Timeout: httpTimeout}
 	} else {
 		u.Scheme = "http"
-		client = http.Client{Timeout: 10 * time.Second}
+		client = http.Client{Timeout: httpTimeout}
 	}
 
-	res, err := client.Get(u.String())
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		streamURL, err := fetchStreamURL(&client, u.String())
+		if err == nil {
+			return &Client{URL: streamURL}, nil
+		}
+
+		lastErr = err
+
+		if attempt < maxRetries {
+			time.Sleep(retryDelay)
+		}
+	}
+
+	return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+var errNoStreamURL = errors.New("no streamUrl in response")
+
+func fetchStreamURL(client *http.Client, url string) (string, error) {
+	res, err := client.Get(url)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-
 	defer res.Body.Close()
+
 	if res.StatusCode != http.StatusOK {
-		return nil, errors.New(res.Status)
+		return "", errors.New(res.Status)
 	}
 
 	var body map[string]string
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
-		return nil, err
+		return "", err
 	}
 
-	if streamUrl, ok := body["streamUrl"]; ok {
-		return &Client{URL: streamUrl}, nil
+	if streamURL, ok := body["streamUrl"]; ok {
+		return streamURL, nil
 	}
 
-	return nil, fmt.Errorf("no streamUrl found in response")
+	return "", errNoStreamURL
 }
