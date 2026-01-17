@@ -693,7 +693,7 @@ Two-way audio support for Chinese version of [TP-Link cameras](https://www.tp-li
 
 This source allows you to view cameras from the [Xiaomi Mi Home](https://home.mi.com/) ecosystem.
 
-#### Source: Wyze
+## Source: Wyze
 
 This source allows you to stream from [Wyze](https://wyze.com/) cameras using native P2P protocol - no docker-wyze-bridge required. Supports H.264/H.265 video, AAC/G.711 audio, and two-way audio. [Read more](https://github.com/AlexxIT/go2rtc/blob/master/internal/wyze/README.md).
 
