@@ -156,6 +156,15 @@ func (c *Conn) MarshalJSON() ([]byte, error) {
 }
 
 func (c *Conn) Close() error {
+	// Close all senders to remove them from parent receivers
+	for _, sender := range c.Senders {
+		sender.Close()
+	}
+	// Close all receivers
+	for _, receiver := range c.Receivers {
+		receiver.Close()
+	}
+
 	c.closed.Done(nil)
 	return c.pc.Close()
 }

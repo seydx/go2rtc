@@ -36,7 +36,7 @@ type Producer struct {
 	mixers []*core.RTPMixer
 
 	state              state
-	mu                 sync.Mutex
+	mu                 sync.RWMutex
 	dialDone           chan struct{} // Closed when dial completes (success or failure)
 	dialErr            error         // Error from dial attempt (if any)
 	workerID           int
@@ -166,14 +166,15 @@ func (p *Producer) Dial() error {
 }
 
 func (p *Producer) GetMedias() []*core.Media {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.mu.RLock()
+	conn := p.conn
+	p.mu.RUnlock()
 
-	if p.conn == nil {
+	if conn == nil {
 		return nil
 	}
 
-	return p.conn.GetMedias()
+	return conn.GetMedias()
 }
 
 func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
@@ -310,13 +311,12 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 }
 
 func (p *Producer) MarshalJSON() ([]byte, error) {
-	p.mu.Lock()
-	// Copy references while holding lock, then release before marshaling
-	// to avoid blocking API if Dial/reconnect is holding the lock
+	// Use RLock for read-only access - doesn't block other readers
+	p.mu.RLock()
 	conn := p.conn
 	mixers := p.mixers
 	url := p.url
-	p.mu.Unlock()
+	p.mu.RUnlock()
 
 	if conn != nil {
 		connData, err := json.Marshal(conn)
@@ -329,15 +329,14 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
 			return connData, nil
 		}
 
-		// Marshal mixers
+		// Marshal mixers and append
 		mixersData, err := json.Marshal(mixers)
 		if err != nil {
 			return nil, err
 		}
 
-		// Simply append mixers field at the end
 		// Remove closing } and add mixers field
-		result := connData[:len(connData)-1] // Remove }
+		result := connData[:len(connData)-1]
 		result = append(result, []byte(`,"mixers":`)...)
 		result = append(result, mixersData...)
 		result = append(result, '}')
@@ -345,8 +344,7 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
 		return result, nil
 	}
 
-	info := map[string]string{"url": url}
-	return json.Marshal(info)
+	return json.Marshal(map[string]string{"url": url})
 }
 
 // StartPrebufferReplay starts a single replay loop that reads packets sequentially
@@ -434,17 +432,24 @@ func (p *Producer) worker(conn core.Producer, workerID int) {
 }
 
 func (p *Producer) reconnect(workerID, retry int) {
+	// Check workerID with lock, then release before slow operations
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.workerID != workerID {
+		p.mu.Unlock()
 		log.Trace().Msgf("[streams] stop reconnect url=%s", p.url)
 		return
 	}
+	url := p.url
+	receivers := p.receivers
+	senders := p.senders
+	gopEnabled := p.gopEnabled
+	oldConn := p.conn
+	p.mu.Unlock()
 
-	log.Debug().Msgf("[streams] retry=%d to url=%s", retry, p.url)
+	log.Debug().Msgf("[streams] retry=%d to url=%s", retry, url)
 
-	conn, err := GetProducer(p.url)
+	// Slow operation WITHOUT holding lock
+	conn, err := GetProducer(url)
 	if err != nil {
 		log.Debug().Msgf("[streams] producer=%s", err)
 
@@ -463,10 +468,20 @@ func (p *Producer) reconnect(workerID, retry int) {
 		return
 	}
 
+	// Check if still valid after slow operation
+	p.mu.Lock()
+	if p.workerID != workerID {
+		p.mu.Unlock()
+		conn.Stop()
+		return
+	}
+	p.mu.Unlock()
+
+	// Process tracks without holding lock (these may involve network ops)
 	for _, media := range conn.GetMedias() {
 		switch media.Direction {
 		case core.DirectionRecvonly:
-			for i, receiver := range p.receivers {
+			for i, receiver := range receivers {
 				codec := media.MatchCodec(receiver.Codec)
 				if codec == nil {
 					continue
@@ -477,17 +492,23 @@ func (p *Producer) reconnect(workerID, retry int) {
 					continue
 				}
 
-				if p.gopEnabled {
+				if gopEnabled {
 					track.SetupGOP()
 				}
 
 				receiver.Replace(track)
-				p.receivers[i] = track
+
+				// Update receiver in slice (need lock for this)
+				p.mu.Lock()
+				if i < len(p.receivers) {
+					p.receivers[i] = track
+				}
+				p.mu.Unlock()
 				break
 			}
 
 		case core.DirectionSendonly:
-			for _, sender := range p.senders {
+			for _, sender := range senders {
 				codec := media.MatchCodec(sender.Codec)
 				if codec == nil {
 					continue
@@ -498,10 +519,20 @@ func (p *Producer) reconnect(workerID, retry int) {
 		}
 	}
 
+	// Final update with lock
+	p.mu.Lock()
+	if p.workerID != workerID {
+		p.mu.Unlock()
+		conn.Stop()
+		return
+	}
 	// stop previous connection after moving tracks (fix ghost exec/ffmpeg)
-	_ = p.conn.Stop()
+	if oldConn != nil {
+		_ = oldConn.Stop()
+	}
 	// swap connections
 	p.conn = conn
+	p.mu.Unlock()
 
 	go p.worker(conn, workerID)
 }

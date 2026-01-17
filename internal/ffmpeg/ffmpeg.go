@@ -43,8 +43,30 @@ func Init() {
 			return "", err
 		}
 		args := parseArgs(url[7:])
+		// Use Smart Producer for:
+		// 1. audio=auto (any codec, auto-select)
+		// 2. audio=opus,pcma,aac (comma-separated, on-demand instances)
+		// 3. audio=pcma#audio=opus#audio=aac (multiple params, on-demand instances)
+		// But NOT when video is also requested (Smart Producer is audio-only)
 		if core.Contains(args.Codecs, "auto") {
 			return "", nil // force call streams.HandleFunc("ffmpeg")
+		}
+		// Check for multi-codec audio mode (only if no video transcoding)
+		if i := strings.Index(url, "#"); i >= 0 {
+			query := streams.ParseQuery(url[i+1:])
+			// Skip smart producer if video transcoding is requested
+			if len(query["video"]) == 0 {
+				// Check for comma-separated: audio=pcma,opus,aac
+				for _, audio := range query["audio"] {
+					if strings.Contains(audio, ",") {
+						return "", nil // force call streams.HandleFunc("ffmpeg")
+					}
+				}
+				// Check for multiple params: audio=pcma#audio=opus#audio=aac
+				if len(query["audio"]) > 1 {
+					return "", nil // force call streams.HandleFunc("ffmpeg")
+				}
+			}
 		}
 		return "exec:" + args.String(), nil
 	})
