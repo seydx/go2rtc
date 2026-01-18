@@ -16,3 +16,5 @@ node_modules
 0_test.go
 
 .DS_Store
+/dev-*
+/branch-*
