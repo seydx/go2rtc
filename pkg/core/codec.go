@@ -76,6 +76,12 @@ func FFmpegCodecName(name string) string {
 	case CodecMP3:
 		return "mp3"
 	}
+
+	// G726 variants: G726-16, G726-24, G726-32, G726-40
+	if strings.HasPrefix(name, CodecG726) {
+		return "g726"
+	}
+
 	return name
 }
 
@@ -193,6 +199,7 @@ func UnmarshalCodec(md *sdp.MediaDescription, payloadType string) *Codec {
 			// FFmpeg + RTSP + pcm_s16le = doesn't pass info about codec name and params
 			// so try to guess the codec based on bitrate
 			// https://github.com/AlexxIT/go2rtc/issues/523
+			c.Name = CodecPCML
 			switch md.Bandwidth[0].Bandwidth {
 			case 128:
 				c.ClockRate = 8000
@@ -216,10 +223,7 @@ func UnmarshalCodec(md *sdp.MediaDescription, payloadType string) *Codec {
 				c.Channels = 2
 			default:
 				c.Name = payloadType
-				break
 			}
-
-			c.Name = CodecPCML
 		default:
 			c.Name = payloadType
 		}
@@ -254,7 +258,9 @@ func ParseCodecString(s string) *Codec {
 	var codec Codec
 
 	ss := strings.Split(s, "/")
-	switch strings.ToLower(ss[0]) {
+	name := strings.ToLower(ss[0])
+
+	switch name {
 	case "pcm_s16be", "s16be", "pcm":
 		codec.Name = CodecPCM
 	case "pcm_s16le", "s16le", "pcml":
@@ -269,8 +275,15 @@ func ParseCodecString(s string) *Codec {
 		codec.Name = CodecOpus
 	case "flac":
 		codec.Name = CodecFLAC
+	case "g722":
+		codec.Name = CodecG722
 	default:
-		return nil
+		// G726 variants: g726, g726-16, g726-24, g726-32, g726-40
+		if strings.HasPrefix(name, "g726") {
+			codec.Name = strings.ToUpper(name) // Keep variant suffix (G726-40)
+		} else {
+			return nil
+		}
 	}
 
 	if len(ss) >= 2 {

@@ -35,7 +35,7 @@ type Producer struct {
 	mixers []*core.RTPMixer
 
 	state    state
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	workerID int
 }
 
@@ -115,54 +115,91 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 
 func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.state == stateNone {
+		p.mu.Unlock()
 		return errors.New("add track from none state")
 	}
 
-	// Check if we already have a mixer for this codec (for backchannel)
+	// Check if we already have ANY mixer for this media kind (audio backchannel)
+	// Reuse existing mixer even if codec is different - FFmpeg will transcode
 	for _, mixer := range p.mixers {
-		if mixer.Codec.Match(codec) {
-			// Mixer exists, add this consumer receiver as a child of the mixer
-			// Consumer sends packets → Mixer normalizes → forwards to Sender
-			track.AppendChild(&mixer.Node)
+		if mixer.Media.Kind == media.Kind {
+			// Add this consumer as parent with its actual codec (e.g., Opus from browser)
+			// The mixer will handle transcoding if codecs differ from output codec
+			mixer.AddParentWithCodec(&track.Node, track.Codec)
 			p.senders = append(p.senders, track)
+			p.mu.Unlock()
 			return nil
 		}
 	}
 
-	// No mixer exists yet, create one
-	mixer := core.NewRTPMixer(media, codec)
+	// No mixer exists yet, create one with the producer's codec as output (e.g., AAC for camera)
+	mixer := core.NewRTPMixer(ffmpegBin, media, codec)
+	// Add parent with its actual codec (e.g., Opus from browser) - mixer will transcode to output
+	mixer.AddParentWithCodec(&track.Node, track.Codec)
 
-	// Add consumer receiver as child of mixer
-	track.AppendChild(&mixer.Node)
+	// Connect mixer to underlying protocol
+	// Get consumer reference and release lock BEFORE calling AddTrack
+	consumer := p.conn.(core.Consumer)
+	mixerReceiver := core.NewReceiver(media, codec)
+	mixerReceiver.ParentNode = &mixer.Node
+	p.mu.Unlock()
 
-	// Pass mixer to underlying connection (RTSP/WebRTC/etc)
-	// The connection will create a sender and bind it to the mixer
-	// Mixer → Sender → Protocol (RTSP/WebRTC/etc)
-	if err := p.conn.(core.Consumer).AddTrack(media, codec, &core.Receiver{Node: mixer.Node, Media: media}); err != nil {
+	// Call underlying protocol's AddTrack WITHOUT holding the lock
+	// This prevents blocking API serialization during network operations
+	if err := consumer.AddTrack(media, codec, mixerReceiver); err != nil {
 		return err
 	}
 
-	// Store mixer for future consumers
+	// Reacquire lock to update state
+	p.mu.Lock()
 	p.mixers = append(p.mixers, mixer)
-
 	p.senders = append(p.senders, track)
 
 	if p.state == stateMedias {
 		p.state = stateTracks
 	}
 
+	p.mu.Unlock()
 	return nil
 }
 
 func (p *Producer) MarshalJSON() ([]byte, error) {
-	if conn := p.conn; conn != nil {
-		return json.Marshal(conn)
+	// Use RLock for read-only access - doesn't block other readers
+	p.mu.RLock()
+	conn := p.conn
+	mixers := p.mixers
+	url := p.url
+	p.mu.RUnlock()
+
+	if conn != nil {
+		connData, err := json.Marshal(conn)
+		if err != nil {
+			return nil, err
+		}
+
+		// If no mixers, return as-is
+		if len(mixers) == 0 {
+			return connData, nil
+		}
+
+		// Marshal mixers and append
+		mixersData, err := json.Marshal(mixers)
+		if err != nil {
+			return nil, err
+		}
+
+		// Remove closing } and add mixers field
+		result := connData[:len(connData)-1]
+		result = append(result, []byte(`,"mixers":`)...)
+		result = append(result, mixersData...)
+		result = append(result, '}')
+
+		return result, nil
 	}
-	info := map[string]string{"url": p.url}
-	return json.Marshal(info)
+
+	return json.Marshal(map[string]string{"url": url})
 }
 
 // internals
@@ -290,7 +327,13 @@ func (p *Producer) stop() {
 		p.conn = nil
 	}
 
+	// Close all mixers
+	for _, mixer := range p.mixers {
+		mixer.Close()
+	}
+
 	p.state = stateNone
 	p.receivers = nil
 	p.senders = nil
+	p.mixers = nil
 }

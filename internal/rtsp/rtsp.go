@@ -186,21 +186,18 @@ func tcpHandler(conn *rtsp.Conn) {
 				}
 			}
 
-			if query.Get("backchannel") == "1" {
+			if query.Has("backchannel") {
+				backchannel := query.Get("backchannel")
+				var codecs []*core.Codec
+
+				for codecStr := range strings.SplitSeq(backchannel, ",") {
+					codecs = append(codecs, core.ParseQueryCodec(codecStr))
+				}
+
 				conn.Medias = append(conn.Medias, &core.Media{
 					Kind:      core.KindAudio,
 					Direction: core.DirectionRecvonly,
-					Codecs: []*core.Codec{
-						{Name: core.CodecOpus, ClockRate: 48000, Channels: 2},
-						{Name: core.CodecPCM, ClockRate: 16000},
-						{Name: core.CodecPCMA, ClockRate: 16000},
-						{Name: core.CodecPCMU, ClockRate: 16000},
-						{Name: core.CodecPCM, ClockRate: 8000},
-						{Name: core.CodecPCMA, ClockRate: 8000},
-						{Name: core.CodecPCMU, ClockRate: 8000},
-						{Name: core.CodecAAC, ClockRate: 8000},
-						{Name: core.CodecAAC, ClockRate: 16000},
-					},
+					Codecs:    codecs,
 				})
 			}
 
