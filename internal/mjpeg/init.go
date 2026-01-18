@@ -1,7 +1,6 @@
 package mjpeg
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -37,76 +36,40 @@ func Init() {
 
 var log zerolog.Logger
 
-var streamLocks sync.Map
-
-type cachedResult struct {
-	imgData   []byte
-	err       error
-	timestamp time.Time
-}
-
-var snapshotCache sync.Map
-
 func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
-	var streamName string
-	if src := r.URL.Query().Get("src"); src != "" {
-		streamName = src
-	} else {
-		streamName = r.URL.Query().Get("name")
-	}
-
-	if streamName == "" {
-		http.Error(w, "src or name parameter is required", http.StatusBadRequest)
+	query := r.URL.Query()
+	stream, _ := streams.GetOrPatch(query)
+	if stream == nil {
+		http.Error(w, api.StreamNotFound, http.StatusNotFound)
 		return
 	}
 
-	if val, ok := snapshotCache.Load(streamName); ok {
-		res := val.(cachedResult)
-		if time.Since(res.timestamp) < 2*time.Second {
-			if res.err != nil {
-				http.Error(w, res.err.Error(), http.StatusInternalServerError)
+	var b []byte
+
+	if s := query.Get("cache"); s != "" {
+		if timeout, err := time.ParseDuration(s); err == nil {
+			src := query.Get("src")
+
+			cacheMu.Lock()
+			entry, found := cache[src]
+			cacheMu.Unlock()
+
+			if found && time.Since(entry.timestamp) < timeout {
+				writeJPEGResponse(w, entry.payload)
+				return
 			}
-			return
+
+			defer func() {
+				entry = cacheEntry{payload: b, timestamp: time.Now()}
+				cacheMu.Lock()
+				if cache == nil {
+					cache = map[string]cacheEntry{src: entry}
+				} else {
+					cache[src] = entry
+				}
+				cacheMu.Unlock()
+			}()
 		}
-	}
-
-	mu, _ := streamLocks.LoadOrStore(streamName, &sync.Mutex{})
-	mu.(*sync.Mutex).Lock()
-	defer func() {
-		mu.(*sync.Mutex).Unlock()
-	}()
-
-	if val, ok := snapshotCache.Load(streamName); ok {
-		res := val.(cachedResult)
-		if time.Since(res.timestamp) < 2*time.Second {
-			if res.err != nil {
-				http.Error(w, res.err.Error(), http.StatusInternalServerError)
-			} else {
-				sendImage(w, res.imgData)
-			}
-			return
-		}
-	}
-
-	imgData, err := fetchAndProcessSnapshot(r)
-
-	snapshotCache.Store(streamName, cachedResult{
-		imgData:   imgData,
-		err:       err,
-		timestamp: time.Now(),
-	})
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	} else {
-		sendImage(w, imgData)
-	}
-}
-
-func fetchAndProcessSnapshot(r *http.Request) ([]byte, error) {
-	stream, _ := streams.GetOrPatch(r.URL.Query())
-	if stream == nil {
-		return nil, errors.New(api.StreamNotFound)
 	}
 
 	cons := magic.NewKeyframe()
@@ -114,48 +77,41 @@ func fetchAndProcessSnapshot(r *http.Request) ([]byte, error) {
 
 	if err := stream.AddConsumer(cons); err != nil {
 		log.Error().Err(err).Caller().Send()
-		return nil, err
+		return
 	}
-	defer func() {
-		stream.RemoveConsumer(cons)
-	}()
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
+	once := &core.OnceBuffer{} // init and first frame
+	_, _ = cons.WriteTo(once)
+	b = once.Buffer()
 
-	bChan := make(chan []byte, 1)
-	go func() {
-		once := &core.OnceBuffer{}
-		_, _ = cons.WriteTo(once)
-		bChan <- once.Buffer()
-	}()
-
-	var b []byte
-	select {
-	case b = <-bChan:
-		if len(b) == 0 {
-			return nil, errors.New("failed to get frame, empty buffer")
-		}
-	case <-ctx.Done():
-		return nil, errors.New("timeout waiting for a keyframe")
-	}
+	stream.RemoveConsumer(cons)
 
 	switch cons.CodecName() {
 	case core.CodecH264, core.CodecH265:
 		ts := time.Now()
 		var err error
-		if b, err = ffmpeg.JPEGWithQuery(b, r.URL.Query()); err != nil {
-			return nil, err
+		if b, err = ffmpeg.JPEGWithQuery(b, query); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		log.Debug().Msgf("[mjpeg] transcoding time=%s", time.Since(ts))
 	case core.CodecJPEG:
 		b = mjpeg.FixJPEG(b)
 	}
 
-	return b, nil
+	writeJPEGResponse(w, b)
 }
 
-func sendImage(w http.ResponseWriter, b []byte) {
+var cache map[string]cacheEntry
+var cacheMu sync.Mutex
+
+// cacheEntry represents a cached keyframe with its timestamp
+type cacheEntry struct {
+	payload   []byte
+	timestamp time.Time
+}
+
+func writeJPEGResponse(w http.ResponseWriter, b []byte) {
 	h := w.Header()
 	h.Set("Content-Type", "image/jpeg")
 	h.Set("Content-Length", strconv.Itoa(len(b)))
@@ -177,8 +133,7 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func outputMjpeg(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-	src := query.Get("src")
+	src := r.URL.Query().Get("src")
 	stream := streams.Get(src)
 	if stream == nil {
 		http.Error(w, api.StreamNotFound, http.StatusNotFound)
@@ -187,16 +142,6 @@ func outputMjpeg(w http.ResponseWriter, r *http.Request) {
 
 	cons := mjpeg.NewConsumer()
 	cons.WithRequest(r)
-
-	// Parse query parameters for GOP and prebuffer control
-	if s := query.Get("gop"); s != "" {
-		cons.UseGOP = core.Atoi(s) != 0
-	} else {
-		cons.UseGOP = true // Default: GOP enabled
-	}
-	if query.Has("prebuffer") {
-		cons.UsePrebuffer = true
-	}
 
 	if err := stream.AddConsumer(cons); err != nil {
 		log.Error().Err(err).Msg("[api.mjpeg] add consumer")

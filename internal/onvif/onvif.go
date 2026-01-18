@@ -171,22 +171,21 @@ func apiOnvif(w http.ResponseWriter, r *http.Request) {
 	var items []*api.Source
 
 	if src == "" {
-		devices, err := onvif.DiscoveryONVIFDevices()
+		devices, err := onvif.DiscoveryStreamingDevices()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		for _, device := range devices {
-			rawURL := device.URL
-			u, err := url.Parse(rawURL)
+			u, err := url.Parse(device.URL)
 			if err != nil {
-				log.Warn().Str("url", rawURL).Msg("[onvif] broken")
+				log.Warn().Str("url", device.URL).Msg("[onvif] broken")
 				continue
 			}
 
 			if u.Scheme != "http" {
-				log.Warn().Str("url", rawURL).Msg("[onvif] unsupported")
+				log.Warn().Str("url", device.URL).Msg("[onvif] unsupported")
 				continue
 			}
 
@@ -197,7 +196,11 @@ func apiOnvif(w http.ResponseWriter, r *http.Request) {
 				u.Path = ""
 			}
 
-			items = append(items, &api.Source{ID: device.UUID, Name: device.Name, URL: u.String(), Info: device.Hardware})
+			items = append(items, &api.Source{
+				Name: u.Host,
+				URL:  u.String(),
+				Info: device.Name + " " + device.Hardware,
+			})
 		}
 	} else {
 		client, err := onvif.NewClient(src)
@@ -223,38 +226,17 @@ func apiOnvif(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		sourceURL, err := url.Parse(src)
-		if err != nil {
-			log.Warn().Str("url", src).Msg("[onvif] broken source url")
-		}
-
-		deviceID := sourceURL.Host
-		if deviceID == "" {
-			deviceID = "unknown"
-		}
-
 		for i, token := range tokens {
-			streamName := name
-			if len(tokens) > 1 {
-				streamName += " stream" + strconv.Itoa(i+1)
-			}
-
-			streamID := "stream" + strconv.Itoa(i+1)
-
 			items = append(items, &api.Source{
-				ID:   streamID,
-				Name: streamName,
+				Name: name + " stream" + strconv.Itoa(i),
 				URL:  src + "?subtype=" + token,
-				Info: token,
 			})
 		}
 
 		if len(tokens) > 0 && client.HasSnapshots() {
 			items = append(items, &api.Source{
-				ID:   "snapshot",
 				Name: name + " snapshot",
 				URL:  src + "?subtype=" + tokens[0] + "&snapshot",
-				Info: tokens[0],
 			})
 		}
 	}
