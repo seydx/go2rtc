@@ -206,12 +206,12 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 			_ = sendAnswer.Wait()
 
 			s := msg.ToJSON().Candidate
-			// log.Trace().Str("candidate", s).Msg("[webrtc] local ")
+			log.Trace().Str("candidate", s).Msg("[webrtc] local ")
 			tr.Write(&ws.Message{Type: "webrtc/candidate", Value: s})
 		}
 	})
 
-	// log.Trace().Msgf("[webrtc] offer:\n%s", offer.SDP)
+	log.Trace().Msgf("[webrtc] offer:\n%s", offer.SDP)
 
 	// 1. SetOffer, so we can get remote client codecs
 	if err = conn.SetOffer(offer.SDP); err != nil {
@@ -233,7 +233,7 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 
 	// 3. Exchange SDP without waiting all candidates
 	answer, err := conn.GetAnswer()
-	// log.Trace().Msgf("[webrtc] answer\n%s", answer)
+	log.Trace().Msgf("[webrtc] answer\n%s", answer)
 
 	if err != nil {
 		log.Error().Err(err).Caller().Send()
@@ -281,7 +281,7 @@ func ExchangeSDP(stream *streams.Stream, offer, desc, userAgent string) (answer 
 	})
 
 	// 1. SetOffer, so we can get remote client codecs
-	// log.Trace().Msgf("[webrtc] offer:\n%s", offer)
+	log.Trace().Msgf("[webrtc] offer:\n%s", offer)
 
 	if err = conn.SetOffer(offer); err != nil {
 		log.Warn().Err(err).Caller().Send()
@@ -304,7 +304,7 @@ func ExchangeSDP(stream *streams.Stream, offer, desc, userAgent string) (answer 
 	}
 
 	answer, err = conn.GetCompleteAnswer(GetCandidates(), FilterCandidate)
-	// log.Trace().Msgf("[webrtc] answer\n%s", answer)
+	log.Trace().Msgf("[webrtc] answer\n%s", answer)
 
 	if err != nil {
 		log.Error().Err(err).Caller().Send()

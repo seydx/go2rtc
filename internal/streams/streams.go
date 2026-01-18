@@ -2,13 +2,13 @@ package streams
 
 import (
 	"errors"
+	"maps"
 	"net/url"
 	"sync"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
-	"github.com/AlexxIT/go2rtc/pkg/yaml"
 	"github.com/rs/zerolog"
 )
 
@@ -16,10 +16,13 @@ var ffmpegBin string
 
 func Init() {
 	var cfg struct {
-		Streams map[string]any    `yaml:"streams"`
-		Publish map[string]any    `yaml:"publish"`
-		Preload yaml.OrderedMap   `yaml:"preload"`
-		FFmpeg  map[string]string `yaml:"ffmpeg"`
+		Streams map[string]any `yaml:"streams"`
+		Publish map[string]any `yaml:"publish"`
+		Preload struct {
+			Keys   []string
+			Values map[string]string
+		} `yaml:"preload"`
+		FFmpeg map[string]string `yaml:"ffmpeg"`
 	}
 
 	app.LoadConfig(&cfg)
@@ -194,13 +197,10 @@ func GetAllSources() map[string][]string {
 	return sources
 }
 
-// GetAll returns a copy of all streams for safe iteration/marshaling
 func GetAll() map[string]*Stream {
 	streamsMu.Lock()
 	result := make(map[string]*Stream, len(streams))
-	for name, stream := range streams {
-		result[name] = stream
-	}
+	maps.Copy(result, streams)
 	streamsMu.Unlock()
 	return result
 }

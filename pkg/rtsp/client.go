@@ -405,7 +405,6 @@ func (c *Conn) Close() error {
 	if c.OnClose != nil {
 		_ = c.OnClose()
 	}
-
 	for _, conn := range c.udpConn {
 		_ = conn.Close()
 	}

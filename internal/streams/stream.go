@@ -16,36 +16,35 @@ type Stream struct {
 }
 
 func NewStream(source any) *Stream {
-	s := new(Stream)
-
 	switch source := source.(type) {
 	case string:
-		prod := NewProducer(source)
-		s.producers = []*Producer{prod}
-	case []string:
-		for _, str := range source {
-			prod := NewProducer(str)
-			s.producers = append(s.producers, prod)
+		return &Stream{
+			producers: []*Producer{NewProducer(source)},
 		}
+	case []string:
+		s := new(Stream)
+		for _, str := range source {
+			s.producers = append(s.producers, NewProducer(str))
+		}
+		return s
 	case []any:
+		s := new(Stream)
 		for _, src := range source {
 			str, ok := src.(string)
 			if !ok {
 				log.Error().Msgf("[stream] NewStream: Expected string, got %v", src)
 				continue
 			}
-			prod := NewProducer(str)
-			s.producers = append(s.producers, prod)
+			s.producers = append(s.producers, NewProducer(str))
 		}
+		return s
 	case map[string]any:
 		return NewStream(source["url"])
 	case nil:
-		return s
+		return new(Stream)
 	default:
 		panic(core.Caller())
 	}
-
-	return s
 }
 
 func (s *Stream) Sources() []string {

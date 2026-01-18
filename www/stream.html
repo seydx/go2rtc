@@ -57,17 +57,7 @@
         video.background = background;
         video.mode = modes[i] || video.mode;
         video.style.flex = width;
-
-        // Build WebSocket URL with src and optional gop/prebuffer parameters
-        const wsUrl = new URL('api/ws?src=' + encodeURIComponent(streams[i]), location.href);
-        if (params.has('gop')) {
-            wsUrl.searchParams.set('gop', params.get('gop'));
-        }
-        if (params.has('prebuffer')) {
-            wsUrl.searchParams.set('prebuffer', params.get('prebuffer'));
-        }
-
-        video.src = wsUrl;
+        video.src = new URL('api/ws?src=' + encodeURIComponent(streams[i]), location.href);
         document.body.appendChild(video);
     }
 

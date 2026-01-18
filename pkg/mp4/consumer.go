@@ -26,16 +26,6 @@ type Consumer struct {
 	Rotate int `json:"-"`
 	ScaleX int `json:"-"`
 	ScaleY int `json:"-"`
-
-	FragmentMode string `json:"-"`
-
-	videoTrack byte
-	audioTrack byte
-
-	fragment struct {
-		video []*rtp.Packet
-		audio []*rtp.Packet
-	}
 }
 
 func NewConsumer(medias []*core.Media) *Consumer {
@@ -68,9 +58,8 @@ func NewConsumer(medias []*core.Media) *Consumer {
 			Medias:     medias,
 			Transport:  wr,
 		},
-		muxer:        &Muxer{},
-		wr:           wr,
-		FragmentMode: "frame",
+		muxer: &Muxer{},
+		wr:    wr,
 	}
 }
 
@@ -79,14 +68,6 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 
 	codec := track.Codec.Clone()
 	handler := core.NewSender(media, codec)
-	handler.UseGOP = c.UseGOP
-	handler.UsePrebuffer = c.UsePrebuffer
-
-	if media.Kind == core.KindVideo {
-		c.videoTrack = trackID
-	} else {
-		c.audioTrack = trackID
-	}
 
 	switch track.Codec.Name {
 	case core.CodecH264:
@@ -100,26 +81,11 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 
 			// important to use Mutex because right fragment order
 			c.mu.Lock()
-			defer c.mu.Unlock()
-
-			if c.FragmentMode == "keyframe" {
-				isKeyframe := h264.IsKeyframe(packet.Payload)
-				if isKeyframe && len(c.fragment.video) > 0 {
-					b := c.muxer.GetFragmentPayload(c.audioTrack, c.videoTrack, &c.fragment)
-					if n, err := c.wr.Write(b); err == nil {
-						c.Send += n
-					}
-					c.fragment.video = c.fragment.video[:0]
-					c.fragment.audio = c.fragment.audio[:0]
-				}
-
-				c.fragment.video = append(c.fragment.video, packet.Clone())
-			} else {
-				b := c.muxer.GetPayload(trackID, packet)
-				if n, err := c.wr.Write(b); err == nil {
-					c.Send += n
-				}
+			b := c.muxer.GetPayload(trackID, packet)
+			if n, err := c.wr.Write(b); err == nil {
+				c.Send += n
 			}
+			c.mu.Unlock()
 		}
 
 		if track.Codec.IsRTP() {
@@ -139,26 +105,11 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 
 			// important to use Mutex because right fragment order
 			c.mu.Lock()
-			defer c.mu.Unlock()
-
-			if c.FragmentMode == "keyframe" {
-				isKeyframe := h265.IsKeyframe(packet.Payload)
-				if isKeyframe && len(c.fragment.video) > 0 {
-					b := c.muxer.GetFragmentPayload(c.audioTrack, c.videoTrack, &c.fragment)
-					if n, err := c.wr.Write(b); err == nil {
-						c.Send += n
-					}
-					c.fragment.video = c.fragment.video[:0]
-					c.fragment.audio = c.fragment.audio[:0]
-				}
-
-				c.fragment.video = append(c.fragment.video, packet.Clone())
-			} else {
-				b := c.muxer.GetPayload(trackID, packet)
-				if n, err := c.wr.Write(b); err == nil {
-					c.Send += n
-				}
+			b := c.muxer.GetPayload(trackID, packet)
+			if n, err := c.wr.Write(b); err == nil {
+				c.Send += n
 			}
+			c.mu.Unlock()
 		}
 
 		if track.Codec.IsRTP() {
@@ -175,16 +126,11 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 
 			// important to use Mutex because right fragment order
 			c.mu.Lock()
-			defer c.mu.Unlock()
-
-			if c.FragmentMode == "keyframe" {
-				c.fragment.audio = append(c.fragment.audio, packet.Clone())
-			} else {
-				b := c.muxer.GetPayload(trackID, packet)
-				if n, err := c.wr.Write(b); err == nil {
-					c.Send += n
-				}
+			b := c.muxer.GetPayload(trackID, packet)
+			if n, err := c.wr.Write(b); err == nil {
+				c.Send += n
 			}
+			c.mu.Unlock()
 		}
 
 		switch track.Codec.Name {

@@ -11,29 +11,6 @@ func Unmarshal(in []byte, out interface{}) (err error) {
 	return yaml.Unmarshal(in, out)
 }
 
-// OrderedMap preserves the order of keys as they appear in YAML
-type OrderedMap struct {
-	Keys   []string
-	Values map[string]string
-}
-
-func (o *OrderedMap) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind != yaml.MappingNode {
-		return errors.New("expected a map")
-	}
-
-	o.Values = make(map[string]string)
-	for i := 0; i < len(node.Content); i += 2 {
-		keyNode := node.Content[i]
-		valueNode := node.Content[i+1]
-
-		key := keyNode.Value
-		o.Keys = append(o.Keys, key)
-		o.Values[key] = valueNode.Value
-	}
-	return nil
-}
-
 func Encode(v any, indent int) ([]byte, error) {
 	b := bytes.NewBuffer(nil)
 	e := yaml.NewEncoder(b)

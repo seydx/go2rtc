@@ -42,15 +42,3 @@ func FindPrefixURL(prefix string, sources []string) string {
 
 	return ""
 }
-
-func FindPrefixURLs(prefix string) map[string]*url.URL {
-	urls := map[string]*url.URL{}
-	for name, sources := range GetAllSources() {
-		if rawURL := FindPrefixURL(prefix, sources); rawURL != "" {
-			if u, err := url.Parse(rawURL); err == nil {
-				urls[name] = u
-			}
-		}
-	}
-	return urls
-}

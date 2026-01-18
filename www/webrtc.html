@@ -51,11 +51,7 @@
         if (/video|audio/.test(media)) {
             const tracks = ['video', 'audio']
                 .filter(kind => media.indexOf(kind) >= 0)
-                .map(kind => {
-                    // backchannel = sendrecv audio track without microphone (for mixer silence testing)
-                    const direction = kind === 'audio' && media.indexOf('backchannel') >= 0 ? 'sendrecv' : 'recvonly';
-                    return pc.addTransceiver(kind, {direction: direction}).receiver.track;
-                });
+                .map(kind => pc.addTransceiver(kind, {direction: 'recvonly'}).receiver.track);
             localTracks.push(...tracks);
         }
 
