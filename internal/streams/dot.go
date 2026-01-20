@@ -106,7 +106,7 @@ type conn struct {
 	UserAgent  string `json:"user_agent"`
 	Receivers  []node `json:"receivers"`
 	Senders    []node `json:"senders"`
-	Mixers     []node `json:"mixers"`
+	Mixer      *node  `json:"mixer"`
 	BytesRecv  int    `json:"bytes_recv"`
 	BytesSend  int    `json:"bytes_send"`
 }
@@ -130,10 +130,10 @@ func (c *conn) appendDOT(dot []byte, group string) []byte {
 		//dot = fmt.Appendf(dot, "%d -> %d [label=%q];\n", send.ID, c.ID, humanBytes(send.Bytes))
 		//dot = send.appendDOT(dot, "node")
 	}
-	for _, mixer := range c.Mixers {
-		dot = mixer.appendDOT(dot, "mixer")
-		for _, parentID := range mixer.Parents {
-			dot = fmt.Appendf(dot, "%d -> %d [label=%q];\n", parentID, mixer.ID, humanBytes(mixer.Bytes))
+	if c.Mixer != nil {
+		dot = c.Mixer.appendDOT(dot, "mixer")
+		for _, parentID := range c.Mixer.Parents {
+			dot = fmt.Appendf(dot, "%d -> %d [label=%q];\n", parentID, c.Mixer.ID, humanBytes(c.Mixer.Bytes))
 		}
 	}
 	return dot

@@ -31,10 +31,7 @@ type Producer struct {
 	receivers []*core.Receiver
 	senders   []*core.Receiver
 
-	// Mixers for backchannel - one per codec
-	mixers []*core.RTPMixer
-
-	// Whether to enable audio mixing (default: true)
+	mixer         *core.RTPMixer
 	mixingEnabled bool
 
 	state    state
@@ -43,20 +40,6 @@ type Producer struct {
 }
 
 const SourceTemplate = "{input}"
-
-// parseStreamParams extracts stream parameters from the source URL
-// Currently supports: #noMix - disable audio mixing
-func parseStreamParams(source string) (rawURL string, mixingEnabled bool) {
-	rawURL = source
-	mixingEnabled = true // default
-
-	if strings.Contains(rawURL, "#noMix") {
-		mixingEnabled = false
-		rawURL = strings.Replace(rawURL, "#noMix", "", 1)
-	}
-
-	return
-}
 
 func NewProducer(source string) *Producer {
 	rawSource, mixingEnabled := parseStreamParams(source)
@@ -142,17 +125,14 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 
 	// Only use mixer if mixing is enabled
 	if p.mixingEnabled {
-		// Check if we already have ANY mixer for this media kind (audio backchannel)
-		// Reuse existing mixer even if codec is different - FFmpeg will transcode
-		for _, mixer := range p.mixers {
-			if mixer.Media.Kind == media.Kind {
-				// Add this consumer as parent with its actual codec (e.g., Opus from browser)
-				// The mixer will handle transcoding if codecs differ from output codec
-				mixer.AddParentWithCodec(&track.Node, track.Codec)
-				p.senders = append(p.senders, track)
-				p.mu.Unlock()
-				return nil
-			}
+		// Reuse existing mixer - add this consumer as parent
+		if p.mixer != nil {
+			// Add this consumer as parent with its actual codec (e.g., Opus from browser)
+			// The mixer will handle transcoding if codecs differ from output codec
+			p.mixer.AddParentWithCodec(&track.Node, track.Codec)
+			p.senders = append(p.senders, track)
+			p.mu.Unlock()
+			return nil
 		}
 
 		// No mixer exists yet, create one with the producer's codec as output (e.g., AAC for camera)
@@ -175,7 +155,7 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 
 		// Reacquire lock to update state
 		p.mu.Lock()
-		p.mixers = append(p.mixers, mixer)
+		p.mixer = mixer
 		p.senders = append(p.senders, track)
 	} else {
 		// Without mixing, directly pass track to underlying protocol
@@ -199,40 +179,38 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 }
 
 func (p *Producer) MarshalJSON() ([]byte, error) {
-	// Use RLock for read-only access - doesn't block other readers
 	p.mu.RLock()
 	conn := p.conn
-	mixers := p.mixers
+	mixer := p.mixer
 	url := p.url
 	p.mu.RUnlock()
 
-	if conn != nil {
-		connData, err := json.Marshal(conn)
-		if err != nil {
-			return nil, err
-		}
-
-		// If no mixers, return as-is
-		if len(mixers) == 0 {
-			return connData, nil
-		}
-
-		// Marshal mixers and append
-		mixersData, err := json.Marshal(mixers)
-		if err != nil {
-			return nil, err
-		}
-
-		// Remove closing } and add mixers field
-		result := connData[:len(connData)-1]
-		result = append(result, []byte(`,"mixers":`)...)
-		result = append(result, mixersData...)
-		result = append(result, '}')
-
-		return result, nil
+	if conn == nil {
+		return json.Marshal(map[string]string{"url": url})
 	}
 
-	return json.Marshal(map[string]string{"url": url})
+	if mixer == nil {
+		return json.Marshal(conn)
+	}
+
+	// Preserve original field order, append mixer at end
+	connData, err := json.Marshal(conn)
+	if err != nil {
+		return nil, err
+	}
+
+	mixerData, err := json.Marshal(mixer)
+	if err != nil {
+		return nil, err
+	}
+
+	// Insert mixer before closing }
+	result := make([]byte, 0, len(connData)+len(mixerData)+10)
+	result = append(result, connData[:len(connData)-1]...)
+	result = append(result, `,"mixer":`...)
+	result = append(result, mixerData...)
+	result = append(result, '}')
+	return result, nil
 }
 
 // internals
@@ -360,13 +338,25 @@ func (p *Producer) stop() {
 		p.conn = nil
 	}
 
-	// Close all mixers
-	for _, mixer := range p.mixers {
-		mixer.Close()
+	// Close mixer if exists
+	if p.mixer != nil {
+		p.mixer.Close()
+		p.mixer = nil
 	}
 
 	p.state = stateNone
 	p.receivers = nil
 	p.senders = nil
-	p.mixers = nil
+}
+
+func parseStreamParams(source string) (rawURL string, mixingEnabled bool) {
+	rawURL = source
+	mixingEnabled = false
+
+	if strings.Contains(rawURL, "#mix") {
+		mixingEnabled = true
+		rawURL = strings.Replace(rawURL, "#mix", "", 1)
+	}
+
+	return
 }
