@@ -32,8 +32,7 @@ type Producer struct {
 	receivers []*core.Receiver
 	senders   []*core.Receiver
 
-	// Mixers for backchannel - one per codec
-	mixers []*core.RTPMixer
+	mixer *core.RTPMixer
 
 	state              state
 	mu                 sync.RWMutex
@@ -253,27 +252,25 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 	if p.mixingEnabled {
 		// Check if we already have ANY mixer for audio backchannel
 		// Reuse existing mixer even if codec is different - FFmpeg will transcode
-		for _, mixer := range p.mixers {
-			if mixer.Media.Kind == media.Kind {
-				// Add this consumer as parent with its actual codec (e.g., Opus from browser)
-				// The mixer will handle transcoding if codecs differ from output codec
-				mixer.AddParentWithCodec(&track.Node, track.Codec)
-				p.senders = append(p.senders, track)
-				p.mu.Unlock()
-				return nil
-			}
+		if p.mixer != nil {
+			// Add this consumer as parent with its actual codec (e.g., Opus from browser)
+			// The mixer will handle transcoding if codecs differ from output codec
+			p.mixer.AddParentWithCodec(&track.Node, track.Codec)
+			p.senders = append(p.senders, track)
+			p.mu.Unlock()
+			return nil
 		}
 
 		// No mixer exists yet, create one with the producer's codec as output (e.g., AAC for camera)
-		mixer := core.NewRTPMixer(ffmpegBin, media, codec)
+		p.mixer = core.NewRTPMixer(ffmpegBin, media, codec)
 		// Add parent with its actual codec (e.g., Opus from browser) - mixer will transcode to output
-		mixer.AddParentWithCodec(&track.Node, track.Codec)
+		p.mixer.AddParentWithCodec(&track.Node, track.Codec)
 
 		// Connect mixer to underlying protocol
 		// Get consumer reference and release lock BEFORE calling AddTrack
 		consumer := p.conn.(core.Consumer)
 		mixerReceiver := core.NewReceiver(media, codec)
-		mixerReceiver.ParentNode = &mixer.Node
+		mixerReceiver.ParentNode = &p.mixer.Node
 		p.mu.Unlock()
 
 		// Call underlying protocol's AddTrack WITHOUT holding the lock
@@ -284,7 +281,6 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 
 		// Reacquire lock to update state
 		p.mu.Lock()
-		p.mixers = append(p.mixers, mixer)
 		p.senders = append(p.senders, track)
 	} else {
 		// Without mixing, directly pass track to underlying protocol
@@ -314,7 +310,7 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
 	// Use RLock for read-only access - doesn't block other readers
 	p.mu.RLock()
 	conn := p.conn
-	mixers := p.mixers
+	mixer := p.mixer
 	url := p.url
 	p.mu.RUnlock()
 
@@ -324,21 +320,21 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
 			return nil, err
 		}
 
-		// If no mixers, return as-is
-		if len(mixers) == 0 {
+		// If no mixer, return as-is
+		if mixer == nil {
 			return connData, nil
 		}
 
-		// Marshal mixers and append
-		mixersData, err := json.Marshal(mixers)
+		// Marshal mixer and append
+		mixerData, err := json.Marshal(mixer)
 		if err != nil {
 			return nil, err
 		}
 
 		// Remove closing } and add mixers field
 		result := connData[:len(connData)-1]
-		result = append(result, []byte(`,"mixers":`)...)
-		result = append(result, mixersData...)
+		result = append(result, []byte(`,"mixer":`)...)
+		result = append(result, mixerData...)
 		result = append(result, '}')
 
 		return result, nil
@@ -565,15 +561,14 @@ func (p *Producer) stop() {
 		p.conn = nil
 	}
 
-	// Close all mixers
-	for _, mixer := range p.mixers {
-		mixer.Close()
+	if p.mixer != nil {
+		p.mixer.Close()
+		p.mixer = nil
 	}
 
 	p.state = stateNone
 	p.receivers = nil
 	p.senders = nil
-	p.mixers = nil
 }
 
 // prebufferReplayLoop is the single sequential replay loop for this producer
