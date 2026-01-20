@@ -23,9 +23,10 @@ type Filter func(handler HandlerFunc) HandlerFunc
 
 // Node - Receiver or Sender or Filter (transform)
 type Node struct {
-	Codec  *Codec
-	Input  HandlerFunc
-	Output HandlerFunc
+	Codec   *Codec
+	Input   HandlerFunc
+	Output  HandlerFunc
+	OnClose func()
 
 	id     uint32
 	childs []*Node
@@ -59,6 +60,11 @@ func (n *Node) RemoveChild(child *Node) {
 }
 
 func (n *Node) Close() {
+	if onClose := n.OnClose; onClose != nil {
+		n.OnClose = nil
+		onClose()
+	}
+
 	if parent := n.parent; parent != nil {
 		parent.RemoveChild(n)
 

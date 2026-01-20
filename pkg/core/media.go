@@ -97,6 +97,10 @@ func GetKind(name string) string {
 	case CodecPCMU, CodecPCMA, CodecAAC, CodecOpus, CodecG722, CodecMP3, CodecPCM, CodecPCML, CodecELD, CodecFLAC:
 		return KindAudio
 	}
+	// G726 comes in variants: G726-16, G726-24, G726-32, G726-40
+	if strings.HasPrefix(name, CodecG726) {
+		return KindAudio
+	}
 	return ""
 }
 

@@ -55,6 +55,21 @@ func (s *Stream) Sources() []string {
 	return sources
 }
 
+// Producers returns the list of producers for this stream.
+// Used by backchannel producers to find target producers with sendonly audio.
+func (s *Stream) Producers() []core.Producer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := make([]core.Producer, 0, len(s.producers))
+	for _, prod := range s.producers {
+		if prod.conn != nil {
+			result = append(result, prod.conn)
+		}
+	}
+	return result
+}
+
 func (s *Stream) SetSource(source string) {
 	for _, prod := range s.producers {
 		prod.SetSource(source)

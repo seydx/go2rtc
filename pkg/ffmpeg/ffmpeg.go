@@ -16,13 +16,14 @@ const (
 )
 
 type Args struct {
-	Bin     string   // ffmpeg
-	Global  string   // -hide_banner -v error
-	Input   string   // -re -stream_loop -1 -i /media/bunny.mp4
-	Codecs  []string // -c:v libx264 -g:v 30 -preset:v ultrafast -tune:v zerolatency
-	Filters []string // scale=1920:1080
-	Output  string   // -f rtsp {output}
-	Version string   // libavformat version, it's more reliable than the ffmpeg version
+	Bin          string   // ffmpeg
+	Global       string   // -hide_banner -v error
+	Input        string   // -re -stream_loop -1 -i /media/bunny.mp4
+	Codecs       []string // -c:v libx264 -g:v 30 -preset:v ultrafast -tune:v zerolatency
+	Filters      []string // scale=1920:1080
+	AudioFilters []string // amix=inputs=2
+	Output       string   // -f rtsp {output}
+	Version      string   // libavformat version, it's more reliable than the ffmpeg version
 
 	Video, Audio int // count of Video and Audio params
 }
@@ -39,8 +40,28 @@ func (a *Args) InsertFilter(filter string) {
 	a.Filters = append([]string{filter}, a.Filters...)
 }
 
+func (a *Args) AddAudioFilter(filter string) {
+	a.AudioFilters = append(a.AudioFilters, filter)
+}
+
+func (a *Args) InsertAudioFilter(filter string) {
+	a.AudioFilters = append([]string{filter}, a.AudioFilters...)
+}
+
 func (a *Args) HasFilters(filters ...string) bool {
 	for _, f1 := range a.Filters {
+		for _, f2 := range filters {
+			if strings.HasPrefix(f1, f2) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (a *Args) HasAudioFilters(filters ...string) bool {
+	for _, f1 := range a.AudioFilters {
 		for _, f2 := range filters {
 			if strings.HasPrefix(f1, f2) {
 				return true
@@ -93,6 +114,18 @@ func (a *Args) String() string {
 		for i, filter := range a.Filters {
 			if i == 0 {
 				b.WriteString(` -vf "`)
+			} else {
+				b.WriteByte(',')
+			}
+			b.WriteString(filter)
+		}
+		b.WriteByte('"')
+	}
+
+	if len(a.AudioFilters) > 0 {
+		for i, filter := range a.AudioFilters {
+			if i == 0 {
+				b.WriteString(` -af "`)
 			} else {
 				b.WriteByte(',')
 			}

@@ -39,6 +39,14 @@ func Init() {
 	defaults["global"] += " -v " + cfg.Log.Level
 
 	streams.RedirectFunc("ffmpeg", func(url string) (string, error) {
+		// Check for backchannel mode - no redirect needed
+		if i := strings.IndexByte(url, '#'); i >= 0 {
+			query := streams.ParseQuery(url[i+1:])
+			if query.Get("direction") == "sendonly" {
+				return "", nil // force call streams.HandleFunc("ffmpeg")
+			}
+		}
+
 		if _, err := Version(); err != nil {
 			return "", err
 		}
@@ -49,7 +57,7 @@ func Init() {
 		return "exec:" + args.String(), nil
 	})
 
-	streams.HandleFunc("ffmpeg", NewProducer)
+	streams.HandleFunc("ffmpeg", handleFFmpeg)
 
 	api.HandleFunc("api/ffmpeg", apiFFmpeg)
 
@@ -105,7 +113,9 @@ var defaults = map[string]string{
 	"pcma/16000": "-c:a pcm_alaw -ar:a 16000 -ac:a 1",
 	"pcma/48000": "-c:a pcm_alaw -ar:a 48000 -ac:a 1",
 	"aac":        "-c:a aac", // keep sample rate and channels
+	"aac/8000":   "-c:a aac -ar:a 8000 -ac:a 1",
 	"aac/16000":  "-c:a aac -ar:a 16000 -ac:a 1",
+	"aac/48000":  "-c:a aac -ar:a 48000 -ac:a 1",
 	"mp3":        "-c:a libmp3lame -q:a 8",
 	"pcm":        "-c:a pcm_s16be -ar:a 8000 -ac:a 1",
 	"pcm/8000":   "-c:a pcm_s16be -ar:a 8000 -ac:a 1",
@@ -115,6 +125,16 @@ var defaults = map[string]string{
 	"pcml/8000":  "-c:a pcm_s16le -ar:a 8000 -ac:a 1",
 	"pcml/16000": "-c:a pcm_s16le -ar:a 16000 -ac:a 1",
 	"pcml/44100": "-c:a pcm_s16le -ar:a 44100 -ac:a 1",
+	"pcml/48000": "-c:a pcm_s16le -ar:a 48000 -ac:a 1",
+
+	// G.726 ADPCM codec - bitrate variants (16, 24, 32, 40 kbit/s)
+	// https://ffmpeg.org/ffmpeg-codecs.html#g726
+	// Standard sample rate is 8000 Hz
+	"g726":    "-c:a g726 -b:a 40k -ar:a 8000 -ac:a 1", // default to G726-40
+	"g726-16": "-c:a g726 -b:a 16k -ar:a 8000 -ac:a 1",
+	"g726-24": "-c:a g726 -b:a 24k -ar:a 8000 -ac:a 1",
+	"g726-32": "-c:a g726 -b:a 32k -ar:a 8000 -ac:a 1",
+	"g726-40": "-c:a g726 -b:a 40k -ar:a 8000 -ac:a 1",
 
 	// hardware Intel and AMD on Linux
 	// better not to set `-async_depth:v 1` like for QSV, because framedrops
@@ -385,4 +405,25 @@ func parseArgs(s string) *ffmpeg.Args {
 	}
 
 	return args
+}
+
+// handleFFmpeg routes FFmpeg URLs to the appropriate producer.
+// For direction=sendonly, it creates a BackchannelProducer for audio mixing.
+// Otherwise, it creates a regular Producer for audio transcoding.
+func handleFFmpeg(rawURL string) (core.Producer, error) {
+	// Parse: ffmpeg:stream_name#audio=pcmu#direction=sendonly
+	i := strings.IndexByte(rawURL, '#')
+	if i < 0 {
+		return NewProducer(rawURL)
+	}
+
+	query := streams.ParseQuery(rawURL[i+1:])
+
+	// Check for backchannel mode
+	if query.Get("direction") == "sendonly" {
+		return NewBackchannelProducer(rawURL), nil
+	}
+
+	// Normal ffmpeg producer
+	return NewProducer(rawURL)
 }
