@@ -34,6 +34,9 @@ type Producer struct {
 	// Mixers for backchannel - one per codec
 	mixers []*core.RTPMixer
 
+	// Whether to enable audio mixing (default: true)
+	mixingEnabled bool
+
 	state    state
 	mu       sync.RWMutex
 	workerID int
@@ -41,12 +44,28 @@ type Producer struct {
 
 const SourceTemplate = "{input}"
 
-func NewProducer(source string) *Producer {
-	if strings.Contains(source, SourceTemplate) {
-		return &Producer{template: source}
+// parseStreamParams extracts stream parameters from the source URL
+// Currently supports: #noMix - disable audio mixing
+func parseStreamParams(source string) (rawURL string, mixingEnabled bool) {
+	rawURL = source
+	mixingEnabled = true // default
+
+	if strings.Contains(rawURL, "#noMix") {
+		mixingEnabled = false
+		rawURL = strings.Replace(rawURL, "#noMix", "", 1)
 	}
 
-	return &Producer{url: source}
+	return
+}
+
+func NewProducer(source string) *Producer {
+	rawSource, mixingEnabled := parseStreamParams(source)
+
+	if strings.Contains(rawSource, SourceTemplate) {
+		return &Producer{template: rawSource, mixingEnabled: mixingEnabled}
+	}
+
+	return &Producer{url: rawSource, mixingEnabled: mixingEnabled}
 }
 
 func (p *Producer) SetSource(s string) {
@@ -121,41 +140,55 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 		return errors.New("add track from none state")
 	}
 
-	// Check if we already have ANY mixer for this media kind (audio backchannel)
-	// Reuse existing mixer even if codec is different - FFmpeg will transcode
-	for _, mixer := range p.mixers {
-		if mixer.Media.Kind == media.Kind {
-			// Add this consumer as parent with its actual codec (e.g., Opus from browser)
-			// The mixer will handle transcoding if codecs differ from output codec
-			mixer.AddParentWithCodec(&track.Node, track.Codec)
-			p.senders = append(p.senders, track)
-			p.mu.Unlock()
-			return nil
+	// Only use mixer if mixing is enabled
+	if p.mixingEnabled {
+		// Check if we already have ANY mixer for this media kind (audio backchannel)
+		// Reuse existing mixer even if codec is different - FFmpeg will transcode
+		for _, mixer := range p.mixers {
+			if mixer.Media.Kind == media.Kind {
+				// Add this consumer as parent with its actual codec (e.g., Opus from browser)
+				// The mixer will handle transcoding if codecs differ from output codec
+				mixer.AddParentWithCodec(&track.Node, track.Codec)
+				p.senders = append(p.senders, track)
+				p.mu.Unlock()
+				return nil
+			}
 		}
+
+		// No mixer exists yet, create one with the producer's codec as output (e.g., AAC for camera)
+		mixer := core.NewRTPMixer(ffmpegBin, media, codec)
+		// Add parent with its actual codec (e.g., Opus from browser) - mixer will transcode to output
+		mixer.AddParentWithCodec(&track.Node, track.Codec)
+
+		// Connect mixer to underlying protocol
+		// Get consumer reference and release lock BEFORE calling AddTrack
+		consumer := p.conn.(core.Consumer)
+		mixerReceiver := core.NewReceiver(media, codec)
+		mixerReceiver.ParentNode = &mixer.Node
+		p.mu.Unlock()
+
+		// Call underlying protocol's AddTrack WITHOUT holding the lock
+		// This prevents blocking API serialization during network operations
+		if err := consumer.AddTrack(media, codec, mixerReceiver); err != nil {
+			return err
+		}
+
+		// Reacquire lock to update state
+		p.mu.Lock()
+		p.mixers = append(p.mixers, mixer)
+		p.senders = append(p.senders, track)
+	} else {
+		// Without mixing, directly pass track to underlying protocol
+		consumer := p.conn.(core.Consumer)
+		p.mu.Unlock()
+
+		if err := consumer.AddTrack(media, codec, track); err != nil {
+			return err
+		}
+
+		p.mu.Lock()
+		p.senders = append(p.senders, track)
 	}
-
-	// No mixer exists yet, create one with the producer's codec as output (e.g., AAC for camera)
-	mixer := core.NewRTPMixer(ffmpegBin, media, codec)
-	// Add parent with its actual codec (e.g., Opus from browser) - mixer will transcode to output
-	mixer.AddParentWithCodec(&track.Node, track.Codec)
-
-	// Connect mixer to underlying protocol
-	// Get consumer reference and release lock BEFORE calling AddTrack
-	consumer := p.conn.(core.Consumer)
-	mixerReceiver := core.NewReceiver(media, codec)
-	mixerReceiver.ParentNode = &mixer.Node
-	p.mu.Unlock()
-
-	// Call underlying protocol's AddTrack WITHOUT holding the lock
-	// This prevents blocking API serialization during network operations
-	if err := consumer.AddTrack(media, codec, mixerReceiver); err != nil {
-		return err
-	}
-
-	// Reacquire lock to update state
-	p.mu.Lock()
-	p.mixers = append(p.mixers, mixer)
-	p.senders = append(p.senders, track)
 
 	if p.state == stateMedias {
 		p.state = stateTracks

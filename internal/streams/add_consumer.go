@@ -47,7 +47,22 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 				// Step 3. Match consumer/producer codecs list
 				prodCodec, consCodec := prodMedia.MatchMedia(consMedia)
 				if prodCodec == nil {
-					continue
+					// For backchannel with mixing support, allow codec mismatch
+					// The mixer will handle transcoding
+					if prodMedia.Direction == core.DirectionSendonly &&
+						consMedia.Direction == core.DirectionRecvonly &&
+						prodMedia.Kind == consMedia.Kind &&
+						prod.mixingEnabled {
+						if len(prodMedia.Codecs) > 0 && len(consMedia.Codecs) > 0 {
+							prodCodec = prodMedia.Codecs[0]
+							consCodec = consMedia.Codecs[0]
+							log.Trace().Msgf("[streams] backchannel mixer transcode %s -> %s", consCodec.Name, prodCodec.Name)
+						} else {
+							continue
+						}
+					} else {
+						continue
+					}
 				}
 
 				var track *core.Receiver
