@@ -17,9 +17,6 @@ import (
 	"github.com/pion/sdp/v3"
 )
 
-// BackchannelProducer transcodes and mixes audio from multiple consumers via FFmpeg.
-// Uses SDP+RTP/UDP for input (supports any codec) and raw pipe for output.
-// When multiple consumers connect, audio is mixed using FFmpeg's amix filter.
 type BackchannelProducer struct {
 	core.Connection
 	url   string
@@ -52,9 +49,8 @@ func NewBackchannelProducer(rawURL string) *BackchannelProducer {
 
 	p.ID = core.NewID()
 	p.FormatName = "mixer"
-	p.Protocol = "internal" // no host node in graph
+	p.Protocol = "internal"
 
-	// Accept audio from consumers - SDP+RTP supports all codecs
 	p.Medias = []*core.Media{{
 		Kind:      core.KindAudio,
 		Direction: core.DirectionSendonly,
@@ -173,6 +169,35 @@ func (p *BackchannelProducer) AddTrack(media *core.Media, codec *core.Codec, tra
 	return nil
 }
 
+func (p *BackchannelProducer) Start() error {
+	<-p.done
+	return nil
+}
+
+func (p *BackchannelProducer) Stop() error {
+	select {
+	case <-p.done:
+	default:
+		close(p.done)
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.cmd != nil {
+		p.cmd.Close()
+	}
+
+	for _, input := range p.inputs {
+		if input.conn != nil {
+			input.conn.Close()
+		}
+		input.sender.Close()
+	}
+
+	return nil
+}
+
 func (p *BackchannelProducer) removeInput(input *backchannelInput) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -180,15 +205,12 @@ func (p *BackchannelProducer) removeInput(input *backchannelInput) {
 	// Find and remove input
 	for i, in := range p.inputs {
 		if in == input {
-			// Close UDP connection
 			if in.conn != nil {
 				in.conn.Close()
 			}
 
-			// Remove from inputs slice
 			p.inputs = append(p.inputs[:i], p.inputs[i+1:]...)
 
-			// Remove sender from Senders slice
 			for j, s := range p.Senders {
 				if s == in.sender {
 					p.Senders = append(p.Senders[:j], p.Senders[j+1:]...)
@@ -437,35 +459,6 @@ func (p *BackchannelProducer) buildArgs() string {
 	}
 
 	return args.String()
-}
-
-func (p *BackchannelProducer) Start() error {
-	<-p.done
-	return nil
-}
-
-func (p *BackchannelProducer) Stop() error {
-	select {
-	case <-p.done:
-	default:
-		close(p.done)
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.cmd != nil {
-		p.cmd.Close()
-	}
-
-	for _, input := range p.inputs {
-		if input.conn != nil {
-			input.conn.Close()
-		}
-		input.sender.Close()
-	}
-
-	return nil
 }
 
 func getFreePort() (int, error) {

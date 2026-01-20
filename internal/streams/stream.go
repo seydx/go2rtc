@@ -55,8 +55,6 @@ func (s *Stream) Sources() []string {
 	return sources
 }
 
-// Producers returns the list of producers for this stream.
-// Used by backchannel producers to find target producers with sendonly audio.
 func (s *Stream) Producers() []core.Producer {
 	s.mu.Lock()
 	defer s.mu.Unlock()

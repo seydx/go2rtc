@@ -126,15 +126,9 @@ var defaults = map[string]string{
 	"pcml/16000": "-c:a pcm_s16le -ar:a 16000 -ac:a 1",
 	"pcml/44100": "-c:a pcm_s16le -ar:a 44100 -ac:a 1",
 	"pcml/48000": "-c:a pcm_s16le -ar:a 48000 -ac:a 1",
-
-	// G.726 ADPCM codec - bitrate variants (16, 24, 32, 40 kbit/s)
-	// https://ffmpeg.org/ffmpeg-codecs.html#g726
-	// Standard sample rate is 8000 Hz
-	"g726":    "-c:a g726 -b:a 40k -ar:a 8000 -ac:a 1", // default to G726-40
-	"g726-16": "-c:a g726 -b:a 16k -ar:a 8000 -ac:a 1",
-	"g726-24": "-c:a g726 -b:a 24k -ar:a 8000 -ac:a 1",
-	"g726-32": "-c:a g726 -b:a 32k -ar:a 8000 -ac:a 1",
-	"g726-40": "-c:a g726 -b:a 40k -ar:a 8000 -ac:a 1",
+	"g726":    "-c:a g726 -b:a 40k -ar:a 8000 -ac:a 1",
+	"g726/16000": "-c:a g726 -b:a 40k -ar:a 16000 -ac:a 1",
+	"g726/48000": "-c:a g726 -b:a 40k -ar:a 48000 -ac:a 1",
 
 	// hardware Intel and AMD on Linux
 	// better not to set `-async_depth:v 1` like for QSV, because framedrops
