@@ -16,13 +16,10 @@ var ffmpegBin string
 
 func Init() {
 	var cfg struct {
-		Streams map[string]any `yaml:"streams"`
-		Publish map[string]any `yaml:"publish"`
-		Preload struct {
-			Keys   []string
-			Values map[string]string
-		} `yaml:"preload"`
-		FFmpeg map[string]string `yaml:"ffmpeg"`
+		Streams map[string]any    `yaml:"streams"`
+		Publish map[string]any    `yaml:"publish"`
+		Preload map[string]string `yaml:"preload"`
+		FFmpeg  map[string]string `yaml:"ffmpeg"`
 	}
 
 	app.LoadConfig(&cfg)
@@ -43,7 +40,7 @@ func Init() {
 	api.HandleFunc("api/preload", apiPreload)
 	api.HandleFunc("api/schemes", apiSchemes)
 
-	if cfg.Publish == nil && len(cfg.Preload.Keys) == 0 {
+	if cfg.Publish == nil && len(cfg.Preload) == 0 {
 		return
 	}
 
@@ -55,8 +52,8 @@ func Init() {
 			}
 		}
 		// Process preloads in the order defined in config
-		for _, name := range cfg.Preload.Keys {
-			if err := AddPreload(name, cfg.Preload.Values[name]); err != nil {
+		for name := range cfg.Preload {
+			if err := AddPreload(name, cfg.Preload[name]); err != nil {
 				log.Error().Err(err).Caller().Send()
 			}
 		}
