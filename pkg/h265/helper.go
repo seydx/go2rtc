@@ -17,6 +17,7 @@ const (
 	NALUTypePPS       = 34
 	NALUTypePrefixSEI = 39
 	NALUTypeSuffixSEI = 40
+	NALUTypeAP        = 48
 	NALUTypeFU        = 49
 )
 
@@ -128,4 +129,60 @@ func GetFmtpLine(avcc []byte) string {
 	fmtp += ";sprop-pps=" + base64.StdEncoding.EncodeToString(pps)
 
 	return fmtp
+}
+
+// ExpandAPs deaggregates Aggregation Packets (type 48) in AVCC data.
+// AP format: [4B AVCC len][2B NAL hdr][2B subLen][subNALU][2B subLen][subNALU]...
+// Each sub-NALU is wrapped with a 4-byte AVCC length prefix.
+func ExpandAPs(avcc []byte) []byte {
+	// Quick scan: check if any AP NALUs exist
+	hasAP := false
+	offset := 0
+	for offset+4 <= len(avcc) {
+		naluLen := int(binary.BigEndian.Uint32(avcc[offset:]))
+		if naluLen <= 0 || offset+4+naluLen > len(avcc) {
+			break
+		}
+		if NALUType(avcc[offset:]) == NALUTypeAP {
+			hasAP = true
+			break
+		}
+		offset += 4 + naluLen
+	}
+	if !hasAP {
+		return avcc
+	}
+
+	// Expand APs into individual AVCC NALUs
+	var out []byte
+	offset = 0
+	for offset+4 <= len(avcc) {
+		naluLen := int(binary.BigEndian.Uint32(avcc[offset:]))
+		if naluLen <= 0 || offset+4+naluLen > len(avcc) {
+			break
+		}
+
+		if NALUType(avcc[offset:]) == NALUTypeAP && naluLen > 2 {
+			// Skip AVCC length (4) + AP NAL header (2)
+			apOff := offset + 4 + 2
+			apEnd := offset + 4 + naluLen
+			for apOff+2 <= apEnd {
+				subLen := int(binary.BigEndian.Uint16(avcc[apOff:]))
+				apOff += 2
+				if subLen <= 0 || apOff+subLen > apEnd {
+					break
+				}
+				// Wrap sub-NALU with 4-byte AVCC length prefix
+				out = binary.BigEndian.AppendUint32(out, uint32(subLen))
+				out = append(out, avcc[apOff:apOff+subLen]...)
+				apOff += subLen
+			}
+		} else {
+			// Regular NALU — pass through
+			out = append(out, avcc[offset:offset+4+naluLen]...)
+		}
+
+		offset += 4 + naluLen
+	}
+	return out
 }
