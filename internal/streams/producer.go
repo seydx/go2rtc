@@ -36,6 +36,7 @@ type Producer struct {
 
 	state              state
 	mu                 sync.RWMutex
+	trackMu            sync.Mutex    // Serializes conn.GetTrack calls to prevent concurrent protocol operations
 	dialDone           chan struct{} // Closed when dial completes (success or failure)
 	dialErr            error         // Error from dial attempt (if any)
 	workerID           int
@@ -191,15 +192,34 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 		}
 	}
 
-	// Get conn reference and release lock BEFORE calling GetTrack
+	// Get conn reference while holding lock
 	conn := p.conn
 	gopEnabled := p.gopEnabled
 	prebufferDuration := p.prebufferDuration
+
+	// Serialize conn.GetTrack calls using trackMu to prevent concurrent
+	// protocol operations (e.g. two SETUP requests or two Tapo SetupStream
+	// calls on the same connection simultaneously).
+	p.trackMu.Lock()
 	p.mu.Unlock()
 
-	// Call underlying protocol's GetTrack WITHOUT holding the lock
+	// Double-check: another thread may have added the track while we waited for trackMu
+	for _, track := range p.receivers {
+		if track.Codec.Match(codec) {
+			// log.Debug().Str("codec", codec.Name).Str("url", p.url).Msg("[streams] GetTrack: found after trackMu wait")
+			p.trackMu.Unlock()
+			return track, nil
+		}
+	}
+
+	// log.Debug().Str("codec", codec.Name).Int("state", int(p.state)).Str("url", p.url).Msg("[streams] GetTrack: calling conn.GetTrack")
+
+	// Call underlying protocol's GetTrack — serialized by trackMu
 	track, err := conn.GetTrack(media, codec)
+	p.trackMu.Unlock()
+
 	if err != nil {
+		// log.Debug().Err(err).Str("codec", codec.Name).Str("url", p.url).Msg("[streams] GetTrack: conn.GetTrack failed")
 		return nil, err
 	}
 

@@ -23,6 +23,8 @@ func AddPreload(name, rawQuery string) error {
 		rawQuery = "video&audio"
 	}
 
+	// log.Debug().Str("name", name).Str("query", rawQuery).Msg("[preload] starting")
+
 	query, err := url.ParseQuery(rawQuery)
 	if err != nil {
 		return err
@@ -44,8 +46,11 @@ func AddPreload(name, rawQuery string) error {
 
 	// Don't hold preloadsMu lock during this call to avoid blocking API
 	if err = stream.AddConsumer(cons); err != nil {
+		// log.Warn().Err(err).Str("name", name).Msg("[preload] failed")
 		return err
 	}
+
+	// log.Debug().Str("name", name).Msg("[preload] ready")
 
 	// Update preloads map under lock
 	preloadsMu.Lock()

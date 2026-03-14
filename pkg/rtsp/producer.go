@@ -12,6 +12,7 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 
 	for _, track := range c.Receivers {
 		if track.Codec.Match(codec) {
+			// log.Debug().Str("codec", codec.Name).Str("url", c.uri).Msg("[rtsp] GetTrack: reusing existing track")
 			return track, nil
 		}
 	}
@@ -19,11 +20,17 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 
+	// log.Debug().Str("codec", codec.Name).Str("state", c.state.String()).Str("url", c.uri).Msg("[rtsp] GetTrack: new track needed")
+
 	var channel byte
 
 	switch c.mode {
 	case core.ModeActiveProducer:
 		if c.state == StatePlay {
+			// Cannot SETUP during PLAY — Handle() and SetupMedia() share the same
+			// reader/writer without a common lock, causing data corruption.
+			// Fall back to Reconnect to cleanly re-establish the session.
+			// log.Debug().Str("codec", codec.Name).Str("url", c.uri).Msg("[rtsp] GetTrack: need Reconnect for new track during PLAY")
 			if err := c.Reconnect(); err != nil {
 				return nil, err
 			}
@@ -32,6 +39,7 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 		var err error
 		channel, err = c.SetupMedia(media)
 		if err != nil {
+			// log.Warn().Err(err).Str("codec", codec.Name).Str("state", c.state.String()).Str("url", c.uri).Msg("[rtsp] GetTrack: SETUP failed")
 			return nil, err
 		}
 
