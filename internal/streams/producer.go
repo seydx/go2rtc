@@ -413,6 +413,27 @@ func (p *Producer) StartPrebufferReplay() {
 	go p.prebufferReplayLoop()
 }
 
+// State returns the producer's connection state as a string.
+func (p *Producer) State() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	switch p.state {
+	case stateDialing, stateMedias, stateTracks:
+		return "connecting"
+	case stateStart, stateExternal, stateInternal:
+		return "connected"
+	default:
+		return "idle"
+	}
+}
+
+// HasError returns whether the producer has a dial error.
+func (p *Producer) HasError() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.dialErr != nil
+}
+
 // internals
 
 func (p *Producer) start() {

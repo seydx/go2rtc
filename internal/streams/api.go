@@ -2,6 +2,7 @@ package streams
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
@@ -10,6 +11,22 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/hap"
 	"github.com/AlexxIT/go2rtc/pkg/probe"
 )
+
+func apiStreamsStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "", http.StatusMethodNotAllowed)
+		return
+	}
+	streamsMu.Lock()
+	result := make(map[string]string, len(streams))
+	for name, stream := range streams {
+		if strings.HasPrefix(name, "cui_") {
+			result[name] = stream.Status()
+		}
+	}
+	streamsMu.Unlock()
+	api.ResponseJSON(w, result)
+}
 
 func apiStreams(w http.ResponseWriter, r *http.Request) {
 	w = creds.SecretResponse(w)
