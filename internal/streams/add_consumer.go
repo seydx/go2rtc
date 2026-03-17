@@ -4,9 +4,14 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 )
+
+// audioStaleThreshold is the duration after which an audio receiver without
+// packets is considered stale (camera stopped sending audio).
+const audioStaleThreshold = 5 * time.Second
 
 func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	// support for multiple simultaneous pending from different consumers
@@ -201,9 +206,16 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 			}
 
 			// Check #requirePrevAudio - skip if previous producers don't have audio
-			if prod.requirePrevAudio && !prevHasAudio && prodN > 0 {
-				log.Trace().Msgf("[streams] skip prod=%d (requires previous audio but none available)", prodN)
-				continue
+			// or if audio exists but the receiver has gone stale (camera stopped sending audio)
+			if prod.requirePrevAudio && prodN > 0 {
+				if !prevHasAudio {
+					log.Trace().Msgf("[streams] skip prod=%d (requires previous audio but none available)", prodN)
+					continue
+				}
+				if s.isAudioStale() {
+					log.Trace().Msgf("[streams] skip prod=%d (requires previous audio but audio is stale)", prodN)
+					continue
+				}
 			}
 
 			// Check #requirePrevVideo - skip if previous producers don't have video

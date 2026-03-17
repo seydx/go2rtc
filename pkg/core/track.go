@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/pion/rtp"
 )
@@ -24,6 +25,8 @@ type Receiver struct {
 	Bytes   int `json:"bytes,omitempty"`
 	Packets int `json:"packets,omitempty"`
 
+	LastPacketTime time.Time `json:"-"` // Time of last received packet (for staleness detection)
+
 	codecHandler CodecHandler
 
 	// PacketHook is called for every packet (for producer-level prebuffer)
@@ -41,6 +44,7 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
 	r.Input = func(packet *Packet) {
 		r.Bytes += len(packet.Payload)
 		r.Packets++
+		r.LastPacketTime = time.Now()
 
 		// Call packet hook for producer-level prebuffer (capture for storage)
 		if r.PacketHook != nil {
@@ -129,6 +133,15 @@ func (r *Receiver) Close() {
 	}
 
 	r.Node.Close()
+}
+
+// IsActive returns true if the receiver has received packets recently (within maxAge).
+// Used to detect stale tracks (e.g. camera stopped sending audio).
+func (r *Receiver) IsActive(maxAge time.Duration) bool {
+	if r.LastPacketTime.IsZero() {
+		return false
+	}
+	return time.Since(r.LastPacketTime) < maxAge
 }
 
 type Sender struct {

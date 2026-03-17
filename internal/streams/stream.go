@@ -154,6 +154,27 @@ producers:
 	s.mu.Unlock()
 }
 
+// isAudioStale returns true if all audio receivers across all started producers
+// exist but have not received any packets recently. This detects cameras that
+// advertise audio but stopped sending it (e.g. hardware issue).
+func (s *Stream) isAudioStale() bool {
+	hasAudioReceiver := false
+	for _, prod := range s.producers {
+		if prod.state < stateStart {
+			continue
+		}
+		for _, recv := range prod.receivers {
+			if recv.Codec != nil && recv.Codec.IsAudio() {
+				hasAudioReceiver = true
+				if recv.IsActive(audioStaleThreshold) {
+					return false // at least one audio receiver is active
+				}
+			}
+		}
+	}
+	return hasAudioReceiver // all audio receivers are stale
+}
+
 func (s *Stream) MarshalJSON() ([]byte, error) {
 	s.mu.Lock()
 	// Copy references while holding lock, then release before marshaling
