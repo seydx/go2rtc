@@ -27,6 +27,8 @@ type Consumer struct {
 	wr    *core.WriteBuffer
 	mu    sync.Mutex
 	start bool
+
+	UseGOP bool
 }
 
 type InitInfo struct {

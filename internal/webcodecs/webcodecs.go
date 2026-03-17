@@ -7,6 +7,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/api/ws"
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/internal/streams"
+	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/webcodecs"
 	"github.com/rs/zerolog"
 )
@@ -27,6 +28,13 @@ func handlerWS(tr *ws.Transport, msg *ws.Message) error {
 
 	cons := webcodecs.NewConsumer(nil)
 	cons.WithRequest(tr.Request)
+
+	query := tr.Request.URL.Query()
+	if s := query.Get("gop"); s != "" {
+		cons.UseGOP = core.Atoi(s) != 0
+	} else {
+		cons.UseGOP = true
+	}
 
 	if err := stream.AddConsumer(cons); err != nil {
 		log.Debug().Err(err).Msg("[webcodecs] add consumer")
