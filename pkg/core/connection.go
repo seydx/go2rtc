@@ -82,6 +82,20 @@ func (c *Connection) Stop() error {
 	return nil
 }
 
+// Interrupt closes the underlying Transport without tearing down receivers
+// or senders, so the producer's reconnect path can move children to a new
+// connection via Receiver.Replace(). If Transport implements Interrupter,
+// that takes precedence; otherwise io.Closer.Close is used.
+func (c *Connection) Interrupt() error {
+	if interrupter, ok := c.Transport.(Interrupter); ok {
+		return interrupter.Interrupt()
+	}
+	if closer, ok := c.Transport.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // Deprecated:
 func (c *Connection) Codecs() []*Codec {
 	codecs := make([]*Codec, len(c.Senders))

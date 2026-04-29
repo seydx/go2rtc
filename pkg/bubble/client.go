@@ -265,6 +265,13 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
+// Interrupt closes the underlying TCP connection to abort blocking reads.
+// Receivers stay attached so the producer's reconnect can move children
+// via Replace().
+func (c *Client) Interrupt() error {
+	return c.Close()
+}
+
 func (c *Client) IsClosed() bool {
 	return c.conn == nil
 }

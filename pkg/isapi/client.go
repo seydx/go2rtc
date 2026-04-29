@@ -153,6 +153,17 @@ func (c *Client) Close() (err error) {
 	return nil
 }
 
+// Interrupt closes the underlying TCP connection without sending the
+// TwoWayAudio close request — that PUT would block on a dead camera and
+// is unnecessary when we just want to abort the read loop. Senders stay
+// attached so the producer's reconnect can move children via Replace().
+func (c *Client) Interrupt() error {
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
 //type XMLChannels struct {
 //	Channels []Channel `xml:"TwoWayAudioChannel"`
 //}

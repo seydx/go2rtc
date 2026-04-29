@@ -74,6 +74,13 @@ func (c *Client) Stop() error {
 	return c.Close()
 }
 
+// Interrupt aborts Handle() by closing the underlying TCP connections.
+// Receivers and the sender are left attached so the producer's reconnect
+// can move children via Replace().
+func (c *Client) Interrupt() error {
+	return c.Close()
+}
+
 func (c *Client) MarshalJSON() ([]byte, error) {
 	info := &core.Connection{
 		ID:         core.ID(c),

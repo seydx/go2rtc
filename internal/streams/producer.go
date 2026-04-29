@@ -453,7 +453,12 @@ func (p *Producer) start() {
 }
 
 func (p *Producer) worker(conn core.Producer, workerID int) {
+	watchdogStop := make(chan struct{})
+	go p.watchdog(conn, workerID, watchdogStop)
+
 	if err := conn.Start(); err != nil {
+		close(watchdogStop)
+
 		p.mu.Lock()
 		closed := p.workerID != workerID
 		p.mu.Unlock()
@@ -463,9 +468,93 @@ func (p *Producer) worker(conn core.Producer, workerID int) {
 		}
 
 		log.Warn().Err(err).Str("url", p.url).Caller().Send()
+	} else {
+		close(watchdogStop)
 	}
 
 	p.reconnect(workerID, 0)
+}
+
+// Watchdog defaults — tuned for typical camera reconnect / handshake timing.
+// Could be made configurable per stream via #stale=N#grace=N URL flags later.
+const (
+	watchdogStaleThreshold = 10 * time.Second
+	watchdogGraceDuration  = 30 * time.Second
+	watchdogCheckInterval  = 1 * time.Second
+)
+
+// watchdog detects when a producer's underlying connection looks alive
+// (Start() hasn't returned) but no packets are flowing on any receiver.
+// It calls conn.Interrupt() to break the read loop, which forces Start()
+// to return so worker() triggers reconnect().
+//
+// Lifetime: spawned per worker invocation, exits when stop is closed
+// (worker about to call reconnect) or when the conn no longer matches
+// p.conn (a parallel reconnect already swapped it out).
+//
+// Grace period: only fires staleThreshold after the watchdog started, to
+// allow the camera handshake (DESCRIBE/SETUP/PLAY for RTSP, multipart
+// chunked POST for Tapo, DTLS+auth for Wyze) to complete.
+func (p *Producer) watchdog(myConn core.Producer, workerID int, stop chan struct{}) {
+	interrupter, ok := myConn.(core.Interrupter)
+	if !ok {
+		// Producer doesn't support Interrupt — nothing the watchdog can do.
+		return
+	}
+
+	startedAt := time.Now()
+	ticker := time.NewTicker(watchdogCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			p.mu.RLock()
+			currentWorkerID := p.workerID
+			currentConn := p.conn
+			receivers := p.receivers
+			p.mu.RUnlock()
+
+			// Worker invalidated, or reconnect already swapped to a different
+			// conn — let the new worker's watchdog take over.
+			if currentWorkerID != workerID || currentConn != myConn {
+				return
+			}
+
+			if time.Since(startedAt) < watchdogGraceDuration {
+				continue
+			}
+
+			if !receiversAllStale(receivers, watchdogStaleThreshold) {
+				continue
+			}
+
+			log.Debug().Str("url", p.url).Msg("[streams] watchdog: data stale, interrupting conn")
+			_ = interrupter.Interrupt()
+			return
+		}
+	}
+}
+
+// receiversAllStale returns true if there are receivers and none of them
+// has received a packet within maxAge. A receiver that never received any
+// packet (LastPacketTime zero) is also considered stale once we're past
+// the grace period — covers "connected but no data" scenarios.
+func receiversAllStale(receivers []*core.Receiver, maxAge time.Duration) bool {
+	if len(receivers) == 0 {
+		return false
+	}
+	for _, recv := range receivers {
+		if recv == nil {
+			continue
+		}
+		if recv.IsActive(maxAge) {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Producer) reconnect(workerID, retry int) {
@@ -545,13 +634,43 @@ func (p *Producer) reconnect(workerID, retry int) {
 			}
 
 		case core.DirectionSendonly:
-			for _, sender := range senders {
-				codec := media.MatchCodec(sender.Codec)
-				if codec == nil {
-					continue
-				}
+			// If a backchannel mixer exists for this producer, the new conn
+			// needs a fresh mixerReceiver so its conn-side sender becomes a
+			// child of the existing mixer.Node. The mixer's parents (the
+			// microphone tracks from real consumers) stay attached and keep
+			// feeding into the mixer — only the conn-side child changes.
+			// Without this, the previous reconnect logic bypassed the mixer
+			// and bound the new sender directly to the original mic track,
+			// breaking multi-consumer mixing after the first reconnect.
+			p.mu.Lock()
+			mixer := p.mixer
+			mixingEnabled := p.mixingEnabled
+			p.mu.Unlock()
 
-				_ = conn.(core.Consumer).AddTrack(media, codec, sender)
+			if mixer != nil && mixingEnabled && mixer.Codec != nil {
+				codec := media.MatchCodec(mixer.Codec)
+				if codec == nil && len(media.Codecs) > 0 {
+					// Camera came back with a different codec — fall back to
+					// the first available so we at least re-establish the
+					// backchannel pipe; the mixer will transcode if needed.
+					codec = media.Codecs[0]
+				}
+				if codec != nil {
+					mixerReceiver := core.NewReceiver(media, mixer.Codec)
+					mixerReceiver.ParentNode = &mixer.Node
+					if err := conn.(core.Consumer).AddTrack(media, codec, mixerReceiver); err != nil {
+						log.Warn().Err(err).Str("url", url).Msg("[streams] reconnect mixer AddTrack failed")
+					}
+				}
+			} else {
+				for _, sender := range senders {
+					codec := media.MatchCodec(sender.Codec)
+					if codec == nil {
+						continue
+					}
+
+					_ = conn.(core.Consumer).AddTrack(media, codec, sender)
+				}
 			}
 		}
 	}

@@ -469,6 +469,16 @@ func (c *Client) Close(err error) error {
 	return c.Stop()
 }
 
+// Interrupt delegates to the wrapped webrtc.Conn so its Start() returns
+// and the producer's reconnect path takes over. The Tuya cloud API
+// session stays open — only the WebRTC media path is interrupted.
+func (c *Client) Interrupt() error {
+	if c.conn != nil {
+		return c.conn.Interrupt()
+	}
+	return nil
+}
+
 func (c *Client) IsClosed() bool {
 	return c.closed
 }

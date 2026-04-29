@@ -169,6 +169,15 @@ func (c *Conn) Close() error {
 	return c.pc.Close()
 }
 
+// Interrupt makes Start() return by signaling closed and tears down the
+// underlying PeerConnection, but leaves Receivers/Senders attached so the
+// producer's reconnect can move children via Replace(). Waiter.Done is
+// safe to call twice so a subsequent Stop()/Close() still works.
+func (c *Conn) Interrupt() error {
+	c.closed.Done(nil)
+	return c.pc.Close()
+}
+
 func (c *Conn) IsClosed() bool {
 	if c.transportClosed {
 		return true

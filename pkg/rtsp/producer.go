@@ -125,6 +125,25 @@ func (c *Conn) Stop() (err error) {
 	return
 }
 
+// Interrupt aborts the Handle() read loop by closing the underlying TCP
+// connection. Receivers and senders are intentionally left intact so the
+// producer's reconnect() can move children to a new connection. Start()
+// will return with a read error which triggers the reconnect path.
+//
+// Also invokes OnClose if set — this is how exec-based RTSP producers
+// (e.g. ffmpeg outputting RTSP to localhost) kill their subprocess when
+// the watchdog interrupts a stale stream. Without this, the FFmpeg
+// process would linger until the next full Stop().
+func (c *Conn) Interrupt() error {
+	if c.OnClose != nil {
+		_ = c.OnClose()
+	}
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
 func (c *Conn) MarshalJSON() ([]byte, error) {
 	return json.Marshal(c.Connection)
 }
