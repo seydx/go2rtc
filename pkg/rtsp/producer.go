@@ -3,7 +3,6 @@ package rtsp
 import (
 	"encoding/json"
 	"errors"
-	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 )
@@ -126,28 +125,20 @@ func (c *Conn) Stop() (err error) {
 	return
 }
 
-// Interrupt aborts the Handle() read loop. Receivers and senders are
-// intentionally left intact so the producer's reconnect() can move
-// children to a new connection. Start() will return with a read error
-// which triggers the reconnect path.
-//
-// For ActiveProducer mode (we're the RTSP client to a camera), we first
-// try a best-effort TEARDOWN with a short write deadline. Without this,
-// many cameras (Dahua/Amcrest in particular) keep the previous RTSP
-// session in their internal slot table for several seconds — the next
-// SETUP/PLAY then succeeds at the protocol level but the camera refuses
-// to actually stream RTP frames because it considers the slot occupied.
-// If the write deadline expires (socket already broken), we fall through
-// to a hard close.
+// Interrupt aborts the Handle() read loop by closing the underlying TCP
+// connection. Receivers and senders are intentionally left intact so the
+// producer's reconnect() can move children to a new connection. Start()
+// will return with a read error which triggers the reconnect path.
 //
 // Also invokes OnClose if set — this is how exec-based RTSP producers
 // (e.g. ffmpeg outputting RTSP to localhost) kill their subprocess.
+//
+// Note: we deliberately do NOT send a RTSP TEARDOWN here. WriteRequest
+// is not synchronized against the parallel handleKeepalive goroutine;
+// concurrent writes would interleave bytes on the TCP socket and leave
+// the camera in a confused state. Modern cameras detect TCP close and
+// clean up their session within a few seconds anyway.
 func (c *Conn) Interrupt() error {
-	if c.mode == core.ModeActiveProducer && c.conn != nil {
-		_ = c.conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-		_ = c.Teardown()
-		// best-effort — ignore result, socket may already be broken
-	}
 	if c.OnClose != nil {
 		_ = c.OnClose()
 	}

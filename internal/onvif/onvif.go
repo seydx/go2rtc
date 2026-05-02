@@ -44,6 +44,23 @@ func streamOnvif(rawURL string) (core.Producer, error) {
 		return nil, err
 	}
 
+	// Forward query params from the onvif:// URL to the resolved RTSP URL,
+	// except onvif-specific keys (subtype/snapshot) that are only used for
+	// SOAP discovery. This lets users pass things like `transport=udp` to
+	// work around camera firmware bugs in TCP-interleaved mode.
+	if u, err := url.Parse(rawURL); err == nil {
+		extra := u.Query()
+		extra.Del("subtype")
+		extra.Del("snapshot")
+		if encoded := extra.Encode(); encoded != "" {
+			if strings.Contains(uri, "?") {
+				uri += "&" + encoded
+			} else {
+				uri += "?" + encoded
+			}
+		}
+	}
+
 	// Append hash-based arguments to the retrieved URI
 	if i := strings.IndexByte(rawURL, '#'); i > 0 {
 		uri += rawURL[i:]
