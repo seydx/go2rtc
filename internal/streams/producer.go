@@ -472,6 +472,23 @@ func (p *Producer) worker(conn core.Producer, workerID int) {
 		close(watchdogStop)
 	}
 
+	// Force-close the underlying network socket *before* we enter the
+	// reconnect loop. Otherwise, on a failed reconnect (camera unreachable),
+	// the old half-open TCP/DTLS socket lingers for hours (default OS keepalive
+	// is 2h on Linux/macOS). Many cameras (Amcrest/Dahua/Reolink) count
+	// half-open sockets against their session-slot limit and refuse new
+	// clients — including parallel VLC — until those slots time out.
+	// Restarting go2rtc forces FIN/RST and frees the slots, which is exactly
+	// the symptom we want to avoid having to do manually.
+	//
+	// Interrupt() closes only the network without touching receivers/senders,
+	// so reconnect()'s Replace() path can still move children to the new conn
+	// when the camera comes back. Calling it again here after Watchdog already
+	// did is harmless (idempotent net.Conn.Close).
+	if interrupter, ok := conn.(core.Interrupter); ok {
+		_ = interrupter.Interrupt()
+	}
+
 	p.reconnect(workerID, 0)
 }
 
