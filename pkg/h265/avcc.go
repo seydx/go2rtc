@@ -17,9 +17,6 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	fmtpLineUpdated := false
 
 	return func(packet *rtp.Packet) {
-		// Deaggregate Aggregation Packets (type 48) before processing
-		packet.Payload = ExpandAPs(packet.Payload)
-
 		// Update FmtpLine from first keyframe with parameter sets
 		// This fixes MSE aspect ratio issues when RTSP cameras don't send VPS/SPS/PPS in DESCRIBE
 		if !fmtpLineUpdated && ContainsParameterSets(packet.Payload) {
