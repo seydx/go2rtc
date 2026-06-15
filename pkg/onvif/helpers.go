@@ -158,5 +158,11 @@ func GetPath(urlOrPath, defPath string) string {
 	if err != nil {
 		return defPath
 	}
+	// guard against infinite recursion: a relative XAddr without scheme/leading
+	// slash (e.g. "onvif/media") parses to u.Path == urlOrPath, which would
+	// recurse forever and overflow the stack.
+	if u.Path == "" || u.Path == urlOrPath {
+		return defPath
+	}
 	return GetPath(u.Path, defPath)
 }

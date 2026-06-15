@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/AlexxIT/go2rtc/internal/app"
+	"github.com/AlexxIT/go2rtc/pkg/creds"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,6 +23,9 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "", http.StatusNotFound)
 			return
 		}
+		// Mask credentials/secrets like /api/streams does, so the raw config
+		// (RTSP passwords, API password) isn't returned in plaintext.
+		w = creds.SecretResponse(w)
 		// https://www.ietf.org/archive/id/draft-ietf-httpapi-yaml-mediatypes-00.html
 		Response(w, data, "application/yaml")
 
