@@ -60,8 +60,7 @@ type RTPMixer struct {
 	lastRealPacketTime atomic.Int64 // tracks when last real (non-keepalive) packet arrived
 	keepaliveDone      chan struct{}
 
-	closing            bool
-	intentionalRestart bool
+	closing bool
 
 	mu sync.Mutex
 }
@@ -231,8 +230,6 @@ func (m *RTPMixer) handleTopologyChange(oldCount, newCount int) {
 	if needsFFmpegNow && !ffmpegRunning {
 		if err := m.startFFmpeg(); err != nil {
 			fmt.Fprintf(os.Stderr, "[mixer id=%d] Error starting FFmpeg: %v\n", m.id, err)
-		} else {
-			go m.monitorFFmpeg()
 		}
 	} else if !needsFFmpegNow && ffmpegRunning {
 		m.stopFFmpeg()
@@ -294,11 +291,6 @@ func (m *RTPMixer) forwardDirect(packet *Packet) {
 }
 
 func (m *RTPMixer) restartFFmpeg() error {
-	// Mark as intentional restart so monitor doesn't try to restart too
-	m.mu.Lock()
-	m.intentionalRestart = true
-	m.mu.Unlock()
-
 	m.stopFFmpeg()
 
 	// Check if FFmpeg is still needed
@@ -327,7 +319,6 @@ func (m *RTPMixer) startFFmpeg() error {
 	if err != nil {
 		return fmt.Errorf("failed to create UDP server: %w", err)
 	}
-	m.udpServer = udpServer
 
 	outputCodec := FFmpegCodecName(m.Codec.Name)
 	var audioBitrate string
@@ -393,61 +384,57 @@ func (m *RTPMixer) startFFmpeg() error {
 
 	// log.Printf("[mixer] id=%d cmd: %s", m.id, args.String())
 
-	m.ffmpegCmd = shell.NewCommand(args.String())
-	m.ffmpegCmd.Stdin = bytes.NewReader(sdpContent)
-	// m.ffmpegCmd.Stderr = os.Stderr
+	cmd := shell.NewCommand(args.String())
+	cmd.Stdin = bytes.NewReader(sdpContent)
+	// cmd.Stderr = os.Stderr
 
-	if err := m.ffmpegCmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		udpServer.Close()
 		return fmt.Errorf("failed to start FFmpeg: %w", err)
 	}
 
 	// log.Printf("[mixer] id=%d FFmpeg started, output port=%d", m.id, udpServer.Port())
 
-	// Start reader
-	go m.readFromFFmpeg()
+	keepaliveDone := make(chan struct{})
 
-	// Start keepalive
-	m.keepaliveDone = make(chan struct{})
-	go m.runKeepalive()
+	m.mu.Lock()
+	m.udpServer = udpServer
+	m.ffmpegCmd = cmd
+	m.keepaliveDone = keepaliveDone
+	m.mu.Unlock()
+
+	go m.readFromFFmpeg()
+	go m.monitorFFmpeg(cmd)
+	go m.runKeepalive(keepaliveDone)
 
 	return nil
 }
 
-func (m *RTPMixer) monitorFFmpeg() {
-	for {
-		m.mu.Lock()
-		cmd := m.ffmpegCmd
-		m.mu.Unlock()
+func (m *RTPMixer) monitorFFmpeg(cmd *shell.Command) {
+	_ = cmd.Wait() // blocks until this FFmpeg instance exits
 
-		if cmd == nil {
-			return // FFmpeg was intentionally stopped
-		}
+	m.mu.Lock()
+	superseded := m.ffmpegCmd != cmd // stopped (nil) or already replaced (restart)
+	closing := m.closing
+	m.mu.Unlock()
 
-		// Wait for FFmpeg to exit
-		_ = cmd.Wait()
-
-		m.mu.Lock()
-		wasIntentional := m.intentionalRestart
-		m.intentionalRestart = false // Reset flag
-		closing := m.closing
-		m.mu.Unlock()
-
-		if closing || !m.needsFFmpeg() {
-			return
-		}
-
-		if wasIntentional {
-			continue // Don't restart, handleTopologyChange already did it
-		}
-
-		time.Sleep(restartDelay)
-
-		// Attempt restart
-		if err := m.restartFFmpeg(); err != nil {
-			continue
-		}
+	if closing || superseded || !m.needsFFmpeg() {
+		return
 	}
+
+	// Unexpected exit (crash) — back off and restart.
+	time.Sleep(restartDelay)
+
+	// Re-check after the backoff: Close() may have run during the sleep, in
+	// which case we must not resurrect FFmpeg.
+	m.mu.Lock()
+	closing = m.closing
+	m.mu.Unlock()
+	if closing {
+		return
+	}
+
+	_ = m.restartFFmpeg()
 }
 
 func (m *RTPMixer) stopFFmpeg() {
@@ -693,13 +680,13 @@ func (m *RTPMixer) sendToFFmpeg(packet *Packet, parentID uint32) error {
 	return err
 }
 
-func (m *RTPMixer) runKeepalive() {
+func (m *RTPMixer) runKeepalive(done chan struct{}) {
 	ticker := time.NewTicker(keepaliveInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-m.keepaliveDone:
+		case <-done:
 			return
 		case <-ticker.C:
 			m.sendKeepalive()
