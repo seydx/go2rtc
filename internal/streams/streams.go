@@ -36,6 +36,7 @@ func Init() {
 
 	api.HandleFunc("api/streams/status", apiStreamsStatus)
 	api.HandleFunc("api/streams", apiStreams)
+	api.HandleFunc("api/consumer", apiConsumer)
 	api.HandleFunc("api/streams.dot", apiStreamsDOT)
 	api.HandleFunc("api/preload", apiPreload)
 	api.HandleFunc("api/schemes", apiSchemes)
@@ -243,4 +244,24 @@ func GetAll() map[string]*Stream {
 	maps.Copy(result, streams)
 	streamsMu.Unlock()
 	return result
+}
+
+func KillConsumer(id uint32) bool {
+	for _, s := range GetAll() {
+		if s.RemoveConsumerByID(id) {
+			return true
+		}
+	}
+	return false
+}
+
+func KillConsumersByTag(tag string) int {
+	if tag == "" {
+		return 0
+	}
+	n := 0
+	for _, s := range GetAll() {
+		n += s.RemoveConsumersByTag(tag)
+	}
+	return n
 }

@@ -88,6 +88,45 @@ func (s *Stream) RemoveConsumer(cons core.Consumer) {
 	s.stopProducers()
 }
 
+func (s *Stream) RemoveConsumerByID(id uint32) bool {
+	s.mu.Lock()
+	var target core.Consumer
+	for _, cons := range s.consumers {
+		if c, ok := cons.(interface{ GetID() uint32 }); ok && c.GetID() == id {
+			target = cons
+			break
+		}
+	}
+	s.mu.Unlock()
+
+	if target == nil {
+		return false
+	}
+
+	s.RemoveConsumer(target)
+	return true
+}
+
+func (s *Stream) RemoveConsumersByTag(tag string) int {
+	if tag == "" {
+		return 0
+	}
+
+	s.mu.Lock()
+	var targets []core.Consumer
+	for _, cons := range s.consumers {
+		if c, ok := cons.(interface{ GetTag() string }); ok && c.GetTag() == tag {
+			targets = append(targets, cons)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, t := range targets {
+		s.RemoveConsumer(t)
+	}
+	return len(targets)
+}
+
 func (s *Stream) AddProducer(prod core.Producer) {
 	producer := &Producer{conn: prod, state: stateExternal, url: "external"}
 	s.mu.Lock()

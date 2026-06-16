@@ -124,7 +124,7 @@ func outputWebRTC(w http.ResponseWriter, r *http.Request) {
 		desc = "webrtc/post"
 	}
 
-	answer, err := ExchangeSDP(stream, offer, desc, r.UserAgent())
+	answer, err := ExchangeSDP(stream, offer, desc, r.UserAgent(), r.URL.Query().Get("tag"))
 	if err != nil {
 		log.Error().Err(err).Caller().Send()
 		http.Error(w, err.Error(), http.StatusInternalServerError)

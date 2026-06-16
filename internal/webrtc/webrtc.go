@@ -173,6 +173,7 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 	conn.Mode = mode
 	conn.Protocol = "ws"
 	conn.UserAgent = tr.Request.UserAgent()
+	conn.Tag = query.Get("tag")
 
 	tr.OnClose(func() {
 		conn.CloseTransport()
@@ -256,7 +257,7 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 	return nil
 }
 
-func ExchangeSDP(stream *streams.Stream, offer, desc, userAgent string) (answer string, err error) {
+func ExchangeSDP(stream *streams.Stream, offer, desc, userAgent, tag string) (answer string, err error) {
 	pc, err := PeerConnection(false)
 	if err != nil {
 		log.Error().Err(err).Caller().Send()
@@ -267,6 +268,7 @@ func ExchangeSDP(stream *streams.Stream, offer, desc, userAgent string) (answer 
 	conn := webrtc.NewConn(pc)
 	conn.FormatName = desc
 	conn.UserAgent = userAgent
+	conn.Tag = tag
 	conn.Protocol = "http"
 	conn.Listen(func(msg any) {
 		switch msg := msg.(type) {
