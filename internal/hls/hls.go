@@ -66,14 +66,11 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 		c.FormatName = "hls/fmp4"
 		c.WithRequest(r)
 
-		// Parse query parameters for GOP and prebuffer control
+		// Parse query parameters for GOP control
 		if s := query.Get("gop"); s != "" {
 			c.UseGOP = core.Atoi(s) != 0
 		} else {
 			c.UseGOP = true // Default: GOP enabled
-		}
-		if query.Has("prebuffer") {
-			c.UsePrebuffer = true
 		}
 
 		cons = c
@@ -82,14 +79,11 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 		c.FormatName = "hls/mpegts"
 		c.WithRequest(r)
 
-		// Parse query parameters for GOP and prebuffer control
+		// Parse query parameters for GOP control
 		if s := query.Get("gop"); s != "" {
 			c.UseGOP = core.Atoi(s) != 0
 		} else {
 			c.UseGOP = true // Default: GOP enabled
-		}
-		if query.Has("prebuffer") {
-			c.UsePrebuffer = true
 		}
 
 		cons = c

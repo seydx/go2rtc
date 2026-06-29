@@ -145,16 +145,6 @@ func (s *Stream) RemoveProducer(prod core.Producer) {
 	s.mu.Unlock()
 }
 
-func (s *Stream) StartPrebufferReplay() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Start prebuffer replay on all producers that have prebuffer
-	for _, producer := range s.producers {
-		producer.StartPrebufferReplay()
-	}
-}
-
 // Status returns the aggregated stream status based on the first producer.
 func (s *Stream) Status() string {
 	s.mu.Lock()

@@ -2,7 +2,6 @@ package streams
 
 import (
 	"errors"
-	"reflect"
 	"strings"
 	"time"
 
@@ -579,9 +578,6 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 		prod.start()
 	}
 
-	// Check if consumer requested prebuffer and start replay if needed
-	s.checkAndStartPrebuffer(cons)
-
 	return nil
 }
 
@@ -633,28 +629,6 @@ func canProducerSatisfyAll(prod *Producer, consMedias []*core.Media) bool {
 	}
 
 	return true
-}
-
-func (s *Stream) checkAndStartPrebuffer(cons core.Consumer) {
-	// Use reflection to check if consumer has UsePrebuffer field
-	var usePrebuffer bool
-
-	consValue := reflect.ValueOf(cons)
-	if consValue.Kind() == reflect.Ptr {
-		consValue = consValue.Elem()
-	}
-
-	if consValue.Kind() == reflect.Struct {
-		field := consValue.FieldByName("UsePrebuffer")
-		if field.IsValid() && field.Kind() == reflect.Bool {
-			usePrebuffer = field.Bool()
-		}
-	}
-
-	if usePrebuffer {
-		// log.Debug().Msgf("[streams] Starting prebuffer replay for consumer (using producer's configured duration)")
-		s.StartPrebufferReplay()
-	}
 }
 
 func formatError(consMedias, prodMedias []*core.Media, prodErrors []error) error {

@@ -179,14 +179,11 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 		conn.CloseTransport()
 	})
 
-	// Parse query parameters for GOP and prebuffer control
+	// Parse query parameters for GOP control
 	if s := query.Get("gop"); s != "" {
 		conn.UseGOP = core.Atoi(s) != 0
 	} else {
 		conn.UseGOP = true // Default: GOP enabled
-	}
-	if query.Has("prebuffer") {
-		conn.UsePrebuffer = true
 	}
 
 	conn.Listen(func(msg any) {

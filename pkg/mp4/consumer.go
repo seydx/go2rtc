@@ -20,8 +20,7 @@ type Consumer struct {
 	mu    sync.Mutex
 	start bool
 
-	UseGOP       bool
-	UsePrebuffer bool
+	UseGOP bool
 
 	Rotate int `json:"-"`
 	ScaleX int `json:"-"`

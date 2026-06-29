@@ -15,8 +15,7 @@ type Consumer struct {
 	muxer *Muxer
 	wr    *core.WriteBuffer
 
-	UseGOP       bool
-	UsePrebuffer bool
+	UseGOP bool
 }
 
 func NewConsumer() *Consumer {
@@ -53,7 +52,6 @@ func NewConsumer() *Consumer {
 func (c *Consumer) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
 	sender := core.NewSender(media, track.Codec)
 	sender.UseGOP = c.UseGOP
-	sender.UsePrebuffer = c.UsePrebuffer
 
 	switch track.Codec.Name {
 	case core.CodecH264:

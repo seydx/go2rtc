@@ -103,14 +103,11 @@ func handlerMP4(w http.ResponseWriter, r *http.Request) {
 	cons.Protocol = "http"
 	cons.WithRequest(r)
 
-	// Parse query parameters for GOP and prebuffer control
+	// Parse query parameters for GOP control
 	if s := query.Get("gop"); s != "" {
 		cons.UseGOP = core.Atoi(s) != 0
 	} else {
 		cons.UseGOP = true // Default: GOP enabled
-	}
-	if query.Has("prebuffer") {
-		cons.UsePrebuffer = true
 	}
 
 	if err := stream.AddConsumer(cons); err != nil {

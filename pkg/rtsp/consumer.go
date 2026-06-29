@@ -52,7 +52,6 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 	// save original codec to sender (can have Codec.Name = ANY)
 	sender := core.NewSender(media, codec)
 	sender.UseGOP = c.UseGOP
-	sender.UsePrebuffer = c.UsePrebuffer
 
 	// important to send original codec for valid IsRTP check
 	sender.Handler = c.packetWriter(track.Codec, channel, codec.PayloadType)

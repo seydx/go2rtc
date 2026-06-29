@@ -101,35 +101,6 @@ streams:
 http://localhost:1984/stream.html?src=unifi_camera&gop=0
 ```
 
-## Prebuffer
-
-The prebuffer feature creates a time-based rolling buffer that stores recent packets from the producer. This allows clients to start playback from a point in the past, which is useful for reviewing events that just occurred or reducing live-edge buffering.
-
-Prebuffer works for both **video and audio** codecs and is configured at the producer level:
-
-**Producer-level configuration** - defines the buffer duration (in seconds) maintained by the producer:
-
-```yaml
-streams:
-  # Keep a 10-second rolling buffer
-  tapo_camera: tapo://user:pass@192.168.1.123#prebuffer=10
-```
-
-**Client-level usage** - clients request prebuffer playback using a boolean parameter:
-
-```
-# Start playback from the producer's configured prebuffer
-rtsp://localhost:8554/camera&prebuffer
-```
-
-The client receives playback starting from the configured buffer duration (e.g., 10 seconds in the past for `#prebuffer=10`). The offset is determined by the producer configuration.
-
-**Maximum duration**: The producer-level prebuffer value is capped at **15 seconds** to prevent excessive memory usage. Values exceeding this limit will be automatically reduced to 15 seconds.
-
-**Supported consumers**: WebRTC, MSE, MP4, HLS, MJPEG, RTSP
-
-**Note**: You can enable both features on a stream (`#gop=1#prebuffer=10`), but **prebuffer has priority** over GOP at the client level. If a client requests prebuffer (`?prebuffer`), it will use the prebuffer replay. If a client omits the parameter, GOP will be used for instant live playback with keyframe cache.
-
 ## Examples
 
 ```yaml

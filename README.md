@@ -74,7 +74,6 @@ Ultimate camera streaming application with support for dozens formats and protoc
   - [Publish stream](#publish-stream)
   - [Preload stream](#preload-stream)
   - [GOP Cache](#gop-cache)
-  - [Prebuffer](#prebuffer)
   - [Streaming stats](#streaming-stats)
 - [Codecs](#codecs)
   - [Codecs filters](#codecs-filters)
@@ -321,12 +320,6 @@ You can preload any stream on go2rtc start. This is useful for cameras that take
 go2rtc has a built-in [GOP cache](https://en.wikipedia.org/wiki/Group_of_pictures) for video tracks. It caches the last GOP (Group of Pictures) starting from the most recent keyframe. This allows new clients to start playback immediately without waiting for the next keyframe, reducing initial buffering time.
 
 [read more](internal/streams/README.md#gop-cache)
-
-### Prebuffer
-
-The prebuffer feature creates a time-based rolling buffer that stores recent packets from the producer. This allows clients to start playback from a point in the past, which is useful for reviewing events that just occurred or reducing live-edge buffering.
-
-[read more](internal/streams/README.md#prebuffer)
 
 ### Streaming stats
 
