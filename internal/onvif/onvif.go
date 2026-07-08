@@ -235,23 +235,26 @@ func apiOnvif(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		tokens, err := client.GetProfilesTokens()
+		profiles, err := client.GetProfiles()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		for i, token := range tokens {
+		for i, p := range profiles {
 			items = append(items, &api.Source{
-				Name: name + " stream" + strconv.Itoa(i),
-				URL:  src + "?subtype=" + token,
+				Name:     name + " stream" + strconv.Itoa(i),
+				URL:      src + "?subtype=" + p.Token,
+				Encoding: p.Encoding,
+				Width:    p.Width,
+				Height:   p.Height,
 			})
 		}
 
-		if len(tokens) > 0 && client.HasSnapshots() {
+		if len(profiles) > 0 && client.HasSnapshots() {
 			items = append(items, &api.Source{
 				Name: name + " snapshot",
-				URL:  src + "?subtype=" + tokens[0] + "&snapshot",
+				URL:  src + "?subtype=" + profiles[0].Token + "&snapshot",
 			})
 		}
 	}

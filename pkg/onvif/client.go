@@ -114,6 +114,22 @@ func (c *Client) GetProfilesTokens() ([]string, error) {
 	return tokens, nil
 }
 
+type Profile struct {
+	Token    string
+	Encoding string
+	Width    int
+	Height   int
+}
+
+func (c *Client) GetProfiles() ([]Profile, error) {
+	b, err := c.MediaRequest(MediaGetProfiles)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseProfiles(b), nil
+}
+
 func (c *Client) HasSnapshots() bool {
 	b, err := c.GetServiceCapabilities()
 	if err != nil {

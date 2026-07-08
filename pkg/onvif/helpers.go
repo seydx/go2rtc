@@ -27,6 +27,43 @@ func FindTagValue(b []byte, tag string) string {
 	return string(m[1])
 }
 
+var (
+	profileBlockRe = regexp.MustCompile(`(?s)<(?:\w+:)?Profiles\b.*?</(?:\w+:)?Profiles>`)
+	profileTokenRe = regexp.MustCompile(`token="([^"]+)"`)
+	encoderBlockRe = regexp.MustCompile(`(?s)<(?:\w+:)?VideoEncoderConfiguration\b.*?</(?:\w+:)?VideoEncoderConfiguration>`)
+)
+
+// parseProfiles extracts the token plus video encoding/resolution from a
+// GetProfiles response. Encoding and resolution are read from each profile's
+// VideoEncoderConfiguration block so the camera-reported codec (H264/H265/JPEG)
+// stays mapped to the correct token — consumers use this to keep MJPEG profiles
+// out of the decode/detection roles.
+func parseProfiles(b []byte) []Profile {
+	var profiles []Profile
+	for _, block := range profileBlockRe.FindAll(b, -1) {
+		m := profileTokenRe.FindSubmatch(block)
+		if m == nil {
+			continue
+		}
+		p := Profile{Token: string(m[1])}
+		if enc := encoderBlockRe.Find(block); enc != nil {
+			p.Encoding = FindTagValue(enc, "Encoding")
+			p.Width = parseInt(FindTagValue(enc, "Width"))
+			p.Height = parseInt(FindTagValue(enc, "Height"))
+		}
+		profiles = append(profiles, p)
+	}
+	return profiles
+}
+
+func parseInt(s string) int {
+	i, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	return i
+}
+
 // UUID - generate something like 44302cbf-0d18-4feb-79b3-33b575263da3
 func UUID() string {
 	s := core.RandString(32, 16)

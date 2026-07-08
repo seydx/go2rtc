@@ -324,6 +324,9 @@ type Source struct {
 	Info     string `json:"info,omitempty"`
 	URL      string `json:"url,omitempty"`
 	Location string `json:"location,omitempty"`
+	Encoding string `json:"encoding,omitempty"`
+	Width    int    `json:"width,omitempty"`
+	Height   int    `json:"height,omitempty"`
 }
 
 func ResponseSources(w http.ResponseWriter, sources []*Source) {
