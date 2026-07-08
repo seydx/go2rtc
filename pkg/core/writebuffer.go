@@ -48,18 +48,24 @@ func (w *WriteBuffer) WriteTo(wr io.Writer) (n int64, err error) {
 }
 
 func (w *WriteBuffer) Close() error {
-	// snapshot Writer under the lock; WriteTo/Reset can swap it concurrently
+	// read w.Writer under the mutex - Reset may swap it concurrently
 	w.mu.Lock()
-	writer := w.Writer
+	closer, _ := w.Writer.(io.Closer)
+	if closer == nil {
+		// mark the buffer as closed so that late Write calls from track
+		// senders fail (w.err) instead of writing into the http.ResponseWriter,
+		// whose bufio.Writer net/http recycles after the handler returns (#2339);
+		// w.closed also stops a Close-before-WriteTo from blocking WriteTo (#2327)
+		if w.err == nil {
+			w.err = io.ErrClosedPipe
+		}
+		w.closed = true
+		w.done()
+	}
 	w.mu.Unlock()
-
-	if closer, ok := writer.(io.Closer); ok {
+	if closer != nil {
 		return closer.Close()
 	}
-	w.mu.Lock()
-	w.closed = true
-	w.done()
-	w.mu.Unlock()
 	return nil
 }
 
