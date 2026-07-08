@@ -137,12 +137,14 @@ func rtcConn(nestAPI *API, rawURL, projectID, deviceID string) (*WebRTCClient, e
 		// 3. Create offer with candidates
 		offer, err := conn.CreateCompleteOffer(medias)
 		if err != nil {
+			_ = pc.Close()
 			return nil, err
 		}
 
 		// 4. Exchange SDP via Hass
 		answer, err := nestAPI.ExchangeSDP(projectID, deviceID, offer)
 		if err != nil {
+			_ = pc.Close()
 			lastErr = err
 			if attempt < maxRetries-1 {
 				time.Sleep(retryDelay)
@@ -154,6 +156,7 @@ func rtcConn(nestAPI *API, rawURL, projectID, deviceID string) (*WebRTCClient, e
 
 		// 5. Set answer with remote medias
 		if err = conn.SetAnswer(answer); err != nil {
+			_ = pc.Close()
 			return nil, err
 		}
 
