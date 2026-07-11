@@ -360,6 +360,17 @@ func (c *Conn) handleRawPacket(channel byte, buf []byte) error {
 	return nil
 }
 
+// handshakeTimeout returns the deadline used for RTSP command request/response
+// exchanges (DESCRIBE, SETUP, PLAY, ...). It prefers the per-connection Timeout
+// (ex. rtsp://...#timeout=30) and falls back to the package default when unset,
+// so existing behavior is unchanged whenever Timeout == 0.
+func (c *Conn) handshakeTimeout() time.Duration {
+	if c.Timeout != 0 {
+		return time.Second * time.Duration(c.Timeout)
+	}
+	return Timeout
+}
+
 func (c *Conn) WriteRequest(req *tcp.Request) error {
 	if req.Proto == "" {
 		req.Proto = ProtoRTSP
@@ -387,7 +398,7 @@ func (c *Conn) WriteRequest(req *tcp.Request) error {
 
 	c.Fire(req)
 
-	if err := c.conn.SetWriteDeadline(time.Now().Add(Timeout)); err != nil {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return err
 	}
 
@@ -395,7 +406,7 @@ func (c *Conn) WriteRequest(req *tcp.Request) error {
 }
 
 func (c *Conn) ReadRequest() (*tcp.Request, error) {
-	if err := c.conn.SetReadDeadline(time.Now().Add(Timeout)); err != nil {
+	if err := c.conn.SetReadDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return nil, err
 	}
 	return tcp.ReadRequest(c.reader)
@@ -436,7 +447,7 @@ func (c *Conn) WriteResponse(res *tcp.Response) error {
 
 	c.Fire(res)
 
-	if err := c.conn.SetWriteDeadline(time.Now().Add(Timeout)); err != nil {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return err
 	}
 
@@ -444,7 +455,7 @@ func (c *Conn) WriteResponse(res *tcp.Response) error {
 }
 
 func (c *Conn) ReadResponse() (*tcp.Response, error) {
-	if err := c.conn.SetReadDeadline(time.Now().Add(Timeout)); err != nil {
+	if err := c.conn.SetReadDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return nil, err
 	}
 	return tcp.ReadResponse(c.reader)
