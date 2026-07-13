@@ -77,9 +77,15 @@ func apiHomekit(w http.ResponseWriter, r *http.Request) {
 	case "POST":
 		id := r.Form.Get("id")
 		rawURL := r.Form.Get("src") + "&pin=" + r.Form.Get("pin")
-		if err := apiPair(id, rawURL); err != nil {
+		pairedURL, err := apiPair(id, rawURL)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+		// Return the paired stream URL so API clients (e.g. camera.ui) can wire
+		// it up as a source. A bare 200 with no body breaks clients that parse
+		// JSON here; go2rtc's own UI only checks the status code.
+		api.ResponseJSON(w, map[string]any{"source": map[string]string{"url": pairedURL}})
 
 	case "DELETE":
 		id := r.Form.Get("id")
@@ -151,15 +157,20 @@ func discovery(timeout time.Duration) ([]*api.Source, error) {
 	return sources, nil
 }
 
-func apiPair(id, url string) error {
+func apiPair(id, url string) (string, error) {
 	conn, err := hap.Pair(url)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	streams.New(id, conn.URL())
+	pairedURL := conn.URL()
+	streams.New(id, pairedURL)
 
-	return app.PatchConfig([]string{"streams", id}, conn.URL())
+	if err := app.PatchConfig([]string{"streams", id}, pairedURL); err != nil {
+		return "", err
+	}
+
+	return pairedURL, nil
 }
 
 func apiUnpair(id string) error {
