@@ -504,6 +504,7 @@ PS. Additionally, WebRTC will try to use the 8555 UDP port to transmit encrypted
 - [MMM-go2rtc](https://github.com/Anonym-tsk/MMM-go2rtc) - MagicMirror² module
 - [ring-mqtt](https://github.com/tsightler/ring-mqtt) - Ring-to-MQTT bridge
 - [lightNVR](https://github.com/opensensor/lightNVR)
+- [camera.ui](https://www.cameraui.com/) - The modern, local-first platform for professional video surveillance.
 
 **Distributions**
 
