@@ -11,8 +11,9 @@ import (
 
 type Keyframe struct {
 	core.Connection
-	wr    *core.WriteBuffer
-	muxer *Muxer
+	UseGOP bool
+	wr     *core.WriteBuffer
+	muxer  *Muxer
 }
 
 // Deprecated: should be rewritten
@@ -37,8 +38,9 @@ func NewKeyframe(medias []*core.Media) *Keyframe {
 			FormatName: "mp4",
 			Transport:  wr,
 		},
-		muxer: &Muxer{},
-		wr:    wr,
+		UseGOP: true,
+		muxer:  &Muxer{},
+		wr:     wr,
 	}
 	cons.Medias = medias
 	return cons
@@ -52,6 +54,7 @@ func (c *Keyframe) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 	}
 
 	handler := core.NewSender(media, track.Codec)
+	handler.UseGOP = c.UseGOP
 
 	switch track.Codec.Name {
 	case core.CodecH264:

@@ -49,6 +49,11 @@ func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 
 	cons := mp4.NewKeyframe(nil)
 
+	// gop=0 forces a fresh live keyframe instead of replaying the GOP cache
+	if s := query.Get("gop"); s != "" {
+		cons.UseGOP = core.Atoi(s) != 0
+	}
+
 	if err := stream.AddConsumer(cons); err != nil {
 		log.Error().Err(err).Caller().Send()
 		http.Error(w, err.Error(), http.StatusInternalServerError)
