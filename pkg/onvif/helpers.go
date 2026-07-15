@@ -79,7 +79,11 @@ func UUID() string {
 // drops unsolicited unicast replies to a multicast probe, so each interface
 // additionally gets a directed probe sweep of its subnet: replies to those pass
 // the stateful firewall without any rule.
-func DiscoveryStreamingDevices() ([]DiscoveryDevice, error) {
+func DiscoveryStreamingDevices(timeout time.Duration) ([]DiscoveryDevice, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
@@ -111,7 +115,7 @@ func DiscoveryStreamingDevices() ([]DiscoveryDevice, error) {
 			wg.Add(1)
 			go func(iface net.Interface, ipnet *net.IPNet) {
 				defer wg.Done()
-				for _, device := range probeInterface(iface, ipnet) {
+				for _, device := range probeInterface(iface, ipnet, timeout) {
 					mu.Lock()
 					if !seen[device.URL] {
 						seen[device.URL] = true
@@ -127,7 +131,7 @@ func DiscoveryStreamingDevices() ([]DiscoveryDevice, error) {
 	return devices, nil
 }
 
-func probeInterface(iface net.Interface, ipnet *net.IPNet) []DiscoveryDevice {
+func probeInterface(iface net.Interface, ipnet *net.IPNet, timeout time.Duration) []DiscoveryDevice {
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ipnet.IP})
 	if err != nil {
 		return nil
@@ -150,7 +154,7 @@ func probeInterface(iface net.Interface, ipnet *net.IPNet) []DiscoveryDevice {
 		_, _ = conn.WriteToUDP(msg, &net.UDPAddr{IP: host, Port: 3702})
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
 
 	var devices []DiscoveryDevice
 

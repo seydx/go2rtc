@@ -186,7 +186,19 @@ func apiOnvif(w http.ResponseWriter, r *http.Request) {
 	var items []*api.Source
 
 	if src == "" {
-		devices, err := onvif.DiscoveryStreamingDevices()
+		// optional ?timeout=SECONDS - WS-Discovery response window (default 5s,
+		// max 60s), slow cameras may not answer within the default window
+		var timeout time.Duration
+		if s := r.URL.Query().Get("timeout"); s != "" {
+			sec, err := strconv.Atoi(s)
+			if err != nil || sec < 1 || sec > 60 {
+				http.Error(w, "invalid timeout, expected seconds in range 1..60", http.StatusBadRequest)
+				return
+			}
+			timeout = time.Duration(sec) * time.Second
+		}
+
+		devices, err := onvif.DiscoveryStreamingDevices(timeout)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
