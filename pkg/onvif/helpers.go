@@ -7,7 +7,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/net/ipv4"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 )
@@ -70,39 +73,81 @@ func UUID() string {
 	return s[:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:]
 }
 
-// DiscoveryStreamingDevices return list of tuple (onvif_url, name, hardware)
+// DiscoveryStreamingDevices probes every usable IPv4 interface for WS-Discovery
+// devices. An unbound socket multicasts only via the OS default route, which on
+// multi-homed desktops is often a VPN or virtual adapter. Windows Firewall also
+// drops unsolicited unicast replies to a multicast probe, so each interface
+// additionally gets a directed probe sweep of its subnet: replies to those pass
+// the stateful firewall without any rule.
 func DiscoveryStreamingDevices() ([]DiscoveryDevice, error) {
-	conn, err := net.ListenUDP("udp4", nil)
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
 
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		seen    = map[string]bool{}
+		devices []DiscoveryDevice
+	)
+
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok || ipnet.IP.To4() == nil || ipnet.IP.IsLinkLocalUnicast() {
+				continue
+			}
+
+			wg.Add(1)
+			go func(iface net.Interface, ipnet *net.IPNet) {
+				defer wg.Done()
+				for _, device := range probeInterface(iface, ipnet) {
+					mu.Lock()
+					if !seen[device.URL] {
+						seen[device.URL] = true
+						devices = append(devices, device)
+					}
+					mu.Unlock()
+				}
+			}(iface, ipnet)
+		}
+	}
+
+	wg.Wait()
+	return devices, nil
+}
+
+func probeInterface(iface net.Interface, ipnet *net.IPNet) []DiscoveryDevice {
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ipnet.IP})
+	if err != nil {
+		return nil
+	}
+
 	defer conn.Close()
 
-	// https://www.onvif.org/wp-content/uploads/2016/12/ONVIF_Feature_Discovery_Specification_16.07.pdf
-	// 5.3 Discovery Procedure:
-	msg := `<?xml version="1.0" ?>
-<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
-	<s:Header xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
-		<a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action>
-		<a:MessageID>urn:uuid:` + UUID() + `</a:MessageID>
-		<a:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To>
-	</s:Header>
-	<s:Body>
-		<d:Probe xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery">
-			<d:Types />
-			<d:Scopes />
-		</d:Probe>
-	</s:Body>
-</s:Envelope>`
+	// binding the source IP alone doesn't pin multicast egress on every platform
+	_ = ipv4.NewPacketConn(conn).SetMulticastInterface(&iface)
 
-	addr := &net.UDPAddr{
+	msg := []byte(probeMessage())
+
+	multicast := &net.UDPAddr{
 		IP:   net.IP{239, 255, 255, 250},
 		Port: 3702,
 	}
+	_, _ = conn.WriteToUDP(msg, multicast)
 
-	if _, err = conn.WriteTo([]byte(msg), addr); err != nil {
-		return nil, err
+	for _, host := range sweepHosts(ipnet) {
+		_, _ = conn.WriteToUDP(msg, &net.UDPAddr{IP: host, Port: 3702})
 	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -131,6 +176,18 @@ func DiscoveryStreamingDevices() ([]DiscoveryDevice, error) {
 			continue
 		}
 
+		// XAddrs may list several space-separated URLs (IPv4 + IPv6),
+		// keep the first IPv4 one
+		if fields := strings.Fields(device.URL); len(fields) > 1 {
+			device.URL = fields[0]
+			for _, field := range fields {
+				if !strings.Contains(field, "[") {
+					device.URL = field
+					break
+				}
+			}
+		}
+
 		// fix some buggy cameras
 		// <wsdd:XAddrs>http://0.0.0.0:8080/onvif/device_service</wsdd:XAddrs>
 		if s, ok := strings.CutPrefix(device.URL, "http://0.0.0.0"); ok {
@@ -145,7 +202,59 @@ func DiscoveryStreamingDevices() ([]DiscoveryDevice, error) {
 		devices = append(devices, device)
 	}
 
-	return devices, nil
+	return devices
+}
+
+func probeMessage() string {
+	// https://www.onvif.org/wp-content/uploads/2016/12/ONVIF_Feature_Discovery_Specification_16.07.pdf
+	// 5.3 Discovery Procedure:
+	return `<?xml version="1.0" ?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+	<s:Header xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
+		<a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action>
+		<a:MessageID>urn:uuid:` + UUID() + `</a:MessageID>
+		<a:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To>
+	</s:Header>
+	<s:Body>
+		<d:Probe xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery">
+			<d:Types />
+			<d:Scopes />
+		</d:Probe>
+	</s:Body>
+</s:Envelope>`
+}
+
+// sweepHosts lists directed-probe targets: every host of the interface subnet,
+// capped to the /24 around the interface IP so a wide mask doesn't turn into
+// a huge sweep
+func sweepHosts(ipnet *net.IPNet) []net.IP {
+	ip4 := ipnet.IP.To4()
+	ones, bits := ipnet.Mask.Size()
+	if ip4 == nil || bits != 32 {
+		return nil
+	}
+	if ones < 24 {
+		ones = 24
+	}
+	if ones > 30 {
+		return nil
+	}
+
+	base := ip4.Mask(net.CIDRMask(ones, 32))
+	size := 1 << (32 - ones)
+
+	hosts := make([]net.IP, 0, size-2)
+	for i := 1; i < size-1; i++ {
+		host := make(net.IP, 4)
+		copy(host, base)
+		host[3] += byte(i)
+		if host.Equal(ip4) {
+			continue
+		}
+		hosts = append(hosts, host)
+	}
+
+	return hosts
 }
 
 func findScope(s, prefix string) string {
