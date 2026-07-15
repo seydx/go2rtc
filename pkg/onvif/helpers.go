@@ -300,19 +300,20 @@ func GetPosixTZ(current time.Time) string {
 	return prefix + fmt.Sprintf("%02d:%02d", offset/60, offset%60)
 }
 
+// GetPath returns the path of a service XAddr so it can be re-based onto the
+// reachable host. A full URL yields its path (Hikvision serves /onvif/Media,
+// Tapo /onvif/service, not the /onvif/media_service default); a bare absolute
+// path passes through; anything empty, relative, or unparseable falls back to
+// defPath.
 func GetPath(urlOrPath, defPath string) string {
-	if urlOrPath == "" || urlOrPath[0] == '/' {
+	if urlOrPath == "" {
 		return defPath
 	}
-	u, err := url.Parse(urlOrPath)
-	if err != nil {
-		return defPath
+	if urlOrPath[0] == '/' {
+		return urlOrPath
 	}
-	// guard against infinite recursion: a relative XAddr without scheme/leading
-	// slash (e.g. "onvif/media") parses to u.Path == urlOrPath, which would
-	// recurse forever and overflow the stack.
-	if u.Path == "" || u.Path == urlOrPath {
-		return defPath
+	if u, err := url.Parse(urlOrPath); err == nil && u.Path != "" && u.Path[0] == '/' {
+		return u.Path
 	}
-	return GetPath(u.Path, defPath)
+	return defPath
 }
