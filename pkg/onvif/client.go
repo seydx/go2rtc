@@ -23,7 +23,7 @@ type Client struct {
 }
 
 func NewClient(rawURL string) (*Client, error) {
-	u, err := url.Parse(rawURL)
+	u, err := url.Parse(SanitizeQuery(rawURL))
 	if err != nil {
 		return nil, err
 	}

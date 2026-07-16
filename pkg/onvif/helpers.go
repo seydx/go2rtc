@@ -300,6 +300,17 @@ func GetPosixTZ(current time.Time) string {
 	return prefix + fmt.Sprintf("%02d:%02d", offset/60, offset%60)
 }
 
+// SanitizeQuery repairs URLs where params were chained with '?' instead of '&'
+// ("onvif://cam?timeout=10?subtype=X" — produced by older discovery versions and
+// still present in stored source URLs). Every '?' after the first becomes '&'.
+func SanitizeQuery(rawURL string) string {
+	i := strings.IndexByte(rawURL, '?')
+	if i < 0 || !strings.Contains(rawURL[i+1:], "?") {
+		return rawURL
+	}
+	return rawURL[:i+1] + strings.ReplaceAll(rawURL[i+1:], "?", "&")
+}
+
 // GetPath returns the path of a service XAddr so it can be re-based onto the
 // reachable host. A full URL yields its path (Hikvision serves /onvif/Media,
 // Tapo /onvif/service, not the /onvif/media_service default); a bare absolute

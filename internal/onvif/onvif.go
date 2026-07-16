@@ -45,13 +45,14 @@ func streamOnvif(rawURL string) (core.Producer, error) {
 	}
 
 	// Forward query params from the onvif:// URL to the resolved RTSP URL,
-	// except onvif-specific keys (subtype/snapshot) that are only used for
-	// SOAP discovery. This lets users pass things like `transport=udp` to
+	// except onvif-specific keys (subtype/snapshot/timeout) that are only used
+	// for SOAP discovery. This lets users pass things like `transport=udp` to
 	// work around camera firmware bugs in TCP-interleaved mode.
-	if u, err := url.Parse(rawURL); err == nil {
+	if u, err := url.Parse(onvif.SanitizeQuery(rawURL)); err == nil {
 		extra := u.Query()
 		extra.Del("subtype")
 		extra.Del("snapshot")
+		extra.Del("timeout")
 		if encoded := extra.Encode(); encoded != "" {
 			if strings.Contains(uri, "?") {
 				uri += "&" + encoded
@@ -253,10 +254,25 @@ func apiOnvif(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// src may already carry a query (or stale subtype/snapshot when probing a
+		// stored source URL), rebuild it cleanly before appending our own params
+		base, sep := src, "?"
+		if u, err := url.Parse(onvif.SanitizeQuery(src)); err == nil {
+			q := u.Query()
+			q.Del("subtype")
+			q.Del("snapshot")
+			q.Del("timeout")
+			u.RawQuery = q.Encode()
+			base = u.String()
+			if u.RawQuery != "" {
+				sep = "&"
+			}
+		}
+
 		for i, p := range profiles {
 			items = append(items, &api.Source{
 				Name:     name + " stream" + strconv.Itoa(i),
-				URL:      src + "?subtype=" + p.Token,
+				URL:      base + sep + "subtype=" + p.Token,
 				Encoding: p.Encoding,
 				Width:    p.Width,
 				Height:   p.Height,
@@ -266,7 +282,7 @@ func apiOnvif(w http.ResponseWriter, r *http.Request) {
 		if len(profiles) > 0 && client.HasSnapshots() {
 			items = append(items, &api.Source{
 				Name: name + " snapshot",
-				URL:  src + "?subtype=" + profiles[0].Token + "&snapshot",
+				URL:  base + sep + "subtype=" + profiles[0].Token + "&snapshot",
 			})
 		}
 	}
