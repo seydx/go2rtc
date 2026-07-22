@@ -76,18 +76,21 @@ func Init() {
 	}
 
 	if cfg.Mod.Listen != "" {
+		IsHTTP = true
 		_, port, _ := net.SplitHostPort(cfg.Mod.Listen)
 		Port, _ = strconv.Atoi(port)
 		go listen("tcp", cfg.Mod.Listen)
 	}
 
 	if cfg.Mod.UnixListen != "" {
+		IsUnix = true
 		_ = syscall.Unlink(cfg.Mod.UnixListen)
 		go listen("unix", cfg.Mod.UnixListen)
 	}
 
 	// Initialize the HTTPS server
 	if cfg.Mod.TLSListen != "" && cfg.Mod.TLSCert != "" && cfg.Mod.TLSKey != "" {
+		IsHTTPS = true
 		go tlsListen("tcp", cfg.Mod.TLSListen, cfg.Mod.TLSCert, cfg.Mod.TLSKey, cfg.Mod.TLSCa)
 	}
 }
@@ -215,6 +218,9 @@ func Response(w http.ResponseWriter, body any, contentType string) {
 const StreamNotFound = "stream not found"
 
 var allowPaths []string
+var IsHTTP bool
+var IsHTTPS bool
+var IsUnix bool
 var basePath string
 var log zerolog.Logger
 
@@ -293,7 +299,7 @@ func restartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Debug().Msgf("[api] restart %s", path)
+	log.Info().Msgf("[api] restart %s", path)
 
 	go syscall.Exec(path, os.Args, os.Environ())
 }
@@ -318,6 +324,9 @@ type Source struct {
 	Info     string `json:"info,omitempty"`
 	URL      string `json:"url,omitempty"`
 	Location string `json:"location,omitempty"`
+	Encoding string `json:"encoding,omitempty"`
+	Width    int    `json:"width,omitempty"`
+	Height   int    `json:"height,omitempty"`
 }
 
 func ResponseSources(w http.ResponseWriter, sources []*Source) {
