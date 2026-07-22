@@ -147,16 +147,31 @@ func apiStreamsDOT(w http.ResponseWriter, r *http.Request) {
 }
 
 func apiPreload(w http.ResponseWriter, r *http.Request) {
-	// GET - return all preloads
-	if r.Method == "GET" {
+	query := r.URL.Query()
+	src := query.Get("src")
+
+	if r.Method == "GET" && src == "" {
 		api.ResponseJSON(w, GetPreloads())
 		return
 	}
 
-	query := r.URL.Query()
-	src := query.Get("src")
-
 	switch r.Method {
+	case "GET":
+		response := struct {
+			Src    string `json:"src"`
+			Status string `json:"status"`
+		}{
+			Src: src,
+		}
+
+		if ok := HasPreload(src); ok {
+			response.Status = "started"
+			api.ResponseJSON(w, response)
+		} else {
+			response.Status = "stopped"
+			api.ResponseJSON(w, response)
+			return
+		}
 	case "PUT":
 		// it's safe to delete from map while iterating
 		for k := range query {
