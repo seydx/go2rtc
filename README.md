@@ -3,6 +3,13 @@
     <img src="./website/images/logo.gif" alt="go2rtc - GitHub">
   </a>
 </h1>
+
+> **⚠️ WARNING: camera.ui specific fork**
+> 
+> This is a modified version of go2rtc that has been customized for [camera.ui](https://github.com/seydx/camera.ui). It includes changes that are not available in the official go2rtc release and may not be suitable for standalone use.
+> 
+> For general go2rtc usage, please use the [official repository](https://github.com/AlexxIT/go2rtc). This fork is specifically maintained for camera.ui integration.
+
 <p align="center">
   <a href="https://github.com/AlexxIT/go2rtc/stargazers" target="_blank">
     <img style="display: inline" src="https://img.shields.io/github/stars/AlexxIT/go2rtc?style=flat-square&logo=github" alt="go2rtc - GitHub Stars">
@@ -19,6 +26,7 @@
     <img src="https://trendshift.io/api/badge/repositories/4628" alt="go2rtc - Trendshift"/>
   </a>
 </p>
+
 
 Ultimate camera streaming application with support for dozens formats and protocols.
 
@@ -65,6 +73,7 @@ Ultimate camera streaming application with support for dozens formats and protoc
   - [Stream to camera](#stream-to-camera)
   - [Publish stream](#publish-stream)
   - [Preload stream](#preload-stream)
+  - [GOP Cache](#gop-cache)
   - [Streaming stats](#streaming-stats)
 - [Codecs](#codecs)
   - [Codecs filters](#codecs-filters)
@@ -306,6 +315,12 @@ You can preload any stream on go2rtc start. This is useful for cameras that take
 
 [read more](internal/streams/README.md#preload-stream)
 
+### GOP Cache
+
+go2rtc has a built-in [GOP cache](https://en.wikipedia.org/wiki/Group_of_pictures) for video tracks. It caches the last GOP (Group of Pictures) starting from the most recent keyframe. This allows new clients to start playback immediately without waiting for the next keyframe, reducing initial buffering time.
+
+[read more](internal/streams/README.md#gop-cache)
+
 ### Streaming stats
 
 [WebUI](www/README.md) provides detailed information about all active connections, including IP-addresses, formats, protocols, number of packets and bytes transferred. 
@@ -496,7 +511,6 @@ PS. Additionally, WebRTC will try to use the 8555 UDP port to transmit encrypted
 
 - [Home Assistant](https://www.home-assistant.io/) [2024.11+](https://www.home-assistant.io/integrations/go2rtc/) - top open-source smart home project
 - [Frigate](https://frigate.video/) [0.12+](https://docs.frigate.video/guides/configuring_go2rtc/) - open-source NVR built around real-time AI object detection
-- [camera.ui](https://www.cameraui.com/) - The modern, local-first platform for professional video surveillance.
 - [Advanced Camera Card](https://github.com/dermotduffy/advanced-camera-card) - custom card for Home Assistant
 - [OpenIPC](https://github.com/OpenIPC/firmware/tree/master/general/package/go2rtc) - alternative IP camera firmware from an open community
 - [wz_mini_hacks](https://github.com/gtxaspec/wz_mini_hacks) - custom firmware for Wyze cameras
