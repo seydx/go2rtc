@@ -225,3 +225,10 @@ func TestGetCapabilities(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeQuery(t *testing.T) {
+	require.Equal(t, "onvif://user:pass@192.168.1.2", SanitizeQuery("onvif://user:pass@192.168.1.2"))
+	require.Equal(t, "onvif://user:pass@192.168.1.2?subtype=000", SanitizeQuery("onvif://user:pass@192.168.1.2?subtype=000"))
+	require.Equal(t, "onvif://cam?timeout=10&subtype=000&snapshot", SanitizeQuery("onvif://cam?timeout=10?subtype=000&snapshot"))
+	require.Equal(t, "onvif://cam?timeout=10&subtype=A&subtype=B", SanitizeQuery("onvif://cam?timeout=10?subtype=A?subtype=B"))
+}

@@ -44,6 +44,24 @@ func streamOnvif(rawURL string) (core.Producer, error) {
 		return nil, err
 	}
 
+	// Forward query params from the onvif:// URL to the resolved RTSP URL,
+	// except onvif-specific keys (subtype/snapshot/timeout) that are only used
+	// for SOAP discovery. This lets users pass things like `transport=udp` to
+	// work around camera firmware bugs in TCP-interleaved mode.
+	if u, err := url.Parse(onvif.SanitizeQuery(rawURL)); err == nil {
+		extra := u.Query()
+		extra.Del("subtype")
+		extra.Del("snapshot")
+		extra.Del("timeout")
+		if encoded := extra.Encode(); encoded != "" {
+			if strings.Contains(uri, "?") {
+				uri += "&" + encoded
+			} else {
+				uri += "?" + encoded
+			}
+		}
+	}
+
 	// Append hash-based arguments to the retrieved URI
 	if i := strings.IndexByte(rawURL, '#'); i > 0 {
 		uri += rawURL[i:]
@@ -73,6 +91,11 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	log.Trace().Msgf("[onvif] server request %s %s:\n%s", r.Method, r.RequestURI, b)
 
+	protocol := "http"
+	if api.IsHTTPS {
+		protocol = "https"
+	}
+
 	switch operation {
 	case onvif.ServiceGetServiceCapabilities, // important for Hass
 		onvif.DeviceGetNetworkInterfaces, // important for Hass
@@ -95,10 +118,10 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	case onvif.DeviceGetCapabilities:
 		// important for Hass: Media section
-		b = onvif.GetCapabilitiesResponse(r.Host)
+		b = onvif.GetCapabilitiesResponse(protocol, r.Host)
 
 	case onvif.DeviceGetServices:
-		b = onvif.GetServicesResponse(r.Host)
+		b = onvif.GetServicesResponse(protocol, r.Host)
 
 	case onvif.DeviceGetDeviceInformation:
 		// important for Hass: SerialNumber (unique server ID)
@@ -140,7 +163,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetStreamUriResponse(uri)
 
 	case onvif.MediaGetSnapshotUri:
-		uri := "http://" + r.Host + "/api/frame.jpeg?src=" + onvif.FindTagValue(b, "ProfileToken")
+		uri := protocol + "://" + r.Host + "/api/frame.jpeg?src=" + onvif.FindTagValue(b, "ProfileToken")
 		b = onvif.GetSnapshotUriResponse(uri)
 
 	default:
@@ -164,7 +187,19 @@ func apiOnvif(w http.ResponseWriter, r *http.Request) {
 	var items []*api.Source
 
 	if src == "" {
-		devices, err := onvif.DiscoveryStreamingDevices()
+		// optional ?timeout=SECONDS - WS-Discovery response window (default 5s,
+		// max 60s), slow cameras may not answer within the default window
+		var timeout time.Duration
+		if s := r.URL.Query().Get("timeout"); s != "" {
+			sec, err := strconv.Atoi(s)
+			if err != nil || sec < 1 || sec > 60 {
+				http.Error(w, "invalid timeout, expected seconds in range 1..60", http.StatusBadRequest)
+				return
+			}
+			timeout = time.Duration(sec) * time.Second
+		}
+
+		devices, err := onvif.DiscoveryStreamingDevices(timeout)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -213,23 +248,41 @@ func apiOnvif(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		tokens, err := client.GetProfilesTokens()
+		profiles, err := client.GetProfiles()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		for i, token := range tokens {
+		// src may already carry a query (or stale subtype/snapshot when probing a
+		// stored source URL), rebuild it cleanly before appending our own params
+		base, sep := src, "?"
+		if u, err := url.Parse(onvif.SanitizeQuery(src)); err == nil {
+			q := u.Query()
+			q.Del("subtype")
+			q.Del("snapshot")
+			q.Del("timeout")
+			u.RawQuery = q.Encode()
+			base = u.String()
+			if u.RawQuery != "" {
+				sep = "&"
+			}
+		}
+
+		for i, p := range profiles {
 			items = append(items, &api.Source{
-				Name: name + " stream" + strconv.Itoa(i),
-				URL:  src + "?subtype=" + token,
+				Name:     name + " stream" + strconv.Itoa(i),
+				URL:      base + sep + "subtype=" + p.Token,
+				Encoding: p.Encoding,
+				Width:    p.Width,
+				Height:   p.Height,
 			})
 		}
 
-		if len(tokens) > 0 && client.HasSnapshots() {
+		if len(profiles) > 0 && client.HasSnapshots() {
 			items = append(items, &api.Source{
 				Name: name + " snapshot",
-				URL:  src + "?subtype=" + tokens[0] + "&snapshot",
+				URL:  base + sep + "subtype=" + profiles[0].Token + "&snapshot",
 			})
 		}
 	}

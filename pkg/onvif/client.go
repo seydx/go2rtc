@@ -23,7 +23,7 @@ type Client struct {
 }
 
 func NewClient(rawURL string) (*Client, error) {
-	u, err := url.Parse(rawURL)
+	u, err := url.Parse(SanitizeQuery(rawURL))
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +86,18 @@ func (c *Client) GetURI() (string, error) {
 		u.User = c.url.User
 	}
 
+	// Cameras report the stream URL with their own LAN address. When we reached
+	// the camera over a different host (NAT/port-forward, or a camera reporting
+	// a stale IP), that address is unreachable — re-base the RTSP host onto the
+	// ONVIF host we actually connected to, keeping the camera's RTSP port.
+	if onvifHost := c.url.Hostname(); onvifHost != "" && u.Hostname() != onvifHost {
+		if port := u.Port(); port != "" {
+			u.Host = onvifHost + ":" + port
+		} else {
+			u.Host = onvifHost
+		}
+	}
+
 	return u.String(), nil
 }
 
@@ -112,6 +124,22 @@ func (c *Client) GetProfilesTokens() ([]string, error) {
 	}
 
 	return tokens, nil
+}
+
+type Profile struct {
+	Token    string
+	Encoding string
+	Width    int
+	Height   int
+}
+
+func (c *Client) GetProfiles() ([]Profile, error) {
+	b, err := c.MediaRequest(MediaGetProfiles)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseProfiles(b), nil
 }
 
 func (c *Client) HasSnapshots() bool {
