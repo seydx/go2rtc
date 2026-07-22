@@ -42,6 +42,7 @@ type Connection struct {
 	URL        string `json:"url,omitempty"`
 	SDP        string `json:"sdp,omitempty"`
 	UserAgent  string `json:"user_agent,omitempty"`
+	Tag        string `json:"tag,omitempty"` // optional caller-supplied label (?tag=) to address this consumer
 
 	Medias []*Media `json:"medias,omitempty"`
 
@@ -138,10 +139,19 @@ func (c *Connection) WithRequest(r *http.Request) {
 	}
 
 	c.UserAgent = r.UserAgent()
+	c.Tag = r.URL.Query().Get("tag")
 }
 
 func (c *Connection) GetSource() string {
 	return c.Source
+}
+
+func (c *Connection) GetID() uint32 {
+	return c.ID
+}
+
+func (c *Connection) GetTag() string {
+	return c.Tag
 }
 
 func (c *Connection) IsClosed() bool {

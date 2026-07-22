@@ -120,6 +120,40 @@ func apiStreams(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func apiConsumer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "DELETE" && r.Method != "POST" {
+		http.Error(w, "", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := r.URL.Query()
+
+	// kill by tag (may match multiple consumers)
+	if tag := query.Get("tag"); tag != "" {
+		n := KillConsumersByTag(tag)
+		if n == 0 {
+			http.Error(w, "no consumer with that tag", http.StatusNotFound)
+			return
+		}
+		api.ResponseJSON(w, map[string]any{"killed": n, "tag": tag})
+		return
+	}
+
+	// kill by unique connection ID
+	id := uint32(core.Atoi(query.Get("id")))
+	if id == 0 {
+		http.Error(w, "missing or invalid id/tag", http.StatusBadRequest)
+		return
+	}
+
+	if !KillConsumer(id) {
+		http.Error(w, "consumer not found", http.StatusNotFound)
+		return
+	}
+
+	api.ResponseJSON(w, map[string]any{"killed": true, "id": id})
+}
+
 func apiStreamsDOT(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 

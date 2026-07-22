@@ -211,6 +211,8 @@ func tcpHandler(conn *rtsp.Conn) {
 				conn.UseGOP = true // Default: GOP enabled
 			}
 
+			conn.Tag = query.Get("tag")
+
 			if s := query.Get("pkt_size"); s != "" {
 				conn.PacketSize = uint16(core.Atoi(s))
 			}
