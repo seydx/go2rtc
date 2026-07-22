@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -31,6 +32,7 @@ func Init() {
 			TLSListen  string `yaml:"tls_listen"`
 			TLSCert    string `yaml:"tls_cert"`
 			TLSKey     string `yaml:"tls_key"`
+			TLSCa      string `yaml:"tls_ca"`
 			UnixListen string `yaml:"unix_listen"`
 
 			AllowPaths []string `yaml:"allow_paths"`
@@ -86,7 +88,7 @@ func Init() {
 
 	// Initialize the HTTPS server
 	if cfg.Mod.TLSListen != "" && cfg.Mod.TLSCert != "" && cfg.Mod.TLSKey != "" {
-		go tlsListen("tcp", cfg.Mod.TLSListen, cfg.Mod.TLSCert, cfg.Mod.TLSKey)
+		go tlsListen("tcp", cfg.Mod.TLSListen, cfg.Mod.TLSCert, cfg.Mod.TLSKey, cfg.Mod.TLSCa)
 	}
 }
 
@@ -108,7 +110,7 @@ func listen(network, address string) {
 	}
 }
 
-func tlsListen(network, address, certFile, keyFile string) {
+func tlsListen(network, address, certFile, keyFile, caFile string) {
 	var cert tls.Certificate
 	var err error
 	if strings.IndexByte(certFile, '\n') < 0 && strings.IndexByte(keyFile, '\n') < 0 {
@@ -123,6 +125,24 @@ func tlsListen(network, address, certFile, keyFile string) {
 		return
 	}
 
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	}
+
+	if caFile != "" {
+		caData, err := os.ReadFile(caFile)
+		if err != nil {
+			log.Error().Err(err).Msg("[api] failed to read CA file")
+			return
+		}
+		certPool := x509.NewCertPool()
+		if !certPool.AppendCertsFromPEM(caData) {
+			log.Error().Msg("[api] failed to parse CA certificate")
+			return
+		}
+		tlsConfig.ClientCAs = certPool
+	}
+
 	ln, err := net.Listen(network, address)
 	if err != nil {
 		log.Error().Err(err).Msg("[api] tls listen")
@@ -133,7 +153,7 @@ func tlsListen(network, address, certFile, keyFile string) {
 
 	server := &http.Server{
 		Handler:           Handler,
-		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}},
+		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err = server.ServeTLS(ln, "", ""); err != nil {
