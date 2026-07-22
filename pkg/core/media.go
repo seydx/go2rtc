@@ -197,21 +197,7 @@ func ParseQuery(query map[string][]string) (medias []*Media) {
 				media := &Media{Kind: key, Direction: DirectionSendonly}
 
 				for _, name := range strings.Split(value, ",") {
-					name = strings.ToUpper(name)
-
-					// check aliases
-					switch name {
-					case "", "COPY":
-						name = CodecAny
-					case "MJPEG":
-						name = CodecJPEG
-					case "AAC":
-						name = CodecAAC
-					case "MP3":
-						name = CodecMP3
-					}
-
-					media.Codecs = append(media.Codecs, &Codec{Name: name})
+					media.Codecs = append(media.Codecs, ParseQueryCodec(name))
 				}
 
 				medias = append(medias, media)
@@ -220,4 +206,108 @@ func ParseQuery(query map[string][]string) (medias []*Media) {
 	}
 
 	return
+}
+
+// ParseQueryCodec parses a codec string from query parameters like "PCMU" or "PCMU/8000" or "OPUS/48000/2"
+// and returns a Codec with Name, ClockRate, and optionally Channels set.
+// Unlike ParseCodecString, this handles aliases and unknown codecs (for ANY matching).
+func ParseQueryCodec(s string) *Codec {
+	s = strings.ToUpper(s)
+
+	// Split first to check aliases on the base name
+	parts := strings.Split(s, "/")
+	baseName := parts[0]
+
+	// check aliases first
+	switch baseName {
+	case "", "COPY":
+		return &Codec{Name: CodecAny}
+	case "MJPEG":
+		baseName = CodecJPEG
+	case "AAC":
+		baseName = CodecAAC
+	case "MP3":
+		baseName = CodecMP3
+	}
+
+	codec := &Codec{Name: baseName}
+
+	// Set defaults for known codecs if not specified in query
+	if len(parts) < 2 {
+		switch baseName {
+		// Audio codecs with static payload types
+		case CodecPCMU:
+			codec.ClockRate = 8000
+			codec.PayloadType = 0
+		case CodecPCMA:
+			codec.ClockRate = 8000
+			codec.PayloadType = 8
+		case CodecG722:
+			codec.ClockRate = 8000 // Note: actual sample rate is 16kHz but RTP uses 8000
+			codec.PayloadType = 9
+		case CodecMP3:
+			codec.ClockRate = 90000
+			codec.PayloadType = 14
+		// Audio codecs with dynamic payload types
+		case CodecOpus:
+			codec.ClockRate = 48000
+			codec.Channels = 2
+			codec.PayloadType = 111
+		case CodecAAC:
+			codec.ClockRate = 44100
+			codec.Channels = 2
+			codec.PayloadType = 96
+		case CodecELD:
+			codec.ClockRate = 44100
+			codec.Channels = 2
+			codec.PayloadType = 96
+		case CodecPCM: // L16 big endian
+			codec.ClockRate = 44100
+			codec.Channels = 2
+			codec.PayloadType = 97
+		case CodecPCML: // L16 little endian
+			codec.ClockRate = 44100
+			codec.Channels = 2
+			codec.PayloadType = 97
+		case CodecFLAC:
+			codec.ClockRate = 44100
+			codec.Channels = 2
+			codec.PayloadType = 98
+		// Video codecs with static payload types
+		case CodecJPEG:
+			codec.ClockRate = 90000
+			codec.PayloadType = 26
+		// Video codecs with dynamic payload types
+		case CodecH264:
+			codec.ClockRate = 90000
+			codec.PayloadType = 96
+		case CodecH265:
+			codec.ClockRate = 90000
+			codec.PayloadType = 96
+		case CodecVP8:
+			codec.ClockRate = 90000
+			codec.PayloadType = 96
+		case CodecVP9:
+			codec.ClockRate = 90000
+			codec.PayloadType = 96
+		case CodecAV1:
+			codec.ClockRate = 90000
+			codec.PayloadType = 96
+		default:
+			// G726 variants: G726, G726-16, G726-24, G726-32, G726-40
+			if strings.HasPrefix(baseName, CodecG726) {
+				codec.ClockRate = 8000
+				codec.PayloadType = 96
+			}
+		}
+	}
+
+	if len(parts) >= 2 {
+		codec.ClockRate = uint32(Atoi(parts[1]))
+	}
+	if len(parts) >= 3 {
+		codec.Channels = uint8(Atoi(parts[2]))
+	}
+
+	return codec
 }
