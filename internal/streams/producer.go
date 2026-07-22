@@ -410,7 +410,7 @@ func (p *Producer) worker(conn core.Producer, workerID int) {
 
 // Watchdog defaults — tuned for typical camera reconnect / handshake timing.
 // Could be made configurable per stream via #stale=N#grace=N URL flags later.
-const (
+var (
 	watchdogStaleThreshold = 10 * time.Second
 	watchdogGraceDuration  = 30 * time.Second
 	watchdogCheckInterval  = 1 * time.Second
@@ -511,19 +511,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	conn, err := GetProducer(url)
 	if err != nil {
 		log.Debug().Msgf("[streams] producer=%s", err)
-
-		timeout := time.Minute
-		if retry < 5 {
-			timeout = time.Second
-		} else if retry < 10 {
-			timeout = time.Second * 5
-		} else if retry < 20 {
-			timeout = time.Second * 10
-		}
-
-		time.AfterFunc(timeout, func() {
-			p.reconnect(workerID, retry+1)
-		})
+		p.scheduleReconnect(workerID, retry)
 		return
 	}
 
@@ -536,74 +524,111 @@ func (p *Producer) reconnect(workerID, retry int) {
 	}
 	p.mu.Unlock()
 
-	// Process tracks without holding lock (these may involve network ops)
+	// Phase 1: probe which receivers can be re-established on the new conn.
+	// GetTrack only touches the new conn — the old receivers, senders and
+	// p.receivers stay untouched until the decision below is made.
+	type trackMove struct {
+		receiver *core.Receiver // old receiver, still serving the consumers
+		index    int            // position in p.receivers
+		track    *core.Receiver // replacement track on the new conn
+	}
+	var moves []trackMove
+
 	for _, media := range conn.GetMedias() {
-		switch media.Direction {
-		case core.DirectionRecvonly:
-			for i, receiver := range receivers {
-				codec := media.MatchCodec(receiver.Codec)
+		if media.Direction != core.DirectionRecvonly {
+			continue
+		}
+		for i, receiver := range receivers {
+			codec := media.MatchCodec(receiver.Codec)
+			if codec == nil {
+				continue
+			}
+
+			track, err := conn.GetTrack(media, codec)
+			if err != nil {
+				continue
+			}
+
+			moves = append(moves, trackMove{receiver: receiver, index: i, track: track})
+			break
+		}
+	}
+
+	// Decision — before any mutation and before the backchannel wiring:
+	// a camera that answers DESCRIBE but fails track setup must not get this
+	// conn swapped in. The old receivers still hold the consumers, and
+	// oldConn.Stop() would destroy them — every attached consumer then stays
+	// silent forever, even after the camera recovers. Keep the old state and
+	// retry with backoff instead.
+	//
+	// A partial result (only some receivers movable) still swaps: a camera
+	// may legitimately come back with fewer medias (e.g. audio disabled),
+	// and refusing forever would kill the working tracks too.
+	if len(receivers) > 0 && len(moves) == 0 {
+		conn.Stop()
+		log.Debug().Msgf("[streams] reconnect got no tracks, retry=%d url=%s", retry, url)
+		p.scheduleReconnect(workerID, retry)
+		return
+	}
+
+	// Phase 2: commit — move the consumers' nodes to the new tracks.
+	for _, m := range moves {
+		if gopEnabled {
+			m.track.SetupGOP()
+		}
+		m.receiver.Replace(m.track)
+	}
+
+	p.mu.Lock()
+	for _, m := range moves {
+		if m.index < len(p.receivers) {
+			p.receivers[m.index] = m.track
+		}
+	}
+	p.mu.Unlock()
+
+	// Re-establish the backchannel on the new conn.
+	for _, media := range conn.GetMedias() {
+		if media.Direction != core.DirectionSendonly {
+			continue
+		}
+
+		// If a backchannel mixer exists for this producer, the new conn
+		// needs a fresh mixerReceiver so its conn-side sender becomes a
+		// child of the existing mixer.Node. The mixer's parents (the
+		// microphone tracks from real consumers) stay attached and keep
+		// feeding into the mixer — only the conn-side child changes.
+		// Without this, the previous reconnect logic bypassed the mixer
+		// and bound the new sender directly to the original mic track,
+		// breaking multi-consumer mixing after the first reconnect.
+		p.mu.Lock()
+		mixer := p.mixer
+		mixingEnabled := p.mixingEnabled
+		p.mu.Unlock()
+
+		if mixer != nil && mixingEnabled && mixer.Codec != nil {
+			codec := media.MatchCodec(mixer.Codec)
+			if codec == nil && len(media.Codecs) > 0 {
+				// Camera came back with a different codec — fall back to
+				// the first available so we at least re-establish the
+				// backchannel pipe; the mixer will transcode if needed.
+				codec = media.Codecs[0]
+			}
+			if codec != nil {
+				mixerReceiver := core.NewReceiver(media, mixer.Codec)
+				mixerReceiver.ParentNode = &mixer.Node
+				if err := conn.(core.Consumer).AddTrack(media, codec, mixerReceiver); err != nil {
+					log.Warn().Err(err).Str("url", url).Msg("[streams] reconnect mixer AddTrack failed")
+				}
+			}
+		} else {
+			for _, sender := range senders {
+				codec := media.MatchCodec(sender.Codec)
 				if codec == nil {
 					continue
 				}
 
-				track, err := conn.GetTrack(media, codec)
-				if err != nil {
-					continue
-				}
-
-				if gopEnabled {
-					track.SetupGOP()
-				}
-
-				receiver.Replace(track)
-
-				// Update receiver in slice (need lock for this)
-				p.mu.Lock()
-				if i < len(p.receivers) {
-					p.receivers[i] = track
-				}
-				p.mu.Unlock()
-				break
-			}
-
-		case core.DirectionSendonly:
-			// If a backchannel mixer exists for this producer, the new conn
-			// needs a fresh mixerReceiver so its conn-side sender becomes a
-			// child of the existing mixer.Node. The mixer's parents (the
-			// microphone tracks from real consumers) stay attached and keep
-			// feeding into the mixer — only the conn-side child changes.
-			// Without this, the previous reconnect logic bypassed the mixer
-			// and bound the new sender directly to the original mic track,
-			// breaking multi-consumer mixing after the first reconnect.
-			p.mu.Lock()
-			mixer := p.mixer
-			mixingEnabled := p.mixingEnabled
-			p.mu.Unlock()
-
-			if mixer != nil && mixingEnabled && mixer.Codec != nil {
-				codec := media.MatchCodec(mixer.Codec)
-				if codec == nil && len(media.Codecs) > 0 {
-					// Camera came back with a different codec — fall back to
-					// the first available so we at least re-establish the
-					// backchannel pipe; the mixer will transcode if needed.
-					codec = media.Codecs[0]
-				}
-				if codec != nil {
-					mixerReceiver := core.NewReceiver(media, mixer.Codec)
-					mixerReceiver.ParentNode = &mixer.Node
-					if err := conn.(core.Consumer).AddTrack(media, codec, mixerReceiver); err != nil {
-						log.Warn().Err(err).Str("url", url).Msg("[streams] reconnect mixer AddTrack failed")
-					}
-				}
-			} else {
-				for _, sender := range senders {
-					codec := media.MatchCodec(sender.Codec)
-					if codec == nil {
-						continue
-					}
-
-					_ = conn.(core.Consumer).AddTrack(media, codec, sender)
-				}
+				_ = conn.(core.Consumer).AddTrack(media, codec, sender)
 			}
 		}
 	}
@@ -624,6 +649,21 @@ func (p *Producer) reconnect(workerID, retry int) {
 	p.mu.Unlock()
 
 	go p.worker(conn, workerID)
+}
+
+func (p *Producer) scheduleReconnect(workerID, retry int) {
+	timeout := time.Minute
+	if retry < 5 {
+		timeout = time.Second
+	} else if retry < 10 {
+		timeout = time.Second * 5
+	} else if retry < 20 {
+		timeout = time.Second * 10
+	}
+
+	time.AfterFunc(timeout, func() {
+		p.reconnect(workerID, retry+1)
+	})
 }
 
 func (p *Producer) stop() {
