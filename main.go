@@ -8,6 +8,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/api/ws"
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/internal/bubble"
+	"github.com/AlexxIT/go2rtc/internal/cui"
 	"github.com/AlexxIT/go2rtc/internal/debug"
 	"github.com/AlexxIT/go2rtc/internal/doorbird"
 	"github.com/AlexxIT/go2rtc/internal/dvrip"
@@ -90,6 +91,7 @@ func main() {
 		{"v4l2", v4l2.Init},
 		// Other sources
 		{"bubble", bubble.Init},
+		{"cui", cui.Init},
 		{"doorbird", doorbird.Init},
 		{"dvrip", dvrip.Init},
 		{"eseecloud", eseecloud.Init},
