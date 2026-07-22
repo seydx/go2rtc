@@ -350,6 +350,22 @@ func (c *Client) Stop() error {
 	return nil
 }
 
+// Interrupt delegates to the wrapped producer (typically a webrtc.Conn)
+// so its read loop returns and Ring's worker triggers reconnect. The
+// Ring API WebSocket stays open — only the media path is interrupted.
+func (c *Client) Interrupt() error {
+	if c.prod != nil {
+		if interrupter, ok := c.prod.(core.Interrupter); ok {
+			return interrupter.Interrupt()
+		}
+	}
+	return nil
+}
+
+func (c *Client) IsClosed() bool {
+	return c.closed
+}
+
 func (c *Client) MarshalJSON() ([]byte, error) {
 	return json.Marshal(c.prod)
 }

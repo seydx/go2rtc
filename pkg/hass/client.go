@@ -113,6 +113,15 @@ func (c *Client) Stop() error {
 	return c.conn.Stop()
 }
 
+// Interrupt delegates to the wrapped webrtc.Conn.
+func (c *Client) Interrupt() error {
+	return c.conn.Interrupt()
+}
+
+func (c *Client) IsClosed() bool {
+	return c.conn.IsClosed()
+}
+
 func (c *Client) MarshalJSON() ([]byte, error) {
 	return c.conn.MarshalJSON()
 }

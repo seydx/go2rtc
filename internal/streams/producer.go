@@ -273,7 +273,12 @@ func (p *Producer) start() {
 }
 
 func (p *Producer) worker(conn core.Producer, workerID int) {
+	watchdogStop := make(chan struct{})
+	go p.watchdog(conn, workerID, watchdogStop)
+
 	if err := conn.Start(); err != nil {
+		close(watchdogStop)
+
 		p.mu.Lock()
 		closed := p.workerID != workerID
 		p.mu.Unlock()
@@ -283,9 +288,110 @@ func (p *Producer) worker(conn core.Producer, workerID int) {
 		}
 
 		log.Warn().Err(err).Str("url", p.url).Caller().Send()
+	} else {
+		close(watchdogStop)
+	}
+
+	// Force-close the underlying network socket *before* we enter the
+	// reconnect loop. Otherwise, on a failed reconnect (camera unreachable),
+	// the old half-open TCP/DTLS socket lingers for hours (default OS keepalive
+	// is 2h on Linux/macOS). Many cameras (Amcrest/Dahua/Reolink) count
+	// half-open sockets against their session-slot limit and refuse new
+	// clients — including parallel VLC — until those slots time out.
+	// Restarting go2rtc forces FIN/RST and frees the slots, which is exactly
+	// the symptom we want to avoid having to do manually.
+	//
+	// Interrupt() closes only the network without touching receivers/senders,
+	// so reconnect()'s Replace() path can still move children to the new conn
+	// when the camera comes back. Calling it again here after Watchdog already
+	// did is harmless (idempotent net.Conn.Close).
+	if interrupter, ok := conn.(core.Interrupter); ok {
+		_ = interrupter.Interrupt()
 	}
 
 	p.reconnect(workerID, 0)
+}
+
+// Watchdog defaults — tuned for typical camera reconnect / handshake timing.
+// Could be made configurable per stream via #stale=N#grace=N URL flags later.
+const (
+	watchdogStaleThreshold = 10 * time.Second
+	watchdogGraceDuration  = 30 * time.Second
+	watchdogCheckInterval  = 1 * time.Second
+)
+
+// watchdog detects when a producer's underlying connection looks alive
+// (Start() hasn't returned) but no packets are flowing on any receiver.
+// It calls conn.Interrupt() to break the read loop, which forces Start()
+// to return so worker() triggers reconnect().
+//
+// Lifetime: spawned per worker invocation, exits when stop is closed
+// (worker about to call reconnect) or when the conn no longer matches
+// p.conn (a parallel reconnect already swapped it out).
+//
+// Grace period: only fires staleThreshold after the watchdog started, to
+// allow the camera handshake (DESCRIBE/SETUP/PLAY for RTSP, multipart
+// chunked POST for Tapo, DTLS+auth for Wyze) to complete.
+func (p *Producer) watchdog(myConn core.Producer, workerID int, stop chan struct{}) {
+	interrupter, ok := myConn.(core.Interrupter)
+	if !ok {
+		// Producer doesn't support Interrupt — nothing the watchdog can do.
+		return
+	}
+
+	startedAt := time.Now()
+	ticker := time.NewTicker(watchdogCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			p.mu.RLock()
+			currentWorkerID := p.workerID
+			currentConn := p.conn
+			receivers := p.receivers
+			p.mu.RUnlock()
+
+			// Worker invalidated, or reconnect already swapped to a different
+			// conn — let the new worker's watchdog take over.
+			if currentWorkerID != workerID || currentConn != myConn {
+				return
+			}
+
+			if time.Since(startedAt) < watchdogGraceDuration {
+				continue
+			}
+
+			if !receiversAllStale(receivers, watchdogStaleThreshold) {
+				continue
+			}
+
+			log.Debug().Str("url", p.url).Msg("[streams] watchdog: data stale, interrupting conn")
+			_ = interrupter.Interrupt()
+			return
+		}
+	}
+}
+
+// receiversAllStale returns true if there are receivers and none of them
+// has received a packet within maxAge. A receiver that never received any
+// packet (LastPacketTime zero) is also considered stale once we're past
+// the grace period — covers "connected but no data" scenarios.
+func receiversAllStale(receivers []*core.Receiver, maxAge time.Duration) bool {
+	if len(receivers) == 0 {
+		return false
+	}
+	for _, recv := range receivers {
+		if recv == nil {
+			continue
+		}
+		if recv.IsActive(maxAge) {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Producer) reconnect(workerID, retry int) {

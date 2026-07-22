@@ -92,6 +92,14 @@ func (c *WebRTCClient) Stop() error {
 	return c.conn.Stop()
 }
 
+func (c *WebRTCClient) Interrupt() error {
+	return c.conn.Interrupt()
+}
+
+func (c *WebRTCClient) IsClosed() bool {
+	return c.conn.IsClosed()
+}
+
 func (c *WebRTCClient) MarshalJSON() ([]byte, error) {
 	return c.conn.MarshalJSON()
 }
@@ -193,6 +201,10 @@ func (c *RTSPClient) Stop() error {
 	c.api.StopRTSPStream()
 	c.api.StopExtendStreamTimer()
 	return c.conn.Stop()
+}
+
+func (c *RTSPClient) Interrupt() error {
+	return c.conn.Interrupt()
 }
 
 func (c *RTSPClient) MarshalJSON() ([]byte, error) {

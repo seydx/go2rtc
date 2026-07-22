@@ -20,8 +20,9 @@ type Conn struct {
 
 	pc *webrtc.PeerConnection
 
-	offer  string
-	closed core.Waiter
+	offer           string
+	closed          core.Waiter
+	transportClosed bool
 }
 
 func NewConn(pc *webrtc.PeerConnection) *Conn {
@@ -152,8 +153,40 @@ func (c *Conn) MarshalJSON() ([]byte, error) {
 }
 
 func (c *Conn) Close() error {
+	// Close all senders to remove them from parent receivers
+	for _, sender := range c.Senders {
+		sender.Close()
+	}
+	// Close all receivers
+	for _, receiver := range c.Receivers {
+		receiver.Close()
+	}
+
 	c.closed.Done(nil)
 	return c.pc.Close()
+}
+
+// Interrupt makes Start() return by signaling closed and tears down the
+// underlying PeerConnection, but leaves Receivers/Senders attached so the
+// producer's reconnect can move children via Replace(). Waiter.Done is
+// safe to call twice so a subsequent Stop()/Close() still works.
+func (c *Conn) Interrupt() error {
+	c.closed.Done(nil)
+	return c.pc.Close()
+}
+
+func (c *Conn) IsClosed() bool {
+	if c.transportClosed {
+		return true
+	}
+	state := c.pc.ConnectionState()
+	return state == webrtc.PeerConnectionStateDisconnected ||
+		state == webrtc.PeerConnectionStateFailed ||
+		state == webrtc.PeerConnectionStateClosed
+}
+
+func (c *Conn) CloseTransport() {
+	c.transportClosed = true
 }
 
 func (c *Conn) AddCandidate(candidate string) error {
@@ -209,7 +242,7 @@ func (c *Conn) getMediaCodec(remote *webrtc.TrackRemote) (*core.Media, *core.Cod
 	// check GetTrack
 	panic(core.Caller())
 
-	return nil, nil
+	// return nil, nil
 }
 
 func sanitizeIP6(host string) string {

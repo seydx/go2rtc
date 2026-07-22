@@ -293,6 +293,17 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// Interrupt aborts ReadPacket() by closing the DTLS connection. Skips
+// StopIntercom (no point sending a control message when the camera is
+// likely unreachable) and does not flip the closed flag, so a subsequent
+// Close() still runs the full teardown if the producer is fully stopped.
+func (c *Client) Interrupt() error {
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
 func (c *Client) connect() error {
 	host := c.host
 	port := 0
