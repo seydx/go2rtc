@@ -42,6 +42,8 @@ func Init() {
 		}
 	}
 
+	filters = cfg.Mod.Filters
+
 	address, network, _ := strings.Cut(cfg.Mod.Listen, "/")
 	for _, candidate := range cfg.Mod.Candidates {
 		AddCandidate(network, candidate)
