@@ -26,7 +26,9 @@ type API struct {
 	StreamToken          string
 	StreamExtensionToken string
 
-	extendTimer *time.Timer
+	credsKey   string // clientID:clientSecret:refreshToken, for token refresh
+	extendMu   sync.Mutex
+	extendStop chan struct{}
 }
 
 type Auth struct {
@@ -50,7 +52,9 @@ func NewAPI(clientID, clientSecret, refreshToken string) (*API, error) {
 	now := time.Now()
 
 	if api := cache[key]; api != nil && now.Before(api.ExpiresAt) {
-		return api, nil
+		// return a per-caller copy so concurrent streams (same account = same
+		// cache key) don't clobber each other's stream state / extend timer
+		return &API{Token: api.Token, ExpiresAt: api.ExpiresAt, credsKey: key}, nil
 	}
 
 	data := url.Values{
@@ -85,11 +89,13 @@ func NewAPI(clientID, clientSecret, refreshToken string) (*API, error) {
 	api := &API{
 		Token:     resv.AccessToken,
 		ExpiresAt: now.Add(resv.ExpiresIn * time.Second),
+		credsKey:  key,
 	}
 
 	cache[key] = api
 
-	return api, nil
+	// return a per-caller copy (see cache-hit path above)
+	return &API{Token: api.Token, ExpiresAt: api.ExpiresAt, credsKey: key}, nil
 }
 
 func (a *API) GetDevices(projectID string) ([]DeviceInfo, error) {
@@ -228,23 +234,13 @@ func (a *API) ExchangeSDP(projectID, deviceID, offer string) (string, error) {
 }
 
 func (a *API) refreshToken() error {
-	// Get the cached API with matching token to get credentials
-	var refreshKey string
-	cacheMu.Lock()
-	for key, api := range cache {
-		if api.Token == a.Token {
-			refreshKey = key
-			break
-		}
-	}
-	cacheMu.Unlock()
-
-	if refreshKey == "" {
+	if a.credsKey == "" {
 		return errors.New("nest: unable to find cached credentials")
 	}
 
-	// Parse credentials from cache key
-	parts := strings.Split(refreshKey, ":")
+	// Parse credentials from the stored key (SplitN(3) keeps a ':' inside the
+	// refresh token intact instead of over-splitting)
+	parts := strings.SplitN(a.credsKey, ":", 3)
 	if len(parts) != 3 {
 		return errors.New("nest: invalid cache key format")
 	}
@@ -288,43 +284,67 @@ func (a *API) ExtendStream() error {
 
 	uri := "https://smartdevicemanagement.googleapis.com/v1/enterprises/" +
 		a.StreamProjectID + "/devices/" + a.StreamDeviceID + ":executeCommand"
-	req, err := http.NewRequest("POST", uri, bytes.NewReader(b))
-	if err != nil {
-		return err
+
+	maxRetries := 3
+	retryDelay := time.Second * 30
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		req, err := http.NewRequest("POST", uri, bytes.NewReader(b))
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+a.Token)
+
+		client := &http.Client{Timeout: time.Second * 5}
+		res, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+
+		// Retry on 401 (Unauthorized, refresh token), 409 (Conflict), 429 (rate limit)
+		if res.StatusCode == 401 || res.StatusCode == 409 || res.StatusCode == 429 {
+			res.Body.Close()
+			if attempt < maxRetries-1 {
+				if res.StatusCode == 401 {
+					if err := a.refreshToken(); err != nil {
+						return err
+					}
+				}
+				time.Sleep(retryDelay)
+				retryDelay *= 2 // exponential backoff
+				continue
+			}
+		}
+
+		defer res.Body.Close()
+
+		if res.StatusCode != 200 {
+			return errors.New("nest: wrong status: " + res.Status)
+		}
+
+		var resv struct {
+			Results struct {
+				ExpiresAt            time.Time `json:"expiresAt"`
+				MediaSessionID       string    `json:"mediaSessionId"`
+				StreamExtensionToken string    `json:"streamExtensionToken"`
+				StreamToken          string    `json:"streamToken"`
+			} `json:"results"`
+		}
+
+		if err = json.NewDecoder(res.Body).Decode(&resv); err != nil {
+			return err
+		}
+
+		a.StreamSessionID = resv.Results.MediaSessionID
+		a.StreamExpiresAt = resv.Results.ExpiresAt
+		a.StreamExtensionToken = resv.Results.StreamExtensionToken
+		a.StreamToken = resv.Results.StreamToken
+
+		return nil
 	}
 
-	req.Header.Set("Authorization", "Bearer "+a.Token)
-
-	client := &http.Client{Timeout: time.Second * 5}
-	res, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != 200 {
-		return errors.New("nest: wrong status: " + res.Status)
-	}
-
-	var resv struct {
-		Results struct {
-			ExpiresAt            time.Time `json:"expiresAt"`
-			MediaSessionID       string    `json:"mediaSessionId"`
-			StreamExtensionToken string    `json:"streamExtensionToken"`
-			StreamToken          string    `json:"streamToken"`
-		} `json:"results"`
-	}
-
-	if err = json.NewDecoder(res.Body).Decode(&resv); err != nil {
-		return err
-	}
-
-	a.StreamSessionID = resv.Results.MediaSessionID
-	a.StreamExpiresAt = resv.Results.ExpiresAt
-	a.StreamExtensionToken = resv.Results.StreamExtensionToken
-	a.StreamToken = resv.Results.StreamToken
-
-	return nil
+	return errors.New("nest: max retries exceeded")
 }
 
 func (a *API) GenerateRtspStream(projectID, deviceID string) (string, error) {
@@ -353,6 +373,7 @@ func (a *API) GenerateRtspStream(projectID, deviceID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
 		return "", errors.New("nest: wrong status: " + res.Status)
@@ -417,6 +438,7 @@ func (a *API) StopRTSPStream() error {
 	if err != nil {
 		return err
 	}
+	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
 		return errors.New("nest: wrong status: " + res.Status)
@@ -465,22 +487,45 @@ type Device struct {
 }
 
 func (a *API) StartExtendStreamTimer() {
-	if a.extendTimer != nil {
-		return
+	a.extendMu.Lock()
+	defer a.extendMu.Unlock()
+
+	if a.extendStop != nil {
+		return // already running
 	}
 
-	a.extendTimer = time.NewTimer(time.Until(a.StreamExpiresAt) - time.Minute)
+	stop := make(chan struct{})
+	a.extendStop = stop
+
 	go func() {
-		<-a.extendTimer.C
-		if err := a.ExtendStream(); err != nil {
-			return
+		for {
+			// re-arm 1 minute before expiry; the one-shot timer this replaces
+			// never rescheduled, so the session died after the first window
+			d := time.Until(a.StreamExpiresAt) - time.Minute
+			if d < 10*time.Second {
+				d = 10 * time.Second
+			}
+
+			timer := time.NewTimer(d)
+			select {
+			case <-stop:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+
+			// keep looping on error — ExtendStream has its own 401-refresh/backoff
+			_ = a.ExtendStream()
 		}
 	}()
 }
 
 func (a *API) StopExtendStreamTimer() {
-	if a.extendTimer != nil {
-		a.extendTimer.Stop()
-		a.extendTimer = nil
+	a.extendMu.Lock()
+	defer a.extendMu.Unlock()
+
+	if a.extendStop != nil {
+		close(a.extendStop)
+		a.extendStop = nil
 	}
 }
