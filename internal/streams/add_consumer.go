@@ -115,7 +115,24 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 			for _, prodMedia := range bestFitProd.GetMedias() {
 				prodCodec, consCodec := prodMedia.MatchMedia(consMedia)
 				if prodCodec == nil {
-					continue
+					// For backchannel with mixing support, allow codec mismatch
+					// The mixer will handle transcoding
+					// Note: prodMedia.Direction=sendonly means producer sends TO camera (backchannel)
+					//       consMedia.Direction=recvonly means consumer receives FROM client (backchannel)
+					if prodMedia.Direction == core.DirectionSendonly &&
+						consMedia.Direction == core.DirectionRecvonly &&
+						prodMedia.Kind == consMedia.Kind &&
+						bestFitProd.mixingEnabled {
+						if len(prodMedia.Codecs) > 0 && len(consMedia.Codecs) > 0 {
+							prodCodec = prodMedia.Codecs[0]
+							consCodec = consMedia.Codecs[0]
+							log.Trace().Msgf("[streams] bestfit backchannel codec mismatch, mixer will transcode %s -> %s", consCodec.Name, prodCodec.Name)
+						} else {
+							continue
+						}
+					} else {
+						continue
+					}
 				}
 
 				var track *core.Receiver
@@ -236,6 +253,19 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 						for _, prodMedia := range pInfo.medias {
 							prodCodec, consCodec := prodMedia.MatchMedia(consMedia)
+
+							// Handle backchannel with mixer transcoding
+							if prodCodec == nil &&
+								prodMedia.Direction == core.DirectionSendonly &&
+								consMedia.Direction == core.DirectionRecvonly &&
+								prodMedia.Kind == consMedia.Kind &&
+								pInfo.prod.mixingEnabled {
+								if len(prodMedia.Codecs) > 0 && len(consMedia.Codecs) > 0 {
+									prodCodec = prodMedia.Codecs[0]
+									consCodec = consMedia.Codecs[0]
+								}
+							}
+
 							if prodCodec == nil {
 								continue
 							}
@@ -462,6 +492,20 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 				for _, prodMedia := range pInfo.medias {
 					prodCodec, consCodec := prodMedia.MatchMedia(consMedia)
+
+					// Handle backchannel with mixer transcoding
+					if prodCodec == nil &&
+						prodMedia.Direction == core.DirectionSendonly &&
+						consMedia.Direction == core.DirectionRecvonly &&
+						prodMedia.Kind == consMedia.Kind &&
+						pInfo.prod.mixingEnabled {
+						if len(prodMedia.Codecs) > 0 && len(consMedia.Codecs) > 0 {
+							prodCodec = prodMedia.Codecs[0]
+							consCodec = consMedia.Codecs[0]
+							log.Trace().Msgf("[streams] backchannel mixer transcode %s -> %s", consCodec.Name, prodCodec.Name)
+						}
+					}
+
 					if prodCodec == nil {
 						continue
 					}
@@ -562,6 +606,18 @@ func canProducerSatisfyAll(prod *Producer, consMedias []*core.Media) bool {
 
 			prodCodec, _ := prodMedia.MatchMedia(consMedia)
 			if prodCodec != nil {
+				found = true
+				break
+			}
+
+			// For backchannel with mixing support, allow codec mismatch
+			// The mixer will handle transcoding
+			// Note: prodMedia.Direction=sendonly means producer sends TO camera (backchannel)
+			//       consMedia.Direction=recvonly means consumer receives FROM client (backchannel)
+			if prodMedia.Direction == core.DirectionSendonly &&
+				consMedia.Direction == core.DirectionRecvonly &&
+				prodMedia.Kind == consMedia.Kind &&
+				prod.mixingEnabled {
 				found = true
 				break
 			}

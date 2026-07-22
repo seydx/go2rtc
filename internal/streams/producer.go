@@ -32,6 +32,8 @@ type Producer struct {
 	receivers []*core.Receiver
 	senders   []*core.Receiver
 
+	mixer *core.RTPMixer
+
 	state              state
 	mu                 sync.RWMutex
 	trackMu            sync.Mutex    // Serializes conn.GetTrack calls to prevent concurrent protocol operations
@@ -39,6 +41,7 @@ type Producer struct {
 	dialErr            error         // Error from dial attempt (if any)
 	workerID           int
 	backchannelEnabled bool // Whether this producer supports backchannel (default: true)
+	mixingEnabled      bool // Whether to enable audio mixing for multiple backchannel consumers (default: true)
 	videoEnabled       bool // Whether this producer provides video (default: true)
 	audioEnabled       bool // Whether this producer provides audio (default: true)
 	videoExplicitlySet bool // Whether #video was explicitly set in URL
@@ -53,13 +56,14 @@ const SourceTemplate = "{input}"
 
 func NewProducer(source string) *Producer {
 	// Parse all stream parameters
-	rawSource, gopEnabled, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(source)
+	rawSource, gopEnabled, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(source)
 
 	if strings.Contains(rawSource, SourceTemplate) {
 		return &Producer{
 			template:           rawSource,
 			gopEnabled:         gopEnabled,
 			backchannelEnabled: backchannelEnabled,
+			mixingEnabled:      mixingEnabled,
 			videoEnabled:       videoEnabled,
 			audioEnabled:       audioEnabled,
 			videoExplicitlySet: videoExplicitlySet,
@@ -73,6 +77,7 @@ func NewProducer(source string) *Producer {
 		url:                rawSource,
 		gopEnabled:         gopEnabled,
 		backchannelEnabled: backchannelEnabled,
+		mixingEnabled:      mixingEnabled,
 		videoEnabled:       videoEnabled,
 		audioEnabled:       audioEnabled,
 		videoExplicitlySet: videoExplicitlySet,
@@ -83,9 +88,10 @@ func NewProducer(source string) *Producer {
 }
 
 func (p *Producer) SetSource(s string) {
-	rawSource, gopEnabled, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(s)
+	rawSource, gopEnabled, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(s)
 	p.gopEnabled = gopEnabled
 	p.backchannelEnabled = backchannelEnabled
+	p.mixingEnabled = mixingEnabled
 	p.videoEnabled = videoEnabled
 	p.audioEnabled = audioEnabled
 	p.videoExplicitlySet = videoExplicitlySet
@@ -228,19 +234,55 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 		return errors.New("add track from none state")
 	}
 
-	// Get consumer reference and release lock BEFORE calling AddTrack
-	consumer := p.conn.(core.Consumer)
-	p.mu.Unlock()
+	// If mixing is enabled, use mixer for multiple backchannel consumers
+	if p.mixingEnabled {
+		// Check if we already have ANY mixer for audio backchannel
+		// Reuse existing mixer even if codec is different - FFmpeg will transcode
+		if p.mixer != nil {
+			// Add this consumer as parent with its actual codec (e.g., Opus from browser)
+			// The mixer will handle transcoding if codecs differ from output codec
+			p.mixer.AddParentWithCodec(&track.Node, track.Codec)
+			p.senders = append(p.senders, track)
+			p.mu.Unlock()
+			return nil
+		}
 
-	// Call underlying protocol's AddTrack WITHOUT holding the lock
-	// This prevents blocking API serialization during network operations
-	if err := consumer.AddTrack(media, codec, track); err != nil {
-		return err
+		// No mixer exists yet, create one with the producer's codec as output (e.g., AAC for camera)
+		p.mixer = core.NewRTPMixer(ffmpegBin, media, codec)
+		// Add parent with its actual codec (e.g., Opus from browser) - mixer will transcode to output
+		p.mixer.AddParentWithCodec(&track.Node, track.Codec)
+
+		// Connect mixer to underlying protocol
+		// Get consumer reference and release lock BEFORE calling AddTrack
+		consumer := p.conn.(core.Consumer)
+		mixerReceiver := core.NewReceiver(media, codec)
+		mixerReceiver.ParentNode = &p.mixer.Node
+		p.mu.Unlock()
+
+		// Call underlying protocol's AddTrack WITHOUT holding the lock
+		// This prevents blocking API serialization during network operations
+		if err := consumer.AddTrack(media, codec, mixerReceiver); err != nil {
+			return err
+		}
+
+		// Reacquire lock to update state
+		p.mu.Lock()
+		p.senders = append(p.senders, track)
+	} else {
+		// Without mixing, directly pass track to underlying protocol
+		// Get consumer reference and release lock BEFORE calling AddTrack
+		consumer := p.conn.(core.Consumer)
+		p.mu.Unlock()
+
+		// Call underlying protocol's AddTrack WITHOUT holding the lock
+		if err := consumer.AddTrack(media, codec, track); err != nil {
+			return err
+		}
+
+		// Reacquire lock to update state
+		p.mu.Lock()
+		p.senders = append(p.senders, track)
 	}
-
-	// Reacquire lock to update state
-	p.mu.Lock()
-	p.senders = append(p.senders, track)
 
 	if p.state == stateMedias {
 		p.state = stateTracks
@@ -254,11 +296,34 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
 	// Use RLock for read-only access - doesn't block other readers
 	p.mu.RLock()
 	conn := p.conn
+	mixer := p.mixer
 	url := p.url
 	p.mu.RUnlock()
 
 	if conn != nil {
-		return json.Marshal(conn)
+		connData, err := json.Marshal(conn)
+		if err != nil {
+			return nil, err
+		}
+
+		// If no mixer, return as-is
+		if mixer == nil {
+			return connData, nil
+		}
+
+		// Marshal mixer and append
+		mixerData, err := json.Marshal(mixer)
+		if err != nil {
+			return nil, err
+		}
+
+		// Remove closing } and add mixers field
+		result := connData[:len(connData)-1]
+		result = append(result, []byte(`,"mixer":`)...)
+		result = append(result, mixerData...)
+		result = append(result, '}')
+
+		return result, nil
 	}
 
 	return json.Marshal(map[string]string{"url": url})
@@ -481,13 +546,43 @@ func (p *Producer) reconnect(workerID, retry int) {
 			}
 
 		case core.DirectionSendonly:
-			for _, sender := range senders {
-				codec := media.MatchCodec(sender.Codec)
-				if codec == nil {
-					continue
-				}
+			// If a backchannel mixer exists for this producer, the new conn
+			// needs a fresh mixerReceiver so its conn-side sender becomes a
+			// child of the existing mixer.Node. The mixer's parents (the
+			// microphone tracks from real consumers) stay attached and keep
+			// feeding into the mixer — only the conn-side child changes.
+			// Without this, the previous reconnect logic bypassed the mixer
+			// and bound the new sender directly to the original mic track,
+			// breaking multi-consumer mixing after the first reconnect.
+			p.mu.Lock()
+			mixer := p.mixer
+			mixingEnabled := p.mixingEnabled
+			p.mu.Unlock()
 
-				_ = conn.(core.Consumer).AddTrack(media, codec, sender)
+			if mixer != nil && mixingEnabled && mixer.Codec != nil {
+				codec := media.MatchCodec(mixer.Codec)
+				if codec == nil && len(media.Codecs) > 0 {
+					// Camera came back with a different codec — fall back to
+					// the first available so we at least re-establish the
+					// backchannel pipe; the mixer will transcode if needed.
+					codec = media.Codecs[0]
+				}
+				if codec != nil {
+					mixerReceiver := core.NewReceiver(media, mixer.Codec)
+					mixerReceiver.ParentNode = &mixer.Node
+					if err := conn.(core.Consumer).AddTrack(media, codec, mixerReceiver); err != nil {
+						log.Warn().Err(err).Str("url", url).Msg("[streams] reconnect mixer AddTrack failed")
+					}
+				}
+			} else {
+				for _, sender := range senders {
+					codec := media.MatchCodec(sender.Codec)
+					if codec == nil {
+						continue
+					}
+
+					_ = conn.(core.Consumer).AddTrack(media, codec, sender)
+				}
 			}
 		}
 	}
@@ -532,6 +627,11 @@ func (p *Producer) stop() {
 		p.conn = nil
 	}
 
+	if p.mixer != nil {
+		p.mixer.Close()
+		p.mixer = nil
+	}
+
 	p.state = stateNone
 	p.receivers = nil
 	p.senders = nil
@@ -541,6 +641,7 @@ func parseStreamParams(source string) (
 	rawURL string,
 	gopEnabled bool,
 	backchannelEnabled bool,
+	mixingEnabled bool,
 	videoEnabled bool,
 	audioEnabled bool,
 	videoExplicitlySet bool,
@@ -552,6 +653,7 @@ func parseStreamParams(source string) (
 
 	// Defaults
 	backchannelEnabled = true
+	mixingEnabled = true
 	videoEnabled = true
 	audioEnabled = true
 	videoExplicitlySet = false
@@ -578,6 +680,12 @@ func parseStreamParams(source string) (
 	if strings.Contains(rawURL, "#noBackchannel") {
 		backchannelEnabled = false
 		rawURL = removeFlag(rawURL, "#noBackchannel")
+	}
+
+	// Parse #noMix
+	if strings.Contains(rawURL, "#noMix") {
+		mixingEnabled = false
+		rawURL = removeFlag(rawURL, "#noMix")
 	}
 
 	// Parse #noVideo
