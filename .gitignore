@@ -8,6 +8,7 @@ go2rtc_freebsd*
 go2rtc_linux*
 go2rtc_mac*
 go2rtc_win*
+node_modules
 
 /go2rtc
 /go2rtc.exe
@@ -20,5 +21,8 @@ website/.vitepress/cache
 website/.vitepress/dist
 
 node_modules
-package-lock.json
 CLAUDE.md
+/dev-*
+/branch-*
+/go2rtc*
+/config*
