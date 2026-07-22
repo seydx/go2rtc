@@ -43,11 +43,13 @@ type Connection struct {
 	SDP        string `json:"sdp,omitempty"`
 	UserAgent  string `json:"user_agent,omitempty"`
 
-	Medias    []*Media    `json:"medias,omitempty"`
+	Medias []*Media `json:"medias,omitempty"`
+
+	Recv int `json:"bytes_recv,omitempty"`
+	Send int `json:"bytes_send,omitempty"`
+
 	Receivers []*Receiver `json:"receivers,omitempty"`
 	Senders   []*Sender   `json:"senders,omitempty"`
-	Recv      int         `json:"bytes_recv,omitempty"`
-	Send      int         `json:"bytes_send,omitempty"`
 
 	Transport any `json:"-"`
 }
@@ -126,6 +128,10 @@ func (c *Connection) WithRequest(r *http.Request) {
 
 func (c *Connection) GetSource() string {
 	return c.Source
+}
+
+func (c *Connection) IsClosed() bool {
+	return false
 }
 
 // Create like os.Create, init Consumer with existing Transport

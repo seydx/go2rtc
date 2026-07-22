@@ -123,5 +123,8 @@ func main() {
 		}
 	}
 
+	// All protocol handlers registered — safe to start preloads now
+	streams.StartPreloads()
+
 	shell.RunUntilSignal()
 }

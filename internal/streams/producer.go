@@ -14,6 +14,7 @@ type state byte
 
 const (
 	stateNone state = iota
+	stateDialing
 	stateMedias
 	stateTracks
 	stateStart
@@ -31,75 +32,173 @@ type Producer struct {
 	receivers []*core.Receiver
 	senders   []*core.Receiver
 
-	state    state
-	mu       sync.Mutex
-	workerID int
+	state              state
+	mu                 sync.RWMutex
+	trackMu            sync.Mutex    // Serializes conn.GetTrack calls to prevent concurrent protocol operations
+	dialDone           chan struct{} // Closed when dial completes (success or failure)
+	dialErr            error         // Error from dial attempt (if any)
+	workerID           int
+	backchannelEnabled bool // Whether this producer supports backchannel (default: true)
+	videoEnabled       bool // Whether this producer provides video (default: true)
+	audioEnabled       bool // Whether this producer provides audio (default: true)
+	videoExplicitlySet bool // Whether #video was explicitly set in URL
+	audioExplicitlySet bool // Whether #audio was explicitly set in URL
+	requirePrevAudio   bool // Only start if previous producer has audio (#requirePrevAudio)
+	requirePrevVideo   bool // Only start if previous producer has video (#requirePrevVideo)
 }
 
 const SourceTemplate = "{input}"
 
 func NewProducer(source string) *Producer {
-	if strings.Contains(source, SourceTemplate) {
-		return &Producer{template: source}
+	// Parse all stream parameters
+	rawSource, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(source)
+
+	if strings.Contains(rawSource, SourceTemplate) {
+		return &Producer{
+			template:           rawSource,
+			backchannelEnabled: backchannelEnabled,
+			videoEnabled:       videoEnabled,
+			audioEnabled:       audioEnabled,
+			videoExplicitlySet: videoExplicitlySet,
+			audioExplicitlySet: audioExplicitlySet,
+			requirePrevAudio:   requirePrevAudio,
+			requirePrevVideo:   requirePrevVideo,
+		}
 	}
 
-	return &Producer{url: source}
+	return &Producer{
+		url:                rawSource,
+		backchannelEnabled: backchannelEnabled,
+		videoEnabled:       videoEnabled,
+		audioEnabled:       audioEnabled,
+		videoExplicitlySet: videoExplicitlySet,
+		audioExplicitlySet: audioExplicitlySet,
+		requirePrevAudio:   requirePrevAudio,
+		requirePrevVideo:   requirePrevVideo,
+	}
 }
 
 func (p *Producer) SetSource(s string) {
+	rawSource, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(s)
+	p.backchannelEnabled = backchannelEnabled
+	p.videoEnabled = videoEnabled
+	p.audioEnabled = audioEnabled
+	p.videoExplicitlySet = videoExplicitlySet
+	p.audioExplicitlySet = audioExplicitlySet
+	p.requirePrevAudio = requirePrevAudio
+	p.requirePrevVideo = requirePrevVideo
+
 	if p.template == "" {
-		p.url = s
+		p.url = rawSource
 	} else {
-		p.url = strings.Replace(p.template, SourceTemplate, s, 1)
+		p.url = strings.Replace(p.template, SourceTemplate, rawSource, 1)
 	}
 }
 
 func (p *Producer) Dial() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
-	if p.state == stateNone {
-		conn, err := GetProducer(p.url)
+	switch p.state {
+	case stateNone:
+		// We're the first - start dialing
+		p.state = stateDialing
+		p.dialDone = make(chan struct{})
+		p.dialErr = nil
+		url := p.url
+		p.mu.Unlock()
+
+		// Do the actual dial without holding the lock
+		conn, err := GetProducer(url)
+
+		// Reacquire lock to update state
+		p.mu.Lock()
 		if err != nil {
+			p.dialErr = err
+			p.state = stateNone
+			close(p.dialDone)
+			p.mu.Unlock()
 			return err
 		}
 
 		p.conn = conn
 		p.state = stateMedias
-	}
+		close(p.dialDone)
+		p.mu.Unlock()
+		return nil
 
-	return nil
+	case stateDialing:
+		// Someone else is dialing - wait for them to finish
+		dialDone := p.dialDone
+		p.mu.Unlock()
+
+		<-dialDone // Wait for dial to complete
+
+		p.mu.Lock()
+		err := p.dialErr
+		p.mu.Unlock()
+		return err
+
+	default:
+		// Already connected (stateMedias, stateTracks, stateStart, etc.)
+		p.mu.Unlock()
+		return nil
+	}
 }
 
 func (p *Producer) GetMedias() []*core.Media {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.mu.RLock()
+	conn := p.conn
+	p.mu.RUnlock()
 
-	if p.conn == nil {
+	if conn == nil {
 		return nil
 	}
 
-	return p.conn.GetMedias()
+	return conn.GetMedias()
 }
 
 func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.state == stateNone {
+		p.mu.Unlock()
 		return nil, errors.New("get track from none state")
 	}
 
 	for _, track := range p.receivers {
-		if track.Codec == codec {
+		if track.Codec.Match(codec) {
+			p.mu.Unlock()
 			return track, nil
 		}
 	}
 
-	track, err := p.conn.GetTrack(media, codec)
+	// Get conn reference while holding lock
+	conn := p.conn
+
+	// Serialize conn.GetTrack calls using trackMu to prevent concurrent
+	// protocol operations (e.g. two SETUP requests or two Tapo SetupStream
+	// calls on the same connection simultaneously).
+	p.trackMu.Lock()
+	p.mu.Unlock()
+
+	// Double-check: another thread may have added the track while we waited for trackMu
+	for _, track := range p.receivers {
+		if track.Codec.Match(codec) {
+			p.trackMu.Unlock()
+			return track, nil
+		}
+	}
+
+	// Call underlying protocol's GetTrack — serialized by trackMu
+	track, err := conn.GetTrack(media, codec)
+	p.trackMu.Unlock()
+
 	if err != nil {
 		return nil, err
 	}
+
+	// Reacquire lock to update state
+	p.mu.Lock()
 
 	p.receivers = append(p.receivers, track)
 
@@ -107,36 +206,52 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 		p.state = stateTracks
 	}
 
+	p.mu.Unlock()
 	return track, nil
 }
 
 func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.state == stateNone {
+		p.mu.Unlock()
 		return errors.New("add track from none state")
 	}
 
-	if err := p.conn.(core.Consumer).AddTrack(media, codec, track); err != nil {
+	// Get consumer reference and release lock BEFORE calling AddTrack
+	consumer := p.conn.(core.Consumer)
+	p.mu.Unlock()
+
+	// Call underlying protocol's AddTrack WITHOUT holding the lock
+	// This prevents blocking API serialization during network operations
+	if err := consumer.AddTrack(media, codec, track); err != nil {
 		return err
 	}
 
+	// Reacquire lock to update state
+	p.mu.Lock()
 	p.senders = append(p.senders, track)
 
 	if p.state == stateMedias {
 		p.state = stateTracks
 	}
 
+	p.mu.Unlock()
 	return nil
 }
 
 func (p *Producer) MarshalJSON() ([]byte, error) {
-	if conn := p.conn; conn != nil {
+	// Use RLock for read-only access - doesn't block other readers
+	p.mu.RLock()
+	conn := p.conn
+	url := p.url
+	p.mu.RUnlock()
+
+	if conn != nil {
 		return json.Marshal(conn)
 	}
-	info := map[string]string{"url": p.url}
-	return json.Marshal(info)
+
+	return json.Marshal(map[string]string{"url": url})
 }
 
 // internals
@@ -174,17 +289,23 @@ func (p *Producer) worker(conn core.Producer, workerID int) {
 }
 
 func (p *Producer) reconnect(workerID, retry int) {
+	// Check workerID with lock, then release before slow operations
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.workerID != workerID {
+		p.mu.Unlock()
 		log.Trace().Msgf("[streams] stop reconnect url=%s", p.url)
 		return
 	}
+	url := p.url
+	receivers := p.receivers
+	senders := p.senders
+	oldConn := p.conn
+	p.mu.Unlock()
 
-	log.Debug().Msgf("[streams] retry=%d to url=%s", retry, p.url)
+	log.Debug().Msgf("[streams] retry=%d to url=%s", retry, url)
 
-	conn, err := GetProducer(p.url)
+	// Slow operation WITHOUT holding lock
+	conn, err := GetProducer(url)
 	if err != nil {
 		log.Debug().Msgf("[streams] producer=%s", err)
 
@@ -203,10 +324,20 @@ func (p *Producer) reconnect(workerID, retry int) {
 		return
 	}
 
+	// Check if still valid after slow operation
+	p.mu.Lock()
+	if p.workerID != workerID {
+		p.mu.Unlock()
+		conn.Stop()
+		return
+	}
+	p.mu.Unlock()
+
+	// Process tracks without holding lock (these may involve network ops)
 	for _, media := range conn.GetMedias() {
 		switch media.Direction {
 		case core.DirectionRecvonly:
-			for i, receiver := range p.receivers {
+			for i, receiver := range receivers {
 				codec := media.MatchCodec(receiver.Codec)
 				if codec == nil {
 					continue
@@ -218,12 +349,18 @@ func (p *Producer) reconnect(workerID, retry int) {
 				}
 
 				receiver.Replace(track)
-				p.receivers[i] = track
+
+				// Update receiver in slice (need lock for this)
+				p.mu.Lock()
+				if i < len(p.receivers) {
+					p.receivers[i] = track
+				}
+				p.mu.Unlock()
 				break
 			}
 
 		case core.DirectionSendonly:
-			for _, sender := range p.senders {
+			for _, sender := range senders {
 				codec := media.MatchCodec(sender.Codec)
 				if codec == nil {
 					continue
@@ -234,10 +371,20 @@ func (p *Producer) reconnect(workerID, retry int) {
 		}
 	}
 
+	// Final update with lock
+	p.mu.Lock()
+	if p.workerID != workerID {
+		p.mu.Unlock()
+		conn.Stop()
+		return
+	}
 	// stop previous connection after moving tracks (fix ghost exec/ffmpeg)
-	_ = p.conn.Stop()
+	if oldConn != nil {
+		_ = oldConn.Stop()
+	}
 	// swap connections
 	p.conn = conn
+	p.mu.Unlock()
 
 	go p.worker(conn, workerID)
 }
@@ -267,4 +414,87 @@ func (p *Producer) stop() {
 	p.state = stateNone
 	p.receivers = nil
 	p.senders = nil
+}
+
+func parseStreamParams(source string) (
+	rawURL string,
+	backchannelEnabled bool,
+	videoEnabled bool,
+	audioEnabled bool,
+	videoExplicitlySet bool,
+	audioExplicitlySet bool,
+	requirePrevAudio bool,
+	requirePrevVideo bool,
+) {
+	rawURL = source
+
+	// Defaults
+	backchannelEnabled = true
+	videoEnabled = true
+	audioEnabled = true
+	videoExplicitlySet = false
+	audioExplicitlySet = false
+	requirePrevAudio = false
+	requirePrevVideo = false
+
+	// Helper function to remove flag from source
+	removeFlag := func(src, flag string) string {
+		if idx := strings.Index(src, flag); idx >= 0 {
+			// Check if there's a # after the flag
+			end := idx + len(flag)
+			if end < len(src) && src[end] == '#' {
+				// Remove flag but keep the following #
+				return src[:idx] + src[end:]
+			}
+			// Flag is at the end, just remove it
+			return src[:idx]
+		}
+		return src
+	}
+
+	// Parse #noBackchannel
+	if strings.Contains(rawURL, "#noBackchannel") {
+		backchannelEnabled = false
+		rawURL = removeFlag(rawURL, "#noBackchannel")
+	}
+
+	// Parse #noVideo
+	if strings.Contains(rawURL, "#noVideo") {
+		videoEnabled = false
+		videoExplicitlySet = true
+		rawURL = removeFlag(rawURL, "#noVideo")
+	}
+
+	// Parse #video= (used by ffmpeg, e.g. #video=copy)
+	// This sets the flag but doesn't remove the param (ffmpeg needs it)
+	if strings.Contains(rawURL, "#video=") {
+		videoExplicitlySet = true
+	}
+
+	// Parse #noAudio
+	if strings.Contains(rawURL, "#noAudio") {
+		audioEnabled = false
+		audioExplicitlySet = true
+		rawURL = removeFlag(rawURL, "#noAudio")
+	}
+
+	// Parse #audio= (used by ffmpeg, e.g. #audio=opus)
+	// This sets the flag but doesn't remove the param (ffmpeg needs it)
+	if strings.Contains(rawURL, "#audio=") {
+		audioExplicitlySet = true
+	}
+
+	// Parse #requirePrevAudio
+	if strings.Contains(rawURL, "#requirePrevAudio") {
+		requirePrevAudio = true
+		rawURL = removeFlag(rawURL, "#requirePrevAudio")
+	}
+
+	// Parse #requirePrevVideo
+	if strings.Contains(rawURL, "#requirePrevVideo") {
+		requirePrevVideo = true
+		rawURL = removeFlag(rawURL, "#requirePrevVideo")
+	}
+
+	return
 }

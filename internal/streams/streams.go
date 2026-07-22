@@ -2,9 +2,9 @@ package streams
 
 import (
 	"errors"
+	"maps"
 	"net/url"
 	"sync"
-	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
@@ -31,23 +31,67 @@ func Init() {
 	api.HandleFunc("api/preload", apiPreload)
 	api.HandleFunc("api/schemes", apiSchemes)
 
-	if cfg.Publish == nil && cfg.Preload == nil {
+	// Store deferred config — StartPreloads() must be called after all modules are initialized
+	deferredPublish = cfg.Publish
+	deferredPreload = cfg.Preload
+}
+
+// deferred config from Init() — started by StartPreloads() after all modules are ready
+var deferredPublish map[string]any
+var deferredPreload map[string]string
+
+// StartPreloads starts publish and preload streams. Must be called after all
+// protocol handlers (rtsp, tapo, ffmpeg, etc.) have been registered via Init().
+func StartPreloads() {
+	if deferredPublish == nil && len(deferredPreload) == 0 {
 		return
 	}
 
-	time.AfterFunc(time.Second, func() {
-		// range for nil map is OK
-		for name, dst := range cfg.Publish {
-			if stream := Get(name); stream != nil {
-				Publish(stream, dst)
+	go func() {
+		// Publish streams in parallel (same rationale as preloads)
+		if len(deferredPublish) > 0 {
+			var pubWg sync.WaitGroup
+			pubWg.Add(len(deferredPublish))
+			for name, dst := range deferredPublish {
+				go func(name string, dst any) {
+					defer pubWg.Done()
+					if stream := Get(name); stream != nil {
+						Publish(stream, dst)
+					}
+				}(name, dst)
 			}
+			pubWg.Wait()
 		}
-		for name, rawQuery := range cfg.Preload {
-			if err := AddPreload(name, rawQuery); err != nil {
-				log.Error().Err(err).Caller().Send()
-			}
+
+		count := len(deferredPreload)
+		if count == 0 {
+			return
 		}
-	})
+
+		log.Debug().Int("count", count).Msg("[preload] starting all preloads")
+
+		// Start all preloads in parallel — each stream dials a different camera,
+		// trackMu per-producer prevents concurrent protocol ops on the same connection.
+		var wg sync.WaitGroup
+		wg.Add(count)
+
+		for name, query := range deferredPreload {
+			go func(name, query string) {
+				defer wg.Done()
+				if err := AddPreload(name, query); err != nil {
+					log.Error().Err(err).Str("name", name).Msg("[preload] failed")
+				}
+			}(name, query)
+		}
+
+		wg.Wait()
+
+		log.Debug().Int("count", count).Msg("[preload] all preloads started")
+
+		// Clear references
+		deferredPublish = nil
+		deferredPreload = nil
+	}()
 }
 
 func New(name string, sources ...string) (*Stream, error) {
@@ -182,4 +226,12 @@ func GetAllSources() map[string][]string {
 	}
 	streamsMu.Unlock()
 	return sources
+}
+
+func GetAll() map[string]*Stream {
+	streamsMu.Lock()
+	result := make(map[string]*Stream, len(streams))
+	maps.Copy(result, streams)
+	streamsMu.Unlock()
+	return result
 }
