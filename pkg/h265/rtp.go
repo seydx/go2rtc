@@ -76,12 +76,6 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 
 				buf = append(buf, data[3:]...)
 
-				if nuStart > len(buf)+4 {
-					//log.Printf("broken H265 fragment")
-					buf = buf[:0] // drop data
-					return
-				}
-
 				binary.BigEndian.PutUint32(buf[nuStart:], uint32(len(buf)-nuStart-4))
 			case 0b11: // wrong RFC 7798 realisation from OpenIPC project
 				// A non-fragmented NAL unit MUST NOT be transmitted in one FU; i.e.,
@@ -91,6 +85,27 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 				buf = binary.BigEndian.AppendUint32(buf, uint32(len(data))-1) // NAL unit size
 				buf = append(buf, (data[0]&0x81)|(nuType<<1), data[1])
 				buf = append(buf, data[3:]...)
+			}
+		} else if nuType == NALUTypeAP {
+			// RFC 7798 §4.4.2 Aggregation Packet: [PayloadHdr][2-byte size + NALU]*
+			// (no DONL — sprop-max-don-diff=0). Emitted by libavformat's HEVC RTP
+			// packetizer (e.g. exec/ffmpeg sources), which bundles VPS+SPS+PPS into
+			// one packet. Split it into individual AVCC length-prefixed NAL units.
+			// The AP already carries parameter sets in-band — don't prepend ps.
+			for i := 2; i < len(data); {
+				if i+2 > len(data) {
+					buf = buf[:0] // drop truncated AP (same convention as FU)
+					return
+				}
+				size := int(binary.BigEndian.Uint16(data[i:]))
+				i += 2
+				if size < 2 || i+size > len(data) {
+					buf = buf[:0] // drop corrupted AP
+					return
+				}
+				buf = binary.BigEndian.AppendUint32(buf, uint32(size)) // NAL unit size
+				buf = append(buf, data[i:i+size]...)
+				i += size
 			}
 		} else {
 			buf = binary.BigEndian.AppendUint32(buf, uint32(len(data))) // NAL unit size
