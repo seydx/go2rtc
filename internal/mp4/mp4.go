@@ -56,7 +56,31 @@ func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	once := &core.OnceBuffer{} // init and first frame
-	_, _ = cons.WriteTo(once)
+
+	// Run WriteTo in a goroutine: it blocks until the first keyframe, so a client
+	// disconnect (or a stream that never produces a keyframe) would otherwise
+	// block forever and leak the consumer in the stream's consumer list.
+	done := make(chan struct{}, 1)
+	go func() {
+		_, _ = cons.WriteTo(once)
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+	case <-r.Context().Done():
+		// Client disconnected — Stop() closes the WriteBuffer to unblock WriteTo
+		cons.Stop()
+		stream.RemoveConsumer(cons)
+		return
+	case <-time.After(30 * time.Second):
+		// Safety timeout — prevent leaked consumers if no keyframe is ever produced
+		log.Warn().Msg("[mp4] keyframe timeout, removing consumer")
+		cons.Stop()
+		stream.RemoveConsumer(cons)
+		http.Error(w, "keyframe timeout", http.StatusGatewayTimeout)
+		return
+	}
 
 	stream.RemoveConsumer(cons)
 
