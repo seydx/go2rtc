@@ -14,6 +14,8 @@ type Consumer struct {
 	core.Connection
 	muxer *Muxer
 	wr    *core.WriteBuffer
+
+	UseGOP bool
 }
 
 func NewConsumer() *Consumer {
@@ -36,19 +38,20 @@ func NewConsumer() *Consumer {
 	}
 	wr := core.NewWriteBuffer(nil)
 	return &Consumer{
-		core.Connection{
+		Connection: core.Connection{
 			ID:         core.NewID(),
 			FormatName: "mpegts",
 			Medias:     medias,
 			Transport:  wr,
 		},
-		NewMuxer(),
-		wr,
+		muxer: NewMuxer(),
+		wr:    wr,
 	}
 }
 
 func (c *Consumer) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
 	sender := core.NewSender(media, track.Codec)
+	sender.UseGOP = c.UseGOP
 
 	switch track.Codec.Name {
 	case core.CodecH264:

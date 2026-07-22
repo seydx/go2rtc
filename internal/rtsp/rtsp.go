@@ -204,6 +204,13 @@ func tcpHandler(conn *rtsp.Conn) {
 				})
 			}
 
+			// Parse query parameters for GOP control
+			if s := query.Get("gop"); s != "" {
+				conn.UseGOP = core.Atoi(s) != 0
+			} else {
+				conn.UseGOP = true // Default: GOP enabled
+			}
+
 			if s := query.Get("pkt_size"); s != "" {
 				conn.PacketSize = uint16(core.Atoi(s))
 			}

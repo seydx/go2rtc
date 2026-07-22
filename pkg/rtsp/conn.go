@@ -31,6 +31,8 @@ type Conn struct {
 	Timeout     int
 	Transport   string // custom transport support, ex. RTSP over WebSocket
 
+	UseGOP bool
+
 	URL *url.URL
 
 	// internal

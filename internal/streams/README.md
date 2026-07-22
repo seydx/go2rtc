@@ -84,6 +84,23 @@ streams:
     - ffmpeg:camera3#video=h264#audio=opus#hardware
 ```
 
+## GOP Cache
+
+go2rtc has a built-in [GOP cache](https://en.wikipedia.org/wiki/Group_of_pictures) for video tracks. It caches the last GOP (Group of Pictures) starting from the most recent keyframe. This allows new clients to start playback immediately without waiting for the next keyframe, reducing initial buffering time.
+
+The GOP cache is **disabled by default** and only applies to **video codecs** (not audio). Enable it per stream:
+
+```yaml
+streams:
+  unifi_camera: rtspx://192.168.1.123:7441/fD6ouM72bWoFijxK#gop=1
+```
+
+**All clients** (WebRTC, MSE, MP4, HLS, MJPEG, RTSP) can override the stream configuration using the `?gop=0` query parameter to disable GOP cache for that specific connection:
+
+```
+http://localhost:1984/stream.html?src=unifi_camera&gop=0
+```
+
 ## Examples
 
 ```yaml

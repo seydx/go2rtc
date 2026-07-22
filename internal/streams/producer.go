@@ -45,17 +45,20 @@ type Producer struct {
 	audioExplicitlySet bool // Whether #audio was explicitly set in URL
 	requirePrevAudio   bool // Only start if previous producer has audio (#requirePrevAudio)
 	requirePrevVideo   bool // Only start if previous producer has video (#requirePrevVideo)
+
+	gopEnabled bool
 }
 
 const SourceTemplate = "{input}"
 
 func NewProducer(source string) *Producer {
 	// Parse all stream parameters
-	rawSource, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(source)
+	rawSource, gopEnabled, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(source)
 
 	if strings.Contains(rawSource, SourceTemplate) {
 		return &Producer{
 			template:           rawSource,
+			gopEnabled:         gopEnabled,
 			backchannelEnabled: backchannelEnabled,
 			videoEnabled:       videoEnabled,
 			audioEnabled:       audioEnabled,
@@ -68,6 +71,7 @@ func NewProducer(source string) *Producer {
 
 	return &Producer{
 		url:                rawSource,
+		gopEnabled:         gopEnabled,
 		backchannelEnabled: backchannelEnabled,
 		videoEnabled:       videoEnabled,
 		audioEnabled:       audioEnabled,
@@ -79,7 +83,8 @@ func NewProducer(source string) *Producer {
 }
 
 func (p *Producer) SetSource(s string) {
-	rawSource, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(s)
+	rawSource, gopEnabled, backchannelEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(s)
+	p.gopEnabled = gopEnabled
 	p.backchannelEnabled = backchannelEnabled
 	p.videoEnabled = videoEnabled
 	p.audioEnabled = audioEnabled
@@ -174,6 +179,7 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 
 	// Get conn reference while holding lock
 	conn := p.conn
+	gopEnabled := p.gopEnabled
 
 	// Serialize conn.GetTrack calls using trackMu to prevent concurrent
 	// protocol operations (e.g. two SETUP requests or two Tapo SetupStream
@@ -195,6 +201,10 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 
 	if err != nil {
 		return nil, err
+	}
+
+	if gopEnabled {
+		track.SetupGOP()
 	}
 
 	// Reacquire lock to update state
@@ -405,6 +415,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	url := p.url
 	receivers := p.receivers
 	senders := p.senders
+	gopEnabled := p.gopEnabled
 	oldConn := p.conn
 	p.mu.Unlock()
 
@@ -452,6 +463,10 @@ func (p *Producer) reconnect(workerID, retry int) {
 				track, err := conn.GetTrack(media, codec)
 				if err != nil {
 					continue
+				}
+
+				if gopEnabled {
+					track.SetupGOP()
 				}
 
 				receiver.Replace(track)
@@ -524,6 +539,7 @@ func (p *Producer) stop() {
 
 func parseStreamParams(source string) (
 	rawURL string,
+	gopEnabled bool,
 	backchannelEnabled bool,
 	videoEnabled bool,
 	audioEnabled bool,
@@ -588,6 +604,18 @@ func parseStreamParams(source string) (
 	// This sets the flag but doesn't remove the param (ffmpeg needs it)
 	if strings.Contains(rawURL, "#audio=") {
 		audioExplicitlySet = true
+	}
+
+	// Parse #gop=X
+	if idx := strings.Index(rawURL, "#gop="); idx >= 0 {
+		part := rawURL[idx+5:]
+		if nextIdx := strings.Index(part, "#"); nextIdx > 0 {
+			gopEnabled = part[:nextIdx] == "1"
+			rawURL = rawURL[:idx] + part[nextIdx:]
+		} else {
+			gopEnabled = part == "1"
+			rawURL = rawURL[:idx]
+		}
 	}
 
 	// Parse #requirePrevAudio

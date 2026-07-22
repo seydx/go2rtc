@@ -31,7 +31,18 @@ type Node struct {
 	childs []*Node
 	parent *Node
 
+	owner any
+
 	mu sync.Mutex
+}
+
+func (n *Node) SetOwner(owner any) *Node {
+	n.owner = owner
+	return n
+}
+
+func (n *Node) GetOwner() any {
+	return n.owner
 }
 
 func (n *Node) WithParent(parent *Node) *Node {

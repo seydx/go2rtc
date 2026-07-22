@@ -202,6 +202,8 @@ func (c *Conn) Accept() error {
 				for _, track := range c.Senders {
 					if track.Media.ID != MethodSetup {
 						track.Close()
+					} else {
+						track.Start()
 					}
 				}
 			}

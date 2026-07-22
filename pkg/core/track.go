@@ -22,6 +22,8 @@ type Receiver struct {
 	Packets int `json:"packets,omitempty"`
 
 	LastPacketTime time.Time `json:"-"` // Time of last received packet (for staleness detection)
+
+	codecHandler CodecHandler
 }
 
 func NewReceiver(media *Media, codec *Codec) *Receiver {
@@ -29,15 +31,43 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
 		Node:  Node{id: NewID(), Codec: codec},
 		Media: media,
 	}
+
+	r.SetOwner(r)
+
 	r.Input = func(packet *Packet) {
 		r.Bytes += len(packet.Payload)
 		r.Packets++
 		r.LastPacketTime = time.Now()
+
+		if r.codecHandler != nil {
+			r.codecHandler.ProcessPacket(packet)
+		}
+
+		// Forward to all children
 		for _, child := range r.childs {
 			child.Input(packet)
 		}
 	}
 	return r
+}
+
+func (r *Receiver) SetupGOP() {
+	// GOP is only for video codecs
+	if !r.Codec.IsVideo() {
+		return
+	}
+
+	// Create codec handler if needed
+	if r.codecHandler == nil {
+		if handler := CreateCodecHandler(r.Codec); handler != nil {
+			r.codecHandler = handler
+		}
+	}
+
+	// Setup GOP cache
+	if r.codecHandler != nil {
+		r.codecHandler.SetupGOP()
+	}
 }
 
 // Deprecated: should be removed
@@ -60,6 +90,10 @@ func (r *Receiver) Replace(target *Receiver) {
 }
 
 func (r *Receiver) Close() {
+	if r.codecHandler != nil {
+		r.codecHandler.ClearCache()
+	}
+
 	r.Node.Close()
 }
 
@@ -75,6 +109,8 @@ func (r *Receiver) IsActive(maxAge time.Duration) bool {
 type Sender struct {
 	Node
 
+	InputCache HandlerFunc
+
 	// Deprecated:
 	Media *Media `json:"-"`
 	// Deprecated:
@@ -84,8 +120,14 @@ type Sender struct {
 	Packets int `json:"packets,omitempty"`
 	Drops   int `json:"drops,omitempty"`
 
+	UseGOP bool `json:"-"`
+
 	buf  chan *Packet
 	done chan struct{}
+
+	started         bool
+	waitingForCache bool
+	liveQueue       chan *Packet
 }
 
 func NewSender(media *Media, codec *Codec) *Sender {
@@ -105,21 +147,38 @@ func NewSender(media *Media, codec *Codec) *Sender {
 
 	buf := make(chan *Packet, bufSize)
 	s := &Sender{
-		Node:  Node{id: NewID(), Codec: codec},
-		Media: media,
-		buf:   buf,
+		Node:            Node{id: NewID(), Codec: codec},
+		Media:           media,
+		UseGOP:          true,
+		buf:             buf,
+		liveQueue:       make(chan *Packet, 512),
+		waitingForCache: true,
 	}
+
+	s.SetOwner(s)
+
 	s.Input = func(packet *Packet) {
-		s.mu.Lock()
-		// unblock write to nil chan - OK, write to closed chan - panic
-		select {
-		case s.buf <- packet:
-			s.Bytes += len(packet.Payload)
-			s.Packets++
-		default:
-			s.Drops++
+		if s.UseGOP {
+			if !s.started && s.Codec.IsVideo() {
+				return
+			}
+
+			if s.Codec.IsVideo() {
+				if s.waitingForCache {
+					select {
+					case s.liveQueue <- packet:
+					default:
+					}
+					return
+				}
+			}
 		}
-		s.mu.Unlock()
+
+		s.processPacket(packet)
+	}
+
+	s.InputCache = func(packet *Packet) {
+		s.processPacket(packet)
 	}
 	s.Output = func(packet *Packet) {
 		s.Handler(packet)
@@ -159,6 +218,40 @@ func (s *Sender) Start() {
 		}
 		close(s.done)
 	}(s.buf)
+
+	s.started = true
+
+	// Get codecHandler for GOP cache (only needed for video)
+	var codecHandler CodecHandler
+	if s.parent != nil {
+		if receiver, ok := s.parent.owner.(*Receiver); ok {
+			if receiver.codecHandler != nil {
+				codecHandler = receiver.codecHandler
+			}
+		}
+	}
+
+	if codecHandler == nil {
+		s.waitingForCache = false
+		return
+	}
+
+	// GOP only for video
+	if !s.Codec.IsVideo() {
+		s.waitingForCache = false
+		return
+	}
+
+	if !s.UseGOP {
+		s.waitingForCache = false
+		return
+	}
+
+	go func() {
+		nextTimestamp, lastSeq := codecHandler.SendCacheTo(s, 100)
+		codecHandler.SendQueueTo(s, 100, nextTimestamp, lastSeq)
+		s.waitingForCache = false
+	}()
 }
 
 func (s *Sender) Wait() {
@@ -183,6 +276,10 @@ func (s *Sender) Close() {
 	if s.buf != nil {
 		close(s.buf) // exit from for range loop
 		s.buf = nil  // prevent writing to closed chan
+	}
+	if s.liveQueue != nil {
+		close(s.liveQueue)
+		s.liveQueue = nil
 	}
 	s.mu.Unlock()
 
@@ -227,4 +324,17 @@ func (s *Sender) MarshalJSON() ([]byte, error) {
 		v.Parent = s.parent.id
 	}
 	return json.Marshal(v)
+}
+
+func (s *Sender) processPacket(packet *Packet) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	select {
+	case s.buf <- packet:
+		s.Bytes += len(packet.Payload)
+		s.Packets++
+	default:
+		s.Drops++
+	}
 }

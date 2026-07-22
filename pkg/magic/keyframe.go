@@ -13,7 +13,8 @@ import (
 
 type Keyframe struct {
 	core.Connection
-	wr *core.WriteBuffer
+	UseGOP bool
+	wr     *core.WriteBuffer
 }
 
 // Deprecated: should be rewritten
@@ -38,12 +39,14 @@ func NewKeyframe() *Keyframe {
 			Medias:     medias,
 			Transport:  wr,
 		},
-		wr: wr,
+		UseGOP: true,
+		wr:     wr,
 	}
 }
 
 func (k *Keyframe) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiver) error {
 	sender := core.NewSender(media, track.Codec)
+	sender.UseGOP = k.UseGOP
 
 	switch track.Codec.Name {
 	case core.CodecH264:

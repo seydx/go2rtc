@@ -10,6 +10,8 @@ import (
 type Consumer struct {
 	core.Connection
 	wr *core.WriteBuffer
+
+	UseGOP bool
 }
 
 func NewConsumer() *Consumer {
@@ -37,6 +39,7 @@ func NewConsumer() *Consumer {
 
 func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiver) error {
 	sender := core.NewSender(media, track.Codec)
+	sender.UseGOP = c.UseGOP
 	sender.Handler = func(packet *rtp.Packet) {
 		if n, err := c.wr.Write(packet.Payload); err == nil {
 			c.Send += n
