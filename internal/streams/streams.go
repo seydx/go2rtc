@@ -51,7 +51,9 @@ func Init() {
 }
 
 func New(name string, sources ...string) (*Stream, error) {
-	for _, source := range sources {
+	decodedSources := make([]string, len(sources))
+
+	for i, source := range sources {
 		if !HasProducer(source) {
 			return nil, errors.New("streams: source not supported")
 		}
@@ -59,9 +61,16 @@ func New(name string, sources ...string) (*Stream, error) {
 		if err := Validate(source); err != nil {
 			return nil, err
 		}
+
+		decoded, err := DecodeExecSource(source)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to decode base64 exec command")
+			return nil, err
+		}
+		decodedSources[i] = decoded
 	}
 
-	stream := NewStream(sources)
+	stream := NewStream(decodedSources)
 
 	streamsMu.Lock()
 	streams[name] = stream

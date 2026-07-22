@@ -1,6 +1,7 @@
 package streams
 
 import (
+	"encoding/base64"
 	"errors"
 	"regexp"
 	"strings"
@@ -127,8 +128,36 @@ func Validate(source string) error {
 			return errors.New("streams: source from insecure producer")
 		}
 	}
-	if sanitize.MatchString(source) {
+	isBase64Exec := strings.HasPrefix(source, "exec:base64:")
+	if sanitize.MatchString(source) && !isBase64Exec {
 		return errors.New("streams: source with spaces may be insecure")
 	}
 	return nil
+}
+
+func DecodeExecSource(source string) (string, error) {
+	if strings.HasPrefix(source, "exec:base64:") {
+		encodedPart := strings.TrimPrefix(source, "exec:base64:")
+		decodedBytes, err := base64.StdEncoding.DecodeString(encodedPart)
+		if err != nil {
+			return "", err
+		}
+		return "exec:" + string(decodedBytes), nil
+	}
+	return source, nil
+}
+
+func DecodeSources(sources ...string) ([]string, error) {
+	decodedSources := make([]string, len(sources))
+
+	for i, source := range sources {
+		decodedSource, err := DecodeExecSource(source)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to decode base64 exec command")
+			return nil, err
+		}
+		decodedSources[i] = decodedSource
+	}
+
+	return decodedSources, nil
 }
