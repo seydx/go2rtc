@@ -97,6 +97,12 @@ func GetKind(name string) string {
 	case CodecPCMU, CodecPCMA, CodecAAC, CodecOpus, CodecG722, CodecMP3, CodecPCM, CodecPCML, CodecELD, CodecFLAC, "MP4A-LATM":
 		return KindAudio
 	}
+
+	// G726 variants: G726-16, G726-24, G726-32, G726-40
+	if strings.HasPrefix(name, CodecG726) {
+		return KindAudio
+	}
+
 	return ""
 }
 
@@ -170,7 +176,13 @@ func UnmarshalMedia(md *sdp.MediaDescription) *Media {
 	}
 
 	for _, format := range md.MediaName.Formats {
-		m.Codecs = append(m.Codecs, UnmarshalCodec(md, format))
+		codec := UnmarshalCodec(md, format)
+		// Filter out G726 variants with non-8kHz sample rate for sendonly (backchannel)
+		if m.Direction == DirectionSendonly &&
+			strings.HasPrefix(codec.Name, CodecG726) && codec.ClockRate != 8000 {
+			continue
+		}
+		m.Codecs = append(m.Codecs, codec)
 	}
 
 	return m

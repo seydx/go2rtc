@@ -9,6 +9,7 @@ func init() {
 	RegisterCodecHandler(CodecOpus, CreateAudioHandler)
 	RegisterCodecHandler(CodecAAC, CreateAudioHandler)
 	RegisterCodecHandler(CodecG722, CreateAudioHandler)
+	RegisterCodecHandler(CodecG726, CreateAudioHandler) // G726 variants use fallback in CreateCodecHandler
 	RegisterCodecHandler(CodecFLAC, CreateAudioHandler)
 	RegisterCodecHandler(CodecELD, CreateAudioHandler)
 	RegisterCodecHandler(CodecMP3, CreateAudioHandler)
