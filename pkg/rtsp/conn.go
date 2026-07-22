@@ -51,6 +51,12 @@ type Conn struct {
 
 	udpConn []*net.UDPConn
 	udpAddr []*net.UDPAddr
+
+	lastTimestamp   map[byte]uint32
+	lastSeq         map[byte]uint16
+	timestampOffset map[byte]uint32
+	seqOffset       map[byte]uint16
+	trackMu         sync.Mutex
 }
 
 const (
@@ -293,6 +299,40 @@ func (c *Conn) handleRawPacket(channel byte, buf []byte) error {
 			return err
 		}
 
+		// Detect and fix timestamp resets after reconnect
+		// Some cameras (e.g., Tapo) reset RTP timestamp to 0 after reconnect,
+		// which causes "non monotonically increasing dts" in clients
+		c.trackMu.Lock()
+
+		// Calculate offset on first packet with timestamp=0 after reconnect
+		if packet.Timestamp == 0 && c.timestampOffset[channel] == 0 {
+			if lastTS := c.lastTimestamp[channel]; lastTS > 0 {
+				var offsetTs uint32 = 0
+
+				for _, r := range c.Receivers {
+					if r.ID == channel {
+						offsetTs = r.Codec.ClockRate / 10 // 100ms
+						break
+					}
+				}
+
+				c.timestampOffset[channel] = lastTS + offsetTs
+			}
+		}
+		if packet.SequenceNumber == 0 && c.seqOffset[channel] == 0 {
+			if lastSeq := c.lastSeq[channel]; lastSeq > 0 {
+				c.seqOffset[channel] = lastSeq + 1
+			}
+		}
+
+		packet.Timestamp += c.timestampOffset[channel]
+		packet.SequenceNumber += c.seqOffset[channel]
+
+		c.lastTimestamp[channel] = packet.Timestamp
+		c.lastSeq[channel] = packet.SequenceNumber
+
+		c.trackMu.Unlock()
+
 		for _, receiver := range c.Receivers {
 			if receiver.ID == channel {
 				receiver.WriteRTP(packet)
@@ -316,6 +356,17 @@ func (c *Conn) handleRawPacket(channel byte, buf []byte) error {
 	}
 
 	return nil
+}
+
+// handshakeTimeout returns the deadline used for RTSP command request/response
+// exchanges (DESCRIBE, SETUP, PLAY, ...). It prefers the per-connection Timeout
+// (ex. rtsp://...#timeout=30) and falls back to the package default when unset,
+// so existing behavior is unchanged whenever Timeout == 0.
+func (c *Conn) handshakeTimeout() time.Duration {
+	if c.Timeout != 0 {
+		return time.Second * time.Duration(c.Timeout)
+	}
+	return Timeout
 }
 
 func (c *Conn) WriteRequest(req *tcp.Request) error {
@@ -345,7 +396,7 @@ func (c *Conn) WriteRequest(req *tcp.Request) error {
 
 	c.Fire(req)
 
-	if err := c.conn.SetWriteDeadline(time.Now().Add(Timeout)); err != nil {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return err
 	}
 
@@ -353,7 +404,7 @@ func (c *Conn) WriteRequest(req *tcp.Request) error {
 }
 
 func (c *Conn) ReadRequest() (*tcp.Request, error) {
-	if err := c.conn.SetReadDeadline(time.Now().Add(Timeout)); err != nil {
+	if err := c.conn.SetReadDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return nil, err
 	}
 	return tcp.ReadRequest(c.reader)
@@ -394,7 +445,7 @@ func (c *Conn) WriteResponse(res *tcp.Response) error {
 
 	c.Fire(res)
 
-	if err := c.conn.SetWriteDeadline(time.Now().Add(Timeout)); err != nil {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return err
 	}
 
@@ -402,7 +453,7 @@ func (c *Conn) WriteResponse(res *tcp.Response) error {
 }
 
 func (c *Conn) ReadResponse() (*tcp.Response, error) {
-	if err := c.conn.SetReadDeadline(time.Now().Add(Timeout)); err != nil {
+	if err := c.conn.SetReadDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return nil, err
 	}
 	return tcp.ReadResponse(c.reader)

@@ -57,6 +57,16 @@ type Producer interface {
 	Stop() error
 }
 
+// Interrupter is an optional interface that producers can implement to abort
+// their Start() loop without tearing down receivers/senders. The watchdog uses
+// this to force a reconnect when the network connection is alive but data has
+// stopped flowing. After Interrupt() the underlying Start() should return with
+// an error so the producer's worker triggers reconnect(), which preserves the
+// existing receiver/sender topology via Replace().
+type Interrupter interface {
+	Interrupt() error
+}
+
 type Consumer interface {
 	// GetMedias - return Media(s) with local Media.Direction:
 	// - sendonly for Consumer Video/Audio

@@ -24,6 +24,9 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 	switch c.mode {
 	case core.ModeActiveProducer:
 		if c.state == StatePlay {
+			// Cannot SETUP during PLAY — Handle() and SetupMedia() share the same
+			// reader/writer without a common lock, causing data corruption.
+			// Fall back to Reconnect to cleanly re-establish the session.
 			if err := c.Reconnect(); err != nil {
 				return nil, err
 			}
@@ -107,6 +110,29 @@ func (c *Conn) Stop() (err error) {
 	c.stateMu.Unlock()
 
 	return
+}
+
+// Interrupt aborts the Handle() read loop by closing the underlying TCP
+// connection. Receivers and senders are intentionally left intact so the
+// producer's reconnect() can move children to a new connection. Start()
+// will return with a read error which triggers the reconnect path.
+//
+// Also invokes OnClose if set — this is how exec-based RTSP producers
+// (e.g. ffmpeg outputting RTSP to localhost) kill their subprocess.
+//
+// Note: we deliberately do NOT send a RTSP TEARDOWN here. WriteRequest
+// is not synchronized against the parallel handleKeepalive goroutine;
+// concurrent writes would interleave bytes on the TCP socket and leave
+// the camera in a confused state. Modern cameras detect TCP close and
+// clean up their session within a few seconds anyway.
+func (c *Conn) Interrupt() error {
+	if c.OnClose != nil {
+		_ = c.OnClose()
+	}
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
 }
 
 func (c *Conn) MarshalJSON() ([]byte, error) {
