@@ -133,6 +133,20 @@ func (s *Stream) RemoveProducer(prod core.Producer) {
 	s.mu.Unlock()
 }
 
+// Status returns the aggregated stream status based on the first producer.
+func (s *Stream) Status() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.producers) == 0 {
+		return "idle"
+	}
+	p := s.producers[0]
+	if p.HasError() {
+		return "error"
+	}
+	return p.State()
+}
+
 func (s *Stream) stopProducers() {
 	if s.pending.Load() > 0 {
 		log.Trace().Msg("[streams] skip stop pending producer")

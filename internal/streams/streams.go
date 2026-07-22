@@ -34,6 +34,7 @@ func Init() {
 		streams[name] = NewStream(item)
 	}
 
+	api.HandleFunc("api/streams/status", apiStreamsStatus)
 	api.HandleFunc("api/streams", apiStreams)
 	api.HandleFunc("api/consumer", apiConsumer)
 	api.HandleFunc("api/streams.dot", apiStreamsDOT)
