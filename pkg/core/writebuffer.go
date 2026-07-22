@@ -13,10 +13,11 @@ import (
 // WriteTo will be locked until Write fails or Close will be called.
 type WriteBuffer struct {
 	io.Writer
-	err   error
-	mu    sync.Mutex
-	wg    sync.WaitGroup
-	state byte
+	err    error
+	mu     sync.Mutex
+	wg     sync.WaitGroup
+	state  byte
+	closed bool
 }
 
 func NewWriteBuffer(wr io.Writer) *WriteBuffer {
@@ -47,12 +48,24 @@ func (w *WriteBuffer) WriteTo(wr io.Writer) (n int64, err error) {
 }
 
 func (w *WriteBuffer) Close() error {
-	if closer, ok := w.Writer.(io.Closer); ok {
+	// read w.Writer under the mutex - Reset may swap it concurrently
+	w.mu.Lock()
+	closer, _ := w.Writer.(io.Closer)
+	if closer == nil {
+		// mark the buffer as closed so that late Write calls from track
+		// senders fail (w.err) instead of writing into the http.ResponseWriter,
+		// whose bufio.Writer net/http recycles after the handler returns (#2339);
+		// w.closed also stops a Close-before-WriteTo from blocking WriteTo (#2327)
+		if w.err == nil {
+			w.err = io.ErrClosedPipe
+		}
+		w.closed = true
+		w.done()
+	}
+	w.mu.Unlock()
+	if closer != nil {
 		return closer.Close()
 	}
-	w.mu.Lock()
-	w.done()
-	w.mu.Unlock()
 	return nil
 }
 
@@ -76,7 +89,8 @@ const (
 )
 
 func (w *WriteBuffer) add() {
-	if w.state == none {
+	// don't Add if Close already ran, or WriteTo would block on a Done that already fired
+	if w.state == none && !w.closed {
 		w.state = start
 		w.wg.Add(1)
 	}
