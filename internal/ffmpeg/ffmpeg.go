@@ -50,6 +50,7 @@ func Init() {
 	})
 
 	streams.HandleFunc("ffmpeg", NewProducer)
+	streams.HandleFunc("ffaudio", NewAudioProducer)
 
 	api.HandleFunc("api/ffmpeg", apiFFmpeg)
 

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/AlexxIT/go2rtc/internal/streams"
-	"github.com/AlexxIT/go2rtc/pkg/aac"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 )
 
@@ -38,21 +37,7 @@ func NewProducer(url string) (core.Producer, error) {
 			// we can support only audio, because don't know FmtpLine for H264 and PayloadType for MJPEG
 			Kind:      core.KindAudio,
 			Direction: core.DirectionRecvonly,
-			// codecs in order from best to worst
-			Codecs: []*core.Codec{
-				// OPUS will always marked as OPUS/48000/2
-				{Name: core.CodecOpus, ClockRate: 48000, Channels: 2},
-				{Name: core.CodecPCML, ClockRate: 16000},
-				{Name: core.CodecPCM, ClockRate: 16000},
-				{Name: core.CodecPCMA, ClockRate: 16000},
-				{Name: core.CodecPCMU, ClockRate: 16000},
-				{Name: core.CodecPCML, ClockRate: 8000},
-				{Name: core.CodecPCM, ClockRate: 8000},
-				{Name: core.CodecPCMA, ClockRate: 8000},
-				{Name: core.CodecPCMU, ClockRate: 8000},
-				// AAC has unknown problems on Dahua two way
-				{Name: core.CodecAAC, ClockRate: 16000, FmtpLine: aac.FMTP + "1408"},
-			},
+			Codecs:    allSupportedAudioCodecs,
 		},
 	}
 	return p, nil
