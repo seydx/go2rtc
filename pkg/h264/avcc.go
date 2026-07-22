@@ -1,4 +1,3 @@
-// Package h264 - AVCC format related functions
 package h264
 
 import (
@@ -15,13 +14,28 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	sps, pps := GetParameterSet(codec.FmtpLine)
 	ps := JoinNALU(sps, pps)
 
+	fmtpLineUpdated := false
+
 	return func(packet *rtp.Packet) {
+		// Update FmtpLine from first keyframe with parameter sets
+		// This fixes MSE aspect ratio issues when RTSP cameras don't send SPS/PPS in DESCRIBE
+		if !fmtpLineUpdated && ContainsParameterSets(packet.Payload) {
+			newFmtpLine := GetFmtpLine(packet.Payload)
+			if newFmtpLine != "" {
+				codec.FmtpLine = newFmtpLine
+				// Re-extract SPS/PPS with updated FmtpLine
+				sps, pps = GetParameterSet(codec.FmtpLine)
+				ps = JoinNALU(sps, pps)
+			}
+			fmtpLineUpdated = true
+		}
+
 		// this can happen for FLV from FFmpeg
 		if NALUType(packet.Payload) == NALUTypeSEI {
 			size := int(binary.BigEndian.Uint32(packet.Payload)) + 4
 			packet.Payload = packet.Payload[size:]
 		}
-		if NALUType(packet.Payload) == NALUTypeIFrame {
+		if NALUType(packet.Payload) == NALUTypeIFrame && !ContainsParameterSets(packet.Payload) {
 			packet.Payload = Join(ps, packet.Payload)
 		}
 		handler(packet)
