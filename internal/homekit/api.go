@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
@@ -16,7 +18,19 @@ import (
 )
 
 func apiDiscovery(w http.ResponseWriter, r *http.Request) {
-	sources, err := discovery()
+	// optional ?timeout=SECONDS - mDNS response window (default 3s, max 60s),
+	// slow or battery powered devices may not answer within the default window
+	var timeout time.Duration
+	if s := r.URL.Query().Get("timeout"); s != "" {
+		sec, err := strconv.Atoi(s)
+		if err != nil || sec < 1 || sec > 60 {
+			http.Error(w, "invalid timeout, expected seconds in range 1..60", http.StatusBadRequest)
+			return
+		}
+		timeout = time.Duration(sec) * time.Second
+	}
+
+	sources, err := discovery(timeout)
 	if err != nil {
 		api.Error(w, err)
 		return
@@ -63,9 +77,15 @@ func apiHomekit(w http.ResponseWriter, r *http.Request) {
 	case "POST":
 		id := r.Form.Get("id")
 		rawURL := r.Form.Get("src") + "&pin=" + r.Form.Get("pin")
-		if err := apiPair(id, rawURL); err != nil {
+		pairedURL, err := apiPair(id, rawURL)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+		// Return the paired stream URL so API clients (e.g. camera.ui) can wire
+		// it up as a source. A bare 200 with no body breaks clients that parse
+		// JSON here; go2rtc's own UI only checks the status code.
+		api.ResponseJSON(w, map[string]any{"source": map[string]string{"url": pairedURL}})
 
 	case "DELETE":
 		id := r.Form.Get("id")
@@ -106,11 +126,11 @@ func apiHomekitAccessories(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, res.Body)
 }
 
-func discovery() ([]*api.Source, error) {
+func discovery(timeout time.Duration) ([]*api.Source, error) {
 	var sources []*api.Source
 
 	// 1. Get streams from Discovery
-	err := mdns.Discovery(mdns.ServiceHAP, func(entry *mdns.ServiceEntry) bool {
+	err := mdns.DiscoveryWithTimeout(mdns.ServiceHAP, timeout, func(entry *mdns.ServiceEntry) bool {
 		log.Trace().Msgf("[homekit] mdns=%s", entry)
 
 		category := entry.Info[hap.TXTCategory]
@@ -137,15 +157,20 @@ func discovery() ([]*api.Source, error) {
 	return sources, nil
 }
 
-func apiPair(id, url string) error {
+func apiPair(id, url string) (string, error) {
 	conn, err := hap.Pair(url)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	streams.New(id, conn.URL())
+	pairedURL := conn.URL()
+	streams.New(id, pairedURL)
 
-	return app.PatchConfig([]string{"streams", id}, conn.URL())
+	if err := app.PatchConfig([]string{"streams", id}, pairedURL); err != nil {
+		return "", err
+	}
+
+	return pairedURL, nil
 }
 
 func apiUnpair(id string) error {

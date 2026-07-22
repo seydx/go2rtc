@@ -97,10 +97,20 @@ func BasicDiscovery(service string, onentry func(*ServiceEntry) bool) error {
 
 // Discovery - better discovery version. Works well with multiple interfaces.
 func Discovery(service string, onentry func(*ServiceEntry) bool) error {
+	return DiscoveryWithTimeout(service, respTimeout, onentry)
+}
+
+// DiscoveryWithTimeout - same as Discovery, but the response window is configurable.
+// Slow, sleepy (battery) or rate-limited devices may need more than the default 3s.
+func DiscoveryWithTimeout(service string, timeout time.Duration, onentry func(*ServiceEntry) bool) error {
+	if timeout <= 0 {
+		timeout = respTimeout
+	}
+
 	b := Browser{
 		Service:     service,
 		Addr:        MulticastAddr,
-		RecvTimeout: respTimeout,
+		RecvTimeout: timeout,
 		SendTimeout: sendTimeout,
 	}
 
@@ -189,9 +199,11 @@ func (b *Browser) ListenMulticastUDP() error {
 
 	ctx := context.Background()
 
+	var bindErrs []error
 	for _, ipn := range nets {
 		conn, err := lc1.ListenPacket(ctx, "udp4", ipn.IP.String()+":5353") // same port important
 		if err != nil {
+			bindErrs = append(bindErrs, fmt.Errorf("%s: %w", ipn.IP, err))
 			continue
 		}
 		b.Nets = append(b.Nets, ipn)
@@ -199,6 +211,9 @@ func (b *Browser) ListenMulticastUDP() error {
 	}
 
 	if b.Sends == nil {
+		if len(bindErrs) > 0 {
+			return fmt.Errorf("no interfaces for listen: %w", errors.Join(bindErrs...))
+		}
 		return errors.New("no interfaces for listen")
 	}
 
