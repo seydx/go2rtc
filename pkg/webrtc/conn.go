@@ -1,12 +1,15 @@
 package webrtc
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/h264"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -101,6 +104,16 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 			}()
 		}
 
+		// WebRTC SDPs carry profile-level-id but no sprop-parameter-sets —
+		// SPS/PPS arrive in-band instead (usually bundled in a STAP-A).
+		// Consumers that copy the FmtpLine into their own SDP (RTSP DESCRIBE)
+		// then can't determine the video dimensions without probing deep into
+		// the stream. Capture SPS/PPS once from the RTP payload and append
+		// them to the codec FmtpLine, like the depay path does for MSE/MP4.
+		captureSprop := codec.Name == core.CodecH264 &&
+			!strings.Contains(codec.FmtpLine, "sprop-parameter-sets=")
+		var spropSPS, spropPPS []byte
+
 		for {
 			b := make([]byte, ReceiveMTU)
 			n, _, err := remote.Read(b)
@@ -117,6 +130,42 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 
 			if len(packet.Payload) == 0 {
 				continue
+			}
+
+			if captureSprop {
+				save := func(nal []byte) {
+					if len(nal) == 0 {
+						return
+					}
+					switch nal[0] & 0x1F {
+					case h264.NALUTypeSPS:
+						spropSPS = append([]byte(nil), nal...)
+					case h264.NALUTypePPS:
+						spropPPS = append([]byte(nil), nal...)
+					}
+				}
+				if pl := packet.Payload; pl[0]&0x1F == 24 { // STAP-A: bundled NALs
+					for bb := pl[1:]; len(bb) >= 2; {
+						sz := int(binary.BigEndian.Uint16(bb))
+						bb = bb[2:]
+						if sz < 1 || sz > len(bb) {
+							break
+						}
+						save(bb[:sz])
+						bb = bb[sz:]
+					}
+				} else {
+					save(pl)
+				}
+				if spropSPS != nil && spropPPS != nil {
+					if codec.FmtpLine != "" {
+						codec.FmtpLine += ";"
+					}
+					codec.FmtpLine += "sprop-parameter-sets=" +
+						base64.StdEncoding.EncodeToString(spropSPS) + "," +
+						base64.StdEncoding.EncodeToString(spropPPS)
+					captureSprop = false
+				}
 			}
 
 			track.WriteRTP(packet)
