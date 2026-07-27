@@ -344,9 +344,9 @@ func (m *RTPMixer) startFFmpeg() error {
 	args := &ffmpeg.Args{
 		Bin:           m.ffmpegBinary,
 		Global:        "-hide_banner",
-		Input:         "-protocol_whitelist pipe,rtp,udp,file,crypto -listen_timeout 1 -f sdp -i pipe:0",
+		Input:         "-protocol_whitelist pipe,rtp,udp,file,crypto -analyzeduration 0 -probesize 32 -fflags nobuffer -flags low_delay -listen_timeout 1 -f sdp -i pipe:0",
 		FilterComplex: fmt.Sprintf("amix=inputs=%d:duration=first:dropout_transition=0", numInputs),
-		Output:        fmt.Sprintf("-f rtp rtp://127.0.0.1:%d", udpServer.Port()),
+		Output:        fmt.Sprintf("-flush_packets 1 -f rtp rtp://127.0.0.1:%d", udpServer.Port()),
 	}
 
 	codecArgs := fmt.Sprintf("-ar %d -c:a %s", sampleRate, outputCodec)
