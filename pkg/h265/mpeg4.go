@@ -61,8 +61,15 @@ func EncodeConfig(vps, sps, pps []byte) []byte {
 
 	buf[0] = 1
 	copy(buf[1:], sps[3:6]) // profile
-	buf[21] = 3             // ?
-	buf[22] = 3             // ?
+	// ISO 14496-15 8.3.3.1 marks these bits reserved '1'; CoreMedia logs
+	// "Invalid value for a reserved hvcC field" when they are zero
+	buf[13] = 0xF0 // reserved + min_spatial_segmentation_idc
+	buf[15] = 0xFC // reserved + parallelismType
+	buf[16] = 0xFC // reserved + chromaFormat
+	buf[17] = 0xF8 // reserved + bitDepthLumaMinus8
+	buf[18] = 0xF8 // reserved + bitDepthChromaMinus8
+	buf[21] = 3    // lengthSizeMinusOne
+	buf[22] = 3    // numOfArrays
 
 	b := buf[23:]
 	_ = b[5]
