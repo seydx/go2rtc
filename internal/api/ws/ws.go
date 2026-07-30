@@ -205,11 +205,14 @@ func (t *Transport) Write(msg any) {
 
 func (t *Transport) Close() {
 	t.mx.Lock()
-	for _, f := range t.onClose {
-		f()
-	}
+	handlers := t.onClose
+	t.onClose = nil
 	t.closed = true
 	t.mx.Unlock()
+
+	for _, f := range handlers {
+		f()
+	}
 }
 
 func (t *Transport) OnChange(f func()) {

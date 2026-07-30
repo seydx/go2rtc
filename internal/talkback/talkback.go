@@ -51,7 +51,6 @@ func handlerWSTalkback(tr *ws.Transport, msg *ws.Message) error {
 
 	tr.OnBinary(sender.write)
 	tr.OnClose(func() {
-		tr.OnBinary(nil)
 		stream.RemoveConsumer(sender)
 	})
 
@@ -81,6 +80,7 @@ type sender struct {
 	core.Connection
 	frameBytes int
 	ts         uint32
+	closed     core.Waiter
 }
 
 func newSender(codec *core.Codec) *sender {
@@ -101,6 +101,15 @@ func newSender(codec *core.Codec) *sender {
 
 func (s *sender) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
 	return errors.New("talkback: consumer is send-only")
+}
+
+func (s *sender) Start() error {
+	return s.closed.Wait()
+}
+
+func (s *sender) Stop() error {
+	s.closed.Done(nil)
+	return s.Connection.Stop()
 }
 
 func (s *sender) write(data []byte) {
