@@ -27,7 +27,6 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/ivideon"
 	"github.com/AlexxIT/go2rtc/internal/kasa"
 	"github.com/AlexxIT/go2rtc/internal/mjpeg"
-	"github.com/AlexxIT/go2rtc/internal/talkback"
 	"github.com/AlexxIT/go2rtc/internal/mp4"
 	"github.com/AlexxIT/go2rtc/internal/mpeg"
 	"github.com/AlexxIT/go2rtc/internal/multitrans"
@@ -41,6 +40,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/rtsp"
 	"github.com/AlexxIT/go2rtc/internal/srtp"
 	"github.com/AlexxIT/go2rtc/internal/streams"
+	"github.com/AlexxIT/go2rtc/internal/talkback"
 	"github.com/AlexxIT/go2rtc/internal/tapo"
 	"github.com/AlexxIT/go2rtc/internal/tuya"
 	"github.com/AlexxIT/go2rtc/internal/v4l2"
@@ -56,7 +56,7 @@ import (
 
 func main() {
 	// version will be set later from -buildvcs info, this used only as fallback
-	app.Version = "1.9.14-cui.23"
+	app.Version = "1.9.14-cui.24"
 
 	type module struct {
 		name string
