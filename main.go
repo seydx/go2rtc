@@ -27,6 +27,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/ivideon"
 	"github.com/AlexxIT/go2rtc/internal/kasa"
 	"github.com/AlexxIT/go2rtc/internal/mjpeg"
+	"github.com/AlexxIT/go2rtc/internal/talkback"
 	"github.com/AlexxIT/go2rtc/internal/mp4"
 	"github.com/AlexxIT/go2rtc/internal/mpeg"
 	"github.com/AlexxIT/go2rtc/internal/multitrans"
@@ -76,6 +77,7 @@ func main() {
 		{"webcodecs", webcodecs.Init}, // WebCodecs API
 		{"hls", hls.Init},             // HLS API
 		{"mjpeg", mjpeg.Init},         // MJPEG API
+		{"talkback", talkback.Init},   // WS audio ingest for camera backchannels
 		// Other sources and servers
 		{"hass", hass.Init},             // hass source, Hass API server
 		{"homekit", homekit.Init},       // homekit source, HomeKit server

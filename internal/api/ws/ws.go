@@ -119,13 +119,26 @@ func apiWS(w http.ResponseWriter, r *http.Request) {
 	})
 
 	for {
-		msg := new(Message)
-		if err = ws.ReadJSON(msg); err != nil {
+		msgType, data, err := ws.ReadMessage()
+		if err != nil {
 			if !websocket.IsCloseError(err, websocket.CloseNoStatusReceived) {
 				log.Trace().Err(err).Caller().Send()
 			}
 			_ = ws.Close()
 			break
+		}
+
+		// binary frames carry payload for the session a handler set up before
+		// (ex. talkback audio), they never address the JSON dispatch
+		if msgType == websocket.BinaryMessage {
+			tr.Binary(data)
+			continue
+		}
+
+		msg := new(Message)
+		if err = json.Unmarshal(data, msg); err != nil {
+			log.Trace().Err(err).Caller().Send()
+			continue
 		}
 
 		log.Trace().Str("type", msg.Type).Msg("[api] ws msg")
@@ -156,7 +169,23 @@ type Transport struct {
 
 	onChange func()
 	onWrite  func(msg any) error
+	onBinary func(data []byte)
 	onClose  []func()
+}
+
+func (t *Transport) OnBinary(f func(data []byte)) {
+	t.mx.Lock()
+	t.onBinary = f
+	t.mx.Unlock()
+}
+
+func (t *Transport) Binary(data []byte) {
+	t.mx.Lock()
+	f := t.onBinary
+	t.mx.Unlock()
+	if f != nil {
+		f(data)
+	}
 }
 
 func (t *Transport) OnWrite(f func(msg any) error) {
