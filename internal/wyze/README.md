@@ -103,6 +103,6 @@ Two-way audio (intercom) is supported automatically. When a consumer sends audio
 | Wyze Solar Cam Pan          |                |              | ?        |            |            |
 | Wyze Duo Cam Pan            |                |              | ?        |            |            |
 | Wyze Window Cam             |                |              | ?        |            |            |
-| Wyze Bulb Cam               |                |              | ?        |            |            |
+| Wyze Bulb Cam               | HL_BC          | 21.1.6.1117  | TUTK     |            | h264, aac  |
 
 _* Gwell based protocols are not yet supported._
