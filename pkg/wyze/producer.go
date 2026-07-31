@@ -163,7 +163,7 @@ func (p *Producer) Start() error {
 }
 
 func probe(client *Client, quality byte) ([]*core.Media, error) {
-	if err := client.SetResolution(quality); err != nil {
+	if err := client.SetResolution(quality); err != nil && client.verbose {
 		fmt.Printf("[Wyze] SetResolution failed, camera will stream its current/default profile: %v\n", err)
 	}
 	client.SetDeadline(time.Now().Add(core.ProbeTimeout))

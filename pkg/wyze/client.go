@@ -159,7 +159,11 @@ func (c *Client) SetResolution(quality byte) error {
 		frameSize = FrameSize720P
 		bitrate = BitrateMax
 	case FrameSize2K: // 3 = 2K
-		frameSize = c.hdFrameSize()
+		if c.is2K() {
+			frameSize = c.wireFrameSize2K()
+		} else {
+			frameSize = c.hdFrameSize()
+		}
 		bitrate = BitrateMax
 	case FrameSizeFloodlight: // 4 = Floodlight
 		frameSize = c.hdFrameSize()
@@ -174,16 +178,17 @@ func (c *Client) SetResolution(quality byte) error {
 	}
 
 	// The video channel is already open/streaming by the time SetResolution
-	// runs. Sending the resolution IOCtrl alone acks successfully but has no
-	// effect on the live encoder output - stopping the video channel,
-	// sending the resolution command while it's down, then restarting it
-	// makes the encoder actually pick up the new profile, the way many
-	// embedded IPCam SDKs require. Confirmed necessary on HL_BC hardware.
-	if err := c.StopVideo(); err != nil && c.verbose {
-		fmt.Printf("[Wyze] SetResolution: StopVideo failed (continuing anyway): %v\n", err)
+	// runs. HL_BC acks the resolution IOCtrl on a live channel but the
+	// encoder ignores it - the channel must be stopped, reconfigured and
+	// restarted for the new profile to take effect. Other models apply the
+	// change live and keep the plain IOCtrl path.
+	restart := c.needsVideoRestart()
+	if restart {
+		if err := c.StopVideo(); err != nil && c.verbose {
+			fmt.Printf("[Wyze] SetResolution: StopVideo failed (continuing anyway): %v\n", err)
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
-
-	time.Sleep(300 * time.Millisecond)
 
 	var resErr error
 
@@ -196,8 +201,10 @@ func (c *Client) SetResolution(quality byte) error {
 		_, resErr = c.conn.WriteAndWaitIOCtrl(k10056, c.matchHL(KCmdSetResolutionResp), 5*time.Second)
 	}
 
-	if err := c.StartVideo(); err != nil && resErr == nil {
-		resErr = fmt.Errorf("restart video channel: %w", err)
+	if restart {
+		if err := c.StartVideo(); err != nil && resErr == nil {
+			resErr = fmt.Errorf("restart video channel: %w", err)
+		}
 	}
 
 	return resErr
@@ -600,6 +607,13 @@ func (c *Client) is2K() bool {
 
 func (c *Client) isFloodlight() bool {
 	return c.model == "HL_CFL2"
+}
+
+// needsVideoRestart reports whether the model only applies a resolution
+// change when the video channel is restarted around the IOCtrl. Confirmed
+// necessary on HL_BC hardware; other models apply the change live.
+func (c *Client) needsVideoRestart() bool {
+	return c.model == "HL_BC"
 }
 
 func (c *Client) matchHL(expectCmd uint16) func([]byte) bool {
