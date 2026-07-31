@@ -118,6 +118,12 @@ func (s *sender) write(data []byte) {
 	}
 	s.Recv += len(data)
 
+	// clients send little-endian samples, but the mixer announces the parent
+	// as L16 to ffmpeg and RTP L16 is big-endian
+	for i := 0; i+1 < len(data); i += 2 {
+		data[i], data[i+1] = data[i+1], data[i]
+	}
+
 	pkt := &rtp.Packet{
 		Header: rtp.Header{
 			Version:   2,
