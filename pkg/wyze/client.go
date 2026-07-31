@@ -159,11 +159,7 @@ func (c *Client) SetResolution(quality byte) error {
 		frameSize = FrameSize720P
 		bitrate = BitrateMax
 	case FrameSize2K: // 3 = 2K
-		if c.is2K() {
-			frameSize = FrameSize2K
-		} else {
-			frameSize = c.hdFrameSize()
-		}
+		frameSize = c.hdFrameSize()
 		bitrate = BitrateMax
 	case FrameSizeFloodlight: // 4 = Floodlight
 		frameSize = c.hdFrameSize()
@@ -177,15 +173,39 @@ func (c *Client) SetResolution(quality byte) error {
 		fmt.Printf("[Wyze] SetResolution: quality=%d frameSize=%d bitrate=%d model=%s\n", quality, frameSize, bitrate, c.model)
 	}
 
+	// The video channel is already open/streaming by the time SetResolution
+	// runs. Sending the resolution IOCtrl alone acks successfully but has no
+	// effect on the live encoder output - stopping the video channel,
+	// sending the resolution command while it's down, then restarting it
+	// makes the encoder actually pick up the new profile, the way many
+	// embedded IPCam SDKs require. Confirmed necessary on HL_BC hardware.
+	if err := c.StopVideo(); err != nil && c.verbose {
+		fmt.Printf("[Wyze] SetResolution: StopVideo failed (continuing anyway): %v\n", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	var resErr error
+
 	// Use K10052 (doorbell format) for certain models
 	if c.useDoorbellResolution() {
 		k10052 := c.buildK10052(frameSize, bitrate)
-		_, err := c.conn.WriteAndWaitIOCtrl(k10052, c.matchHL(KCmdSetResolutionDBRes), 5*time.Second)
-		return err
+		_, resErr = c.conn.WriteAndWaitIOCtrl(k10052, c.matchHL(KCmdSetResolutionDBRes), 5*time.Second)
+	} else {
+		k10056 := c.buildK10056(frameSize, bitrate)
+		_, resErr = c.conn.WriteAndWaitIOCtrl(k10056, c.matchHL(KCmdSetResolutionResp), 5*time.Second)
 	}
 
-	k10056 := c.buildK10056(frameSize, bitrate)
-	_, err := c.conn.WriteAndWaitIOCtrl(k10056, c.matchHL(KCmdSetResolutionResp), 5*time.Second)
+	if err := c.StartVideo(); err != nil && resErr == nil {
+		resErr = fmt.Errorf("restart video channel: %w", err)
+	}
+
+	return resErr
+}
+
+func (c *Client) StopVideo() error {
+	k10010 := c.buildK10010(MediaTypeVideo, false)
+	_, err := c.conn.WriteAndWaitIOCtrl(k10010, c.matchHL(KCmdControlChannelResp), 5*time.Second)
 	return err
 }
 
@@ -549,14 +569,30 @@ func (c *Client) hdFrameSize() uint8 {
 		return FrameSizeFloodlight
 	}
 	if c.is2K() {
-		return FrameSize2K
+		return c.wireFrameSize2K()
 	}
 	return FrameSize1080P
 }
 
+// wireFrameSize2K returns the pre-offset frameSize value that, once
+// buildK10056 applies its `+1` wire offset, actually switches the model to
+// its top-tier profile. HL_BC (Wyze Bulb Cam) needs wire byte 5 to reach
+// its native 2304x1296 profile - confirmed via a raw wire-byte sweep
+// (bytes 0-10, bypassing the `+1` offset) against real hardware: byte 4
+// (the un-shifted FrameSize2K=3, +1) only ever delivered 360p on this
+// model, while byte 5 delivered VLC-confirmed 2304x1296. Other is2K()
+// models are untested for this specific off-by-one and keep the
+// un-shifted value until confirmed on real hardware.
+func (c *Client) wireFrameSize2K() uint8 {
+	if c.model == "HL_BC" {
+		return FrameSize2K + 1
+	}
+	return FrameSize2K
+}
+
 func (c *Client) is2K() bool {
 	switch c.model {
-	case "HL_CAM3P", "HL_PANP", "HL_CAM4", "HL_DB2", "HL_CFL2":
+	case "HL_CAM3P", "HL_PANP", "HL_CAM4", "HL_DB2", "HL_CFL2", "HL_BC":
 		return true
 	}
 	return false
