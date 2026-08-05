@@ -8,6 +8,7 @@ import (
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
+	"github.com/AlexxIT/go2rtc/pkg/ffmpeg"
 	"github.com/rs/zerolog"
 )
 
@@ -25,7 +26,7 @@ func Init() {
 
 	log = app.GetLogger("streams")
 
-	ffmpegBin = cfg.FFmpeg["bin"]
+	ffmpegBin = ffmpeg.UnquoteBin(cfg.FFmpeg["bin"])
 	if ffmpegBin == "" {
 		ffmpegBin = "ffmpeg" // Default fallback
 	}

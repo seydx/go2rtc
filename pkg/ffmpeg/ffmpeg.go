@@ -55,7 +55,7 @@ func (a *Args) HasFilters(filters ...string) bool {
 func (a *Args) String() string {
 	b := bytes.NewBuffer(make([]byte, 0, 512))
 
-	b.WriteString(a.Bin)
+	b.WriteString(QuoteBin(a.Bin))
 
 	if a.Global != "" {
 		b.WriteByte(' ')
@@ -112,6 +112,33 @@ func (a *Args) String() string {
 	b.WriteString(a.Output)
 
 	return b.String()
+}
+
+// QuoteBin wraps a binary path in quotes if it contains spaces, so that
+// shell.QuoteSplit keeps it as one argument (ex. `C:\Program Files\...`).
+func QuoteBin(bin string) string {
+	if !strings.ContainsAny(bin, " \t") {
+		return bin
+	}
+	if strings.HasPrefix(bin, `"`) || strings.HasPrefix(bin, `'`) {
+		return bin
+	}
+	if strings.Contains(bin, `"`) {
+		return `'` + bin + `'`
+	}
+	return `"` + bin + `"`
+}
+
+// UnquoteBin strips the quotes users may put around a binary path in the config.
+// Call sites that exec the binary directly need the raw path, quoting happens in
+// Args.String.
+func UnquoteBin(bin string) string {
+	if len(bin) >= 2 {
+		if c := bin[0]; (c == '"' || c == '\'') && bin[len(bin)-1] == c {
+			return bin[1 : len(bin)-1]
+		}
+	}
+	return bin
 }
 
 func ParseVersion(b []byte) (ffmpeg string, libavformat string) {

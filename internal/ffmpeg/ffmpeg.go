@@ -37,6 +37,7 @@ func Init() {
 		cfg.Log.Level = "warning"
 	}
 	defaults["global"] += " -v " + cfg.Log.Level
+	defaults["bin"] = ffmpeg.UnquoteBin(defaults["bin"])
 
 	streams.RedirectFunc("ffmpeg", func(url string) (string, error) {
 		if _, err := Version(); err != nil {
