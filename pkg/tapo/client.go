@@ -158,15 +158,27 @@ func (c *Client) newDectypter(res *http.Response, brand, username, password stri
 	cbc := cipher.NewCBCDecrypter(block, iv[:]).(cbcMode)
 
 	c.decrypt = func(b []byte) []byte {
+		// a part cut off mid-stream (camera closing the connection) arrives
+		// short or as garbage; clamping beats panicking inside the worker
+		if tail := len(b) % aes.BlockSize; tail != 0 {
+			b = b[:len(b)-tail]
+		}
+		if len(b) == 0 {
+			return b
+		}
+
 		// restore IV
 		cbc.SetIV(iv[:])
 
 		// decrypt
 		cbc.CryptBlocks(b, b)
 
-		// unpad
+		// unpad, only when the pad byte is a plausible PKCS#7 value
 		n := len(b)
 		padSize := int(b[n-1])
+		if padSize < 1 || padSize > aes.BlockSize || padSize > n {
+			return b
+		}
 		return b[:n-padSize]
 	}
 }
