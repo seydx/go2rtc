@@ -70,19 +70,7 @@ func (c *Client) GetMedias() []*core.Media {
 		return nil
 	}
 
-	char := acc.GetCharacter(camera.TypeSupportedVideoStreamConfiguration)
-	if char == nil {
-		return nil
-	}
-	if err = char.ReadTLV8(&c.videoConfig); err != nil {
-		return nil
-	}
-
-	char = acc.GetCharacter(camera.TypeSupportedAudioStreamConfiguration)
-	if char == nil {
-		return nil
-	}
-	if err = char.ReadTLV8(&c.audioConfig); err != nil {
+	if !c.readStreamConfig(acc) {
 		return nil
 	}
 
@@ -105,6 +93,61 @@ func (c *Client) GetMedias() []*core.Media {
 	}
 
 	return c.Medias
+}
+
+// readStreamConfig fills videoConfig and audioConfig from the accessory.
+//
+// Some cameras (ex. Logitech Circle 2) expose several RTP stream services and
+// the first one is a stub: streaming status "unavailable" and a video config
+// carrying no VideoAttrs. acc.GetCharacter() scans the whole accessory and
+// returns that one, while GetFreeStream() later streams from the service that
+// is actually available. So prefer the richest service that parses, and only
+// fall back to the accessory-wide lookup for cameras that spread the two
+// characteristics across services.
+func (c *Client) readStreamConfig(acc *hap.Accessory) bool {
+	found := false
+
+	for _, srv := range acc.Services {
+		charVideo := srv.GetCharacter(camera.TypeSupportedVideoStreamConfiguration)
+		charAudio := srv.GetCharacter(camera.TypeSupportedAudioStreamConfiguration)
+		if charVideo == nil || charAudio == nil {
+			continue
+		}
+
+		var videoConfig camera.SupportedVideoStreamConfiguration
+		if charVideo.ReadTLV8(&videoConfig) != nil || len(videoConfig.Codecs) == 0 ||
+			len(videoConfig.Codecs[0].CodecParams) == 0 {
+			continue
+		}
+
+		var audioConfig camera.SupportedAudioStreamConfiguration
+		if charAudio.ReadTLV8(&audioConfig) != nil || len(audioConfig.Codecs) == 0 ||
+			len(audioConfig.Codecs[0].CodecParams) == 0 {
+			continue
+		}
+
+		if !found || len(videoConfig.Codecs[0].VideoAttrs) > len(c.videoConfig.Codecs[0].VideoAttrs) {
+			c.videoConfig = videoConfig
+			c.audioConfig = audioConfig
+			found = true
+		}
+	}
+
+	if found {
+		return true
+	}
+
+	char := acc.GetCharacter(camera.TypeSupportedVideoStreamConfiguration)
+	if char == nil || char.ReadTLV8(&c.videoConfig) != nil {
+		return false
+	}
+
+	char = acc.GetCharacter(camera.TypeSupportedAudioStreamConfiguration)
+	if char == nil || char.ReadTLV8(&c.audioConfig) != nil {
+		return false
+	}
+
+	return true
 }
 
 func (c *Client) Start() error {
