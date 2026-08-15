@@ -137,8 +137,25 @@ func (c *Client) Start() error {
 	deadline := time.NewTimer(core.ConnDeadline)
 
 	if videoTrack != nil {
+		// The accessory only sends SPS/PPS in-band alongside a keyframe, and
+		// keyframes can be seconds apart - HAP has no GOP control to shorten
+		// that. A consumer attaching between keyframes gets slices referencing
+		// a PPS it never saw, so FFmpeg reports "non-existing PPS 0 referenced"
+		// and gives up before the next keyframe, caching the stream as
+		// audio-only. Remember the parameter sets the first time they show up
+		// and advertise them out-of-band via the codec fmtp line.
+		var sps, pps []byte
+
 		c.videoSession.OnReadRTP = func(packet *rtp.Packet) {
 			deadline.Reset(core.ConnDeadline)
+
+			if sps == nil || pps == nil {
+				collectParameterSets(packet.Payload, &sps, &pps)
+				if sps != nil && pps != nil {
+					videoTrack.Codec.FmtpLine = withParameterSets(videoTrack.Codec.FmtpLine, sps, pps)
+				}
+			}
+
 			videoTrack.WriteRTP(packet)
 			c.Recv += len(packet.Payload)
 		}

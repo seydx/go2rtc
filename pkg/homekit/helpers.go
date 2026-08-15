@@ -1,6 +1,8 @@
 package homekit
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 
 	"github.com/AlexxIT/go2rtc/pkg/aac"
@@ -150,4 +152,67 @@ func trackToAudio(track *core.Receiver, audio0 *camera.AudioCodecConfiguration) 
 			},
 		},
 	}
+}
+
+// NALUTypeSTAPA - single-time aggregation packet (RFC 6184), the form
+// accessories use to deliver SPS and PPS ahead of a keyframe
+const NALUTypeSTAPA = 24
+
+// collectParameterSets extracts H264 SPS/PPS from an RTP payload. Parameter
+// sets are small and arrive either as a single NALU or inside a STAP-A
+// aggregate, so fragmented (FU) payloads are not considered.
+func collectParameterSets(payload []byte, sps, pps *[]byte) {
+	if len(payload) == 0 {
+		return
+	}
+
+	if payload[0]&0x1F != NALUTypeSTAPA {
+		storeParameterSet(payload, sps, pps)
+		return
+	}
+
+	b := payload[1:]
+	for len(b) >= 2 {
+		size := int(binary.BigEndian.Uint16(b))
+		b = b[2:]
+		if size == 0 || size > len(b) {
+			return
+		}
+		storeParameterSet(b[:size], sps, pps)
+		b = b[size:]
+	}
+}
+
+func storeParameterSet(nalu []byte, sps, pps *[]byte) {
+	if len(nalu) == 0 {
+		return
+	}
+
+	switch nalu[0] & 0x1F {
+	case h264.NALUTypeSPS:
+		if *sps == nil {
+			*sps = append([]byte(nil), nalu...)
+		}
+	case h264.NALUTypePPS:
+		if *pps == nil {
+			*pps = append([]byte(nil), nalu...)
+		}
+	}
+}
+
+// withParameterSets appends sprop-parameter-sets to an fmtp line. It has to go
+// last because h264.GetParameterSet reads up to the next ";" or end of string.
+func withParameterSets(fmtp string, sps, pps []byte) string {
+	if s, p := h264.GetParameterSet(fmtp); s != nil && p != nil {
+		return fmtp
+	}
+
+	ps := "sprop-parameter-sets=" +
+		base64.StdEncoding.EncodeToString(sps) + "," +
+		base64.StdEncoding.EncodeToString(pps)
+
+	if fmtp == "" {
+		return ps
+	}
+	return fmtp + ";" + ps
 }
