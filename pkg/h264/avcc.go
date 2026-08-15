@@ -102,7 +102,7 @@ func AVCCToCodec(avcc []byte) *core.Codec {
 
 	for {
 		n := len(avcc)
-		if n < 4 {
+		if n < 5 { // minimum: 4 bytes length + 1 byte NAL header
 			break
 		}
 
@@ -113,6 +113,11 @@ func AVCCToCodec(avcc []byte) *core.Codec {
 
 		switch NALUType(avcc) {
 		case NALUTypeSPS:
+			// profile-level-id is read from the three bytes after the NAL
+			// header, so a truncated SPS carries no usable parameter set
+			if size < 8 {
+				break
+			}
 			buf.WriteString(";profile-level-id=")
 			buf.WriteString(hex.EncodeToString(avcc[5:8]))
 			buf.WriteString(";sprop-parameter-sets=")

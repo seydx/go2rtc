@@ -17,6 +17,13 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	fmtpLineUpdated := false
 
 	return func(packet *rtp.Packet) {
+		// AVCC needs a four byte length prefix followed by a NALU header.
+		// Some cameras intermittently emit empty or truncated video packets,
+		// and NALUType would read past the end of them.
+		if packet == nil || len(packet.Payload) < 5 {
+			return
+		}
+
 		// Update FmtpLine from first keyframe with parameter sets
 		// This fixes MSE aspect ratio issues when RTSP cameras don't send VPS/SPS/PPS in DESCRIBE
 		if !fmtpLineUpdated && ContainsParameterSets(packet.Payload) {
@@ -51,7 +58,18 @@ func AVCCToCodec(avcc []byte) *core.Codec {
 	buf := bytes.NewBufferString("profile-id=1")
 
 	for {
-		size := 4 + int(binary.BigEndian.Uint32(avcc))
+		n := len(avcc)
+		if n < 5 { // minimum: 4 bytes length + 1 byte NAL header
+			break
+		}
+
+		naluSize := binary.BigEndian.Uint32(avcc)
+		// An H.265 NAL unit has a two byte header. Reject zero length,
+		// one byte and over declared units before reading their type.
+		if naluSize < 2 || naluSize > uint32(n-4) {
+			break
+		}
+		size := 4 + int(naluSize)
 
 		switch NALUType(avcc) {
 		case NALUTypeVPS:
@@ -65,11 +83,7 @@ func AVCCToCodec(avcc []byte) *core.Codec {
 			buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
 		}
 
-		if size < len(avcc) {
-			avcc = avcc[size:]
-		} else {
-			break
-		}
+		avcc = avcc[size:]
 	}
 
 	return &core.Codec{
