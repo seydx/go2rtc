@@ -67,6 +67,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 
 	codec := track.Codec.Clone()
 	handler := core.NewSender(media, codec)
+	handler.UseGOP = c.UseGOP
 
 	switch track.Codec.Name {
 	case core.CodecH264:

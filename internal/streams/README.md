@@ -86,7 +86,7 @@ streams:
 
 ## GOP Cache
 
-go2rtc has a built-in [GOP cache](https://en.wikipedia.org/wiki/Group_of_pictures) for video tracks. It caches the last GOP (Group of Pictures) starting from the most recent keyframe. This allows new clients to start playback immediately without waiting for the next keyframe, reducing initial buffering time.
+go2rtc has a built-in [GOP cache](https://en.wikipedia.org/wiki/Group_of_pictures) for video tracks. It caches the current GOP (Group of Pictures) starting from the most recent keyframe. A new client receives the cached frames first, replayed at up to 100 fps with matching timestamps, so it can start decoding immediately instead of waiting for the next keyframe: the picture fast-forwards through the cached part and then continues live. Audio is never cached and stays in sync.
 
 The GOP cache is **disabled by default** and only applies to **video codecs** (not audio). Enable it per stream:
 

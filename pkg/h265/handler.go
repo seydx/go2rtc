@@ -1,19 +1,7 @@
 package h265
 
-import (
-	"github.com/AlexxIT/go2rtc/pkg/core"
-)
-
-func CreateHandler(codec *core.Codec) core.CodecHandler {
-	return core.NewCodecHandler(
-		codec,
-		IsKeyframe,
-		RTPDepay,
-		RepairAVCC,
-		&Payloader{},
-	)
-}
+import "github.com/AlexxIT/go2rtc/pkg/core"
 
 func init() {
-	core.RegisterCodecHandler(core.CodecH265, CreateHandler)
+	core.RegisterGopCodec(core.CodecH265, IsKeyframe, RTPDepay)
 }

@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/pion/rtp"
@@ -27,7 +28,11 @@ type Receiver struct {
 
 	LastPacketTime time.Time `json:"-"` // Time of last received packet (for staleness detection)
 
-	codecHandler CodecHandler
+	// gop is the GOP cache (nil = disabled). gopMu makes "update cache, then
+	// forward to children" atomic against a Sender taking a cache snapshot,
+	// so a sender never sees a packet twice or misses one.
+	gop   *GopCache
+	gopMu sync.Mutex
 }
 
 func NewReceiver(media *Media, codec *Codec) *Receiver {
@@ -43,40 +48,55 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
 		r.Packets++
 		r.LastPacketTime = time.Now()
 
-		if r.codecHandler != nil {
-			r.codecHandler.ProcessPacket(packet)
+		r.gopMu.Lock()
+		if r.gop != nil {
+			r.gop.Input(packet)
 		}
-
-		// Use custom Forward function if set (e.g., by mixer), otherwise forward to children
-		if r.Forward != nil {
-			r.Forward(packet)
-		} else {
-			// Forward to all children
-			for _, child := range r.childs {
-				child.Input(packet)
-			}
-		}
+		r.forward(packet)
+		r.gopMu.Unlock()
 	}
 	return r
 }
 
+func (r *Receiver) forward(packet *Packet) {
+	// Use custom Forward function if set (e.g., by mixer), otherwise forward to children
+	if r.Forward != nil {
+		r.Forward(packet)
+		return
+	}
+	for _, child := range r.childs {
+		child.Input(packet)
+	}
+}
+
+// SetupGOP enables the GOP cache. No-op for audio and unsupported codecs.
 func (r *Receiver) SetupGOP() {
-	// GOP is only for video codecs
 	if !r.Codec.IsVideo() {
 		return
 	}
 
-	// Create codec handler if needed
-	if r.codecHandler == nil {
-		if handler := CreateCodecHandler(r.Codec); handler != nil {
-			r.codecHandler = handler
-		}
+	r.gopMu.Lock()
+	if r.gop == nil {
+		r.gop = NewGopCache(r.Codec)
 	}
+	r.gopMu.Unlock()
+}
 
-	// Setup GOP cache
-	if r.codecHandler != nil {
-		r.codecHandler.SetupGOP()
+// attachGOP hands the sender a snapshot of the GOP cache. If the cache has
+// content it covers everything the sender buffered before now, so that
+// buffer is discarded to avoid delivering those packets twice.
+func (r *Receiver) attachGOP(s *Sender) (frames, pending []*Packet) {
+	r.gopMu.Lock()
+	defer r.gopMu.Unlock()
+
+	if r.gop == nil {
+		return nil, nil
 	}
+	frames, pending = r.gop.Snapshot()
+	if len(frames) > 0 {
+		s.discard()
+	}
+	return
 }
 
 // Deprecated: should be removed
@@ -99,9 +119,11 @@ func (r *Receiver) Replace(target *Receiver) {
 }
 
 func (r *Receiver) Close() {
-	if r.codecHandler != nil {
-		r.codecHandler.ClearCache()
+	r.gopMu.Lock()
+	if r.gop != nil {
+		r.gop.Clear()
 	}
+	r.gopMu.Unlock()
 
 	// Before closing, check if this receiver has any mixer nodes as children
 	// If so, call RemoveParent on those mixers
@@ -131,8 +153,6 @@ func (r *Receiver) IsActive(maxAge time.Duration) bool {
 type Sender struct {
 	Node
 
-	InputCache HandlerFunc
-
 	// Deprecated:
 	Media *Media `json:"-"`
 	// Deprecated:
@@ -142,14 +162,11 @@ type Sender struct {
 	Packets int `json:"packets,omitempty"`
 	Drops   int `json:"drops,omitempty"`
 
+	// UseGOP replays the receiver's GOP cache (if the producer has one) on Start.
 	UseGOP bool `json:"-"`
 
 	buf  chan *Packet
 	done chan struct{}
-
-	started         bool
-	waitingForCache bool
-	liveQueue       chan *Packet
 }
 
 func NewSender(media *Media, codec *Codec) *Sender {
@@ -161,7 +178,8 @@ func NewSender(media *Media, codec *Codec) *Sender {
 			// for the h264.RTPDepay => RTPPay queue
 			bufSize = 4096
 		} else {
-			bufSize = 64
+			// live frames queue up here while a GOP cache is replayed
+			bufSize = 128
 		}
 	} else {
 		bufSize = 128
@@ -169,38 +187,24 @@ func NewSender(media *Media, codec *Codec) *Sender {
 
 	buf := make(chan *Packet, bufSize)
 	s := &Sender{
-		Node:            Node{id: NewID(), Codec: codec},
-		Media:           media,
-		UseGOP:          true,
-		buf:             buf,
-		liveQueue:       make(chan *Packet, 512),
-		waitingForCache: true,
+		Node:   Node{id: NewID(), Codec: codec},
+		Media:  media,
+		UseGOP: true,
+		buf:    buf,
 	}
 
 	s.SetOwner(s)
 
 	s.Input = func(packet *Packet) {
-		if s.UseGOP {
-			if !s.started && s.Codec.IsVideo() {
-				return
-			}
-
-			if s.Codec.IsVideo() {
-				if s.waitingForCache {
-					select {
-					case s.liveQueue <- packet:
-					default:
-					}
-					return
-				}
-			}
+		s.mu.Lock()
+		select {
+		case s.buf <- packet:
+			s.Bytes += len(packet.Payload)
+			s.Packets++
+		default:
+			s.Drops++
 		}
-
-		s.processPacket(packet)
-	}
-
-	s.InputCache = func(packet *Packet) {
-		s.processPacket(packet)
+		s.mu.Unlock()
 	}
 	s.Output = func(packet *Packet) {
 		s.Handler(packet)
@@ -230,54 +234,61 @@ func (s *Sender) WithParent(parent *Receiver) *Sender {
 
 func (s *Sender) Start() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.buf == nil || s.done != nil {
+		s.mu.Unlock()
 		return
 	}
 	s.done = make(chan struct{})
+	buf := s.buf // pass buf to goroutine so that it's impossible for buf to be nil
+	s.mu.Unlock()
 
-	// pass buf directly so that it's impossible for buf to be nil
-	go func(buf chan *Packet) {
+	var frames, pending []*Packet
+	if s.UseGOP && s.parent != nil {
+		if receiver, ok := s.parent.owner.(*Receiver); ok {
+			frames, pending = receiver.attachGOP(s)
+		}
+	}
+
+	go func() {
+		// the cached GOP goes first, live packets queue up in buf meanwhile
+		replayGOP(frames, pending, s.writeCached, s.closed)
+
 		for packet := range buf {
 			s.Output(packet)
 		}
 		close(s.done)
-	}(s.buf)
+	}()
+}
 
-	s.started = true
+func (s *Sender) writeCached(packet *Packet) {
+	s.mu.Lock()
+	s.Bytes += len(packet.Payload)
+	s.Packets++
+	s.mu.Unlock()
 
-	// Get codecHandler for GOP cache (only needed for video)
-	var codecHandler CodecHandler
-	if s.parent != nil {
-		if receiver, ok := s.parent.owner.(*Receiver); ok {
-			if receiver.codecHandler != nil {
-				codecHandler = receiver.codecHandler
-			}
+	s.Output(packet)
+}
+
+func (s *Sender) closed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf == nil
+}
+
+// discard drops everything buffered so far.
+func (s *Sender) discard() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for {
+		select {
+		case packet := <-s.buf:
+			s.Bytes -= len(packet.Payload)
+			s.Packets--
+		default:
+			return
 		}
 	}
-
-	if codecHandler == nil {
-		s.waitingForCache = false
-		return
-	}
-
-	// GOP only for video
-	if !s.Codec.IsVideo() {
-		s.waitingForCache = false
-		return
-	}
-
-	if !s.UseGOP {
-		s.waitingForCache = false
-		return
-	}
-
-	go func() {
-		nextTimestamp, lastSeq := codecHandler.SendCacheTo(s, 100)
-		codecHandler.SendQueueTo(s, 100, nextTimestamp, lastSeq)
-		s.waitingForCache = false
-	}()
 }
 
 func (s *Sender) Wait() {
@@ -302,10 +313,6 @@ func (s *Sender) Close() {
 	if s.buf != nil {
 		close(s.buf) // exit from for range loop
 		s.buf = nil  // prevent writing to closed chan
-	}
-	if s.liveQueue != nil {
-		close(s.liveQueue)
-		s.liveQueue = nil
 	}
 	s.mu.Unlock()
 
@@ -350,17 +357,4 @@ func (s *Sender) MarshalJSON() ([]byte, error) {
 		v.Parent = s.parent.id
 	}
 	return json.Marshal(v)
-}
-
-func (s *Sender) processPacket(packet *Packet) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	select {
-	case s.buf <- packet:
-		s.Bytes += len(packet.Payload)
-		s.Packets++
-	default:
-		s.Drops++
-	}
 }

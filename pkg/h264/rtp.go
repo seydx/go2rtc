@@ -9,7 +9,7 @@ import (
 	"github.com/pion/rtp/codecs"
 )
 
-const RTPPacketVersionAVC = 0
+const RTPPacketVersionAVC = core.RTPPacketVersionAVC
 
 const PSMaxSize = 128 // the biggest SPS I've seen is 48 (EZVIZ CS-CV210)
 
