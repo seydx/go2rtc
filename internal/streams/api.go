@@ -208,21 +208,28 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case "GET":
+		// status stays "started" while a registered preload is re-attaching
+		// in background, so callers reconciling by status don't re-add it;
+		// attached/error tell whether it currently holds live tracks.
 		response := struct {
-			Src    string `json:"src"`
-			Status string `json:"status"`
+			Src      string `json:"src"`
+			Status   string `json:"status"`
+			Attached bool   `json:"attached"`
+			Error    string `json:"error,omitempty"`
 		}{
-			Src: src,
+			Src:    src,
+			Status: "stopped",
 		}
 
-		if ok := HasPreload(src); ok {
+		if p := GetPreload(src); p != nil {
 			response.Status = "started"
-			api.ResponseJSON(w, response)
-		} else {
-			response.Status = "stopped"
-			api.ResponseJSON(w, response)
-			return
+			response.Attached = p.Attached()
+			if err := p.Err(); err != nil {
+				response.Error = err.Error()
+			}
 		}
+
+		api.ResponseJSON(w, response)
 	case "PUT":
 		// it's safe to delete from map while iterating
 		for k := range query {

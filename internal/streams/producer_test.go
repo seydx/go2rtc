@@ -25,6 +25,7 @@ type fakeCamera struct {
 	stallSetup atomic.Bool // SETUP requests get no answer
 	silentRTP  atomic.Bool // PLAY succeeds but no RTP is sent
 	noAudio    atomic.Bool // DESCRIBE omits the audio media
+	reject     atomic.Bool // connections are accepted and closed at once (camera booting)
 
 	dialCount  atomic.Int32
 	setupCount atomic.Int32
@@ -80,6 +81,10 @@ func (c *fakeCamera) acceptLoop() {
 		}
 
 		c.dialCount.Add(1)
+		if c.reject.Load() {
+			_ = conn.Close()
+			continue
+		}
 		c.mu.Lock()
 		c.conns = append(c.conns, conn)
 		c.mu.Unlock()
@@ -233,12 +238,16 @@ func registerTestRTSPHandler() {
 }
 
 func speedUpWatchdog(t *testing.T) {
+	watchdogMu.Lock()
 	stale, grace, check := watchdogStaleThreshold, watchdogGraceDuration, watchdogCheckInterval
 	watchdogStaleThreshold = 2 * time.Second
 	watchdogGraceDuration = 2 * time.Second
 	watchdogCheckInterval = 200 * time.Millisecond
+	watchdogMu.Unlock()
 	t.Cleanup(func() {
+		watchdogMu.Lock()
 		watchdogStaleThreshold, watchdogGraceDuration, watchdogCheckInterval = stale, grace, check
+		watchdogMu.Unlock()
 	})
 }
 
@@ -262,7 +271,10 @@ func receiverActive(s *Stream) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, prod := range s.producers {
-		for _, recv := range prod.receivers {
+		prod.mu.RLock()
+		receivers := append([]*core.Receiver(nil), prod.receivers...)
+		prod.mu.RUnlock()
+		for _, recv := range receivers {
 			if recv != nil && recv.IsActive(time.Second) {
 				return true
 			}

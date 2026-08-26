@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/rtp"
@@ -26,7 +27,7 @@ type Receiver struct {
 	Bytes   int `json:"bytes,omitempty"`
 	Packets int `json:"packets,omitempty"`
 
-	LastPacketTime time.Time `json:"-"` // Time of last received packet (for staleness detection)
+	lastPacket atomic.Int64 // UnixNano of the last received packet (for staleness detection)
 
 	// gop is the GOP cache (nil = disabled). gopMu makes "update cache, then
 	// forward to children" atomic against a Sender taking a cache snapshot,
@@ -46,7 +47,7 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
 	r.Input = func(packet *Packet) {
 		r.Bytes += len(packet.Payload)
 		r.Packets++
-		r.LastPacketTime = time.Now()
+		r.lastPacket.Store(time.Now().UnixNano())
 
 		r.gopMu.Lock()
 		if r.gop != nil {
@@ -144,10 +145,11 @@ func (r *Receiver) Close() {
 // IsActive returns true if the receiver has received packets recently (within maxAge).
 // Used to detect stale tracks (e.g. camera stopped sending audio).
 func (r *Receiver) IsActive(maxAge time.Duration) bool {
-	if r.LastPacketTime.IsZero() {
+	last := r.lastPacket.Load()
+	if last == 0 {
 		return false
 	}
-	return time.Since(r.LastPacketTime) < maxAge
+	return time.Since(time.Unix(0, last)) < maxAge
 }
 
 type Sender struct {
@@ -298,6 +300,9 @@ func (s *Sender) Wait() {
 }
 
 func (s *Sender) State() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.buf == nil {
 		return "closed"
 	}

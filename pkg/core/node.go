@@ -56,7 +56,32 @@ func (n *Node) AppendChild(child *Node) {
 	n.childs = append(n.childs, child)
 	n.mu.Unlock()
 
+	child.mu.Lock()
 	child.parent = n
+	child.mu.Unlock()
+}
+
+// Attached reports whether the node is still listed as a child of its
+// parent. It turns false once the parent was closed underneath it (Close
+// only detaches children, it doesn't close them) — the way to tell a live
+// sender from an orphaned one.
+func (n *Node) Attached() bool {
+	n.mu.Lock()
+	parent := n.parent
+	n.mu.Unlock()
+
+	if parent == nil {
+		return false
+	}
+
+	parent.mu.Lock()
+	defer parent.mu.Unlock()
+	for _, child := range parent.childs {
+		if child == n {
+			return true
+		}
+	}
+	return false
 }
 
 func (n *Node) RemoveChild(child *Node) {
@@ -100,6 +125,8 @@ func MoveNode(dst, src *Node) {
 	dst.mu.Unlock()
 
 	for _, child := range childs {
+		child.mu.Lock()
 		child.parent = dst
+		child.mu.Unlock()
 	}
 }

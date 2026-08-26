@@ -102,6 +102,12 @@ func (c *Conn) Start() (err error) {
 	}
 }
 
+func (c *Conn) getState() State {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.state
+}
+
 func (c *Conn) Stop() (err error) {
 	for _, receiver := range c.Receivers {
 		receiver.Close()

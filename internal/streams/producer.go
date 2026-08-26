@@ -414,7 +414,14 @@ var (
 	watchdogStaleThreshold = 10 * time.Second
 	watchdogGraceDuration  = 30 * time.Second
 	watchdogCheckInterval  = 1 * time.Second
+	watchdogMu             sync.RWMutex // tests tune the values above while watchdogs run
 )
+
+func watchdogSettings() (stale, grace, check time.Duration) {
+	watchdogMu.RLock()
+	defer watchdogMu.RUnlock()
+	return watchdogStaleThreshold, watchdogGraceDuration, watchdogCheckInterval
+}
 
 // watchdog detects when a producer's underlying connection looks alive
 // (Start() hasn't returned) but no packets are flowing on any receiver.
@@ -435,8 +442,10 @@ func (p *Producer) watchdog(myConn core.Producer, workerID int, stop chan struct
 		return
 	}
 
+	staleThreshold, graceDuration, checkInterval := watchdogSettings()
+
 	startedAt := time.Now()
-	ticker := time.NewTicker(watchdogCheckInterval)
+	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
 
 	for {
@@ -456,11 +465,11 @@ func (p *Producer) watchdog(myConn core.Producer, workerID int, stop chan struct
 				return
 			}
 
-			if time.Since(startedAt) < watchdogGraceDuration {
+			if time.Since(startedAt) < graceDuration {
 				continue
 			}
 
-			if !receiversAllStale(receivers, watchdogStaleThreshold) {
+			if !receiversAllStale(receivers, staleThreshold) {
 				continue
 			}
 
@@ -572,18 +581,34 @@ func (p *Producer) reconnect(workerID, retry int) {
 	}
 
 	// Phase 2: commit — move the consumers' nodes to the new tracks.
+	//
+	// Done under p.mu as one step: stopProducers() judges "has readers" by
+	// the receivers' children, and a receiver that has already handed its
+	// children over but is not yet listed in p.receivers would look
+	// orphaned and get the producer stopped mid-reconnect.
+	//
+	// Receivers the new conn can't serve (camera came back without audio)
+	// are parked on a fresh receiver that isn't bound to any conn: their
+	// consumers' senders stay open, just silent, and the next reconnect
+	// matches the parked codec and swaps a live track in. Leaving them on
+	// oldConn would close them for good in oldConn.Stop() below.
+	replacements := make(map[*core.Receiver]*core.Receiver, len(moves))
 	for _, m := range moves {
 		if gopEnabled {
 			m.track.SetupGOP()
 		}
-		m.receiver.Replace(m.track)
+		replacements[m.receiver] = m.track
 	}
 
 	p.mu.Lock()
-	for _, m := range moves {
-		if m.index < len(p.receivers) {
-			p.receivers[m.index] = m.track
+	for i, receiver := range p.receivers {
+		track, ok := replacements[receiver]
+		if !ok {
+			track = core.NewReceiver(receiver.Media, receiver.Codec)
+			log.Debug().Msgf("[streams] reconnect parks %s track url=%s", receiver.Codec.Name, url)
 		}
+		receiver.Replace(track)
+		p.receivers[i] = track
 	}
 	p.mu.Unlock()
 
@@ -651,19 +676,42 @@ func (p *Producer) reconnect(workerID, retry int) {
 	go p.worker(conn, workerID)
 }
 
-func (p *Producer) scheduleReconnect(workerID, retry int) {
-	timeout := time.Minute
-	if retry < 5 {
-		timeout = time.Second
-	} else if retry < 10 {
-		timeout = time.Second * 5
-	} else if retry < 20 {
-		timeout = time.Second * 10
+// reconnectDelay is the backoff ladder for repeated connection attempts.
+func reconnectDelay(retry int) time.Duration {
+	switch {
+	case retry < 5:
+		return time.Second
+	case retry < 10:
+		return 5 * time.Second
+	case retry < 20:
+		return 10 * time.Second
+	default:
+		return time.Minute
 	}
+}
 
-	time.AfterFunc(timeout, func() {
+func (p *Producer) scheduleReconnect(workerID, retry int) {
+	time.AfterFunc(reconnectDelay(retry), func() {
 		p.reconnect(workerID, retry+1)
 	})
+}
+
+// hasReaders reports whether any consumer is attached to this producer.
+func (p *Producer) hasReaders() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	for _, track := range p.receivers {
+		if len(track.Senders()) > 0 {
+			return true
+		}
+	}
+	for _, track := range p.senders {
+		if len(track.Senders()) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Producer) stop() {

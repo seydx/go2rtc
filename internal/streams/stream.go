@@ -154,19 +154,10 @@ func (s *Stream) stopProducers() {
 	}
 
 	s.mu.Lock()
-producers:
 	for _, producer := range s.producers {
-		for _, track := range producer.receivers {
-			if len(track.Senders()) > 0 {
-				continue producers
-			}
+		if !producer.hasReaders() {
+			producer.stop()
 		}
-		for _, track := range producer.senders {
-			if len(track.Senders()) > 0 {
-				continue producers
-			}
-		}
-		producer.stop()
 	}
 	s.mu.Unlock()
 }

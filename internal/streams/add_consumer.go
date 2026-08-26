@@ -13,6 +13,11 @@ import (
 const audioStaleThreshold = 5 * time.Second
 
 func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
+	// a stream with a preload is always negotiated by the preload first
+	if err = ensurePreload(s, cons); err != nil {
+		return err
+	}
+
 	// support for multiple simultaneous pending from different consumers
 	consN := s.pending.Add(1) - 1
 

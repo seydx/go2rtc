@@ -146,7 +146,7 @@ func (c *Conn) Handle() (err error) {
 		go c.handleUDPData(byte(i))
 	}
 
-	for c.state != StateNone {
+	for c.getState() != StateNone {
 		ts := time.Now()
 
 		_ = c.conn.SetReadDeadline(ts.Add(timeout))

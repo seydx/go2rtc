@@ -69,6 +69,18 @@ func (p *Probe) Start() error {
 	return nil
 }
 
+// IsActive reports whether the probe still holds its tracks: false once a
+// sender was closed (Stop) or detached from its receiver (the producer
+// behind it was stopped).
+func (p *Probe) IsActive() bool {
+	for _, sender := range p.Senders {
+		if sender.State() == "closed" || !sender.Attached() {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *Probe) Stop() error {
 	for _, receiver := range p.Receivers {
 		receiver.Close()

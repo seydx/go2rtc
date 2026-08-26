@@ -68,6 +68,8 @@ streams:
 
 You can preload any stream on go2rtc start. This is useful for cameras that take a long time to start up.
 
+A preload is always the first consumer of its stream: whenever a client starts the source, the preload is attached first, so the camera session is negotiated from the preload's query and the client reuses those tracks. The preload owns the source: while it can't attach (camera unreachable), clients get that error instead of dialing the camera themselves. A preload is also supervised: if the camera is unreachable when go2rtc starts, or the producer is lost later, go2rtc keeps re-attaching the preload with the same backoff as source reconnects. `GET /api/preload?src=camera1` reports `status` (`started` while registered, `stopped` otherwise), `attached` (currently holding live tracks) and the last `error`.
+
 ```yaml
 preload:
   camera1:                                     # default: video&audio = ANY
