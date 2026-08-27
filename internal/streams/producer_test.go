@@ -411,3 +411,37 @@ func TestNoBackchannelHidesTalkMedia(t *testing.T) {
 	p.state = stateMedias
 	require.Len(t, p.GetMedias(), 2)
 }
+
+func TestSetSourcesReconnectsConsumersAndPreload(t *testing.T) {
+	registerTestRTSPHandler()
+
+	const name = "in_place_live"
+	cam := newFakeCamera(t)
+
+	stream, err := New(name, cam.URL()+"#gop=1")
+	require.NoError(t, err)
+
+	require.NoError(t, AddPreload(name, "video&audio"))
+	t.Cleanup(func() { DelPreload(name) })
+	require.True(t, waitUntil(10*time.Second, func() bool { return GetPreload(name).Attached() }), "preload must attach")
+
+	cons := newProbeConsumer()
+	require.NoError(t, stream.AddConsumer(cons))
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }), "consumer must get data")
+
+	dialsBefore := cam.dialCount.Load()
+	updated, err := New(name, cam.URL()+"#gop=1#noBackchannel")
+	require.NoError(t, err)
+	require.Same(t, stream, updated, "the stream object must survive a source change")
+	require.False(t, stream.producers[0].backchannelEnabled)
+	require.False(t, cons.IsActive(), "consumers of the old source get disconnected")
+	require.NotContains(t, stream.consumers, core.Consumer(cons))
+
+	require.True(t, waitUntil(30*time.Second, func() bool { return cam.dialCount.Load() > dialsBefore }), "the new producer must dial the camera")
+	require.True(t, waitUntil(3*time.Second, func() bool { return GetPreload(name).Attached() }), "preload must re-attach right away")
+
+	again := newProbeConsumer()
+	require.NoError(t, stream.AddConsumer(again))
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }), "a new consumer must get data from the new producer")
+	stream.RemoveConsumer(again)
+}

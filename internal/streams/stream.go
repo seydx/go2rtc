@@ -61,6 +61,55 @@ func (s *Stream) SetSource(source string) {
 	}
 }
 
+// in place, so name lookup and preload keep this stream: unchanged sources keep
+// their producer, the rest is replaced, consumers reconnect against the new set
+func (s *Stream) setSources(sources []string) bool {
+	s.mu.Lock()
+	reusable := make(map[string]*Producer, len(s.producers))
+	var attached []*Producer
+	for _, prod := range s.producers {
+		switch prod.state {
+		case stateExternal, stateInternal:
+			attached = append(attached, prod)
+		default:
+			reusable[prod.source] = prod
+		}
+	}
+
+	changed := false
+	producers := make([]*Producer, 0, len(sources)+len(attached))
+	for _, source := range sources {
+		if prod, ok := reusable[source]; ok {
+			producers = append(producers, prod)
+			delete(reusable, source)
+			continue
+		}
+		producers = append(producers, NewProducer(source))
+		changed = true
+	}
+	if len(reusable) > 0 {
+		changed = true
+	}
+	if !changed {
+		s.mu.Unlock()
+		return false
+	}
+	s.producers = append(producers, attached...)
+	consumers := append([]core.Consumer(nil), s.consumers...)
+	s.mu.Unlock()
+
+	for _, cons := range consumers {
+		s.RemoveConsumer(cons)
+	}
+	for _, prod := range reusable {
+		prod.stop()
+	}
+	if p := preloadOf(s); p != nil {
+		go func() { _ = p.tryAttach() }()
+	}
+	return true
+}
+
 func (s *Stream) RemoveConsumer(cons core.Consumer) {
 	_ = cons.Stop()
 

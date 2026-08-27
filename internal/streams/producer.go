@@ -23,6 +23,7 @@ const (
 )
 
 type Producer struct {
+	source string // as configured, flags included
 	core.Listener
 
 	url      string
@@ -60,6 +61,7 @@ func NewProducer(source string) *Producer {
 
 	if strings.Contains(rawSource, SourceTemplate) {
 		return &Producer{
+			source:             source,
 			template:           rawSource,
 			gopEnabled:         gopEnabled,
 			backchannelEnabled: backchannelEnabled,
@@ -74,6 +76,7 @@ func NewProducer(source string) *Producer {
 	}
 
 	return &Producer{
+		source:             source,
 		url:                rawSource,
 		gopEnabled:         gopEnabled,
 		backchannelEnabled: backchannelEnabled,
@@ -89,6 +92,7 @@ func NewProducer(source string) *Producer {
 
 func (p *Producer) SetSource(s string) {
 	rawSource, gopEnabled, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(s)
+	p.source = s
 	p.gopEnabled = gopEnabled
 	p.backchannelEnabled = backchannelEnabled
 	p.mixingEnabled = mixingEnabled
@@ -556,6 +560,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	receivers := p.receivers
 	senders := p.senders
 	gopEnabled := p.gopEnabled
+	backchannelEnabled := p.backchannelEnabled
 	oldConn := p.conn
 	p.mu.Unlock()
 
@@ -659,7 +664,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 
 	// Re-establish the backchannel on the new conn.
 	for _, media := range conn.GetMedias() {
-		if media.Direction != core.DirectionSendonly {
+		if !backchannelEnabled || media.Direction != core.DirectionSendonly {
 			continue
 		}
 

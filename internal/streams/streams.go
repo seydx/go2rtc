@@ -125,13 +125,32 @@ func New(name string, sources ...string) (*Stream, error) {
 		decodedSources[i] = decoded
 	}
 
-	stream := NewStream(decodedSources)
-
 	streamsMu.Lock()
-	streams[name] = stream
+	stream, exists := streams[name]
+	// an alias must not rewrite the stream it points to
+	if exists && isAlias(name, stream) {
+		exists = false
+	}
+	if !exists {
+		stream = NewStream(decodedSources)
+		streams[name] = stream
+	}
 	streamsMu.Unlock()
 
+	if exists {
+		stream.setSources(decodedSources)
+	}
+
 	return stream, nil
+}
+
+func isAlias(name string, stream *Stream) bool {
+	for other, s := range streams {
+		if other != name && s == stream {
+			return true
+		}
+	}
+	return false
 }
 
 func Patch(name string, source string) (*Stream, error) {
