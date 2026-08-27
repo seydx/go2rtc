@@ -56,7 +56,7 @@ import (
 
 func main() {
 	// version will be set later from -buildvcs info, this used only as fallback
-	app.Version = "1.9.14-cui.32"
+	app.Version = "1.9.14-cui.33"
 
 	type module struct {
 		name string
