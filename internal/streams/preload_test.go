@@ -147,3 +147,29 @@ func TestPreloadOwnsTheDial(t *testing.T) {
 	require.Equal(t, int32(1), cam.dialCount.Load()-dials)
 	require.Empty(t, stream.consumers)
 }
+
+func TestEnsurePreloadDoesNotWaitForRunningAttach(t *testing.T) {
+	stream := NewStream(nil)
+	p := &Preload{name: "busy_preload", stream: stream, stop: make(chan struct{})}
+	preloadsMu.Lock()
+	preloads[p.name] = p
+	preloadsMu.Unlock()
+	t.Cleanup(func() {
+		preloadsMu.Lock()
+		delete(preloads, p.name)
+		preloadsMu.Unlock()
+	})
+
+	p.attachMu.Lock()
+	defer p.attachMu.Unlock()
+
+	done := make(chan error, 1)
+	go func() { done <- ensurePreload(stream, newProbeConsumer()) }()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("ensurePreload must not block on an attach in progress")
+	}
+}

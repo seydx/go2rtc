@@ -148,7 +148,7 @@ func ensurePreload(stream *Stream, cons core.Consumer) error {
 	if p == nil {
 		return nil
 	}
-	if err := p.tryAttach(); err != nil {
+	if err := p.attachIfIdle(); err != nil {
 		return fmt.Errorf("streams: preload: %w", err)
 	}
 	return nil
@@ -229,6 +229,21 @@ func (p *Preload) attach() error {
 // tryAttach attaches the preload unless it's already attached or stopped.
 func (p *Preload) tryAttach() error {
 	p.attachMu.Lock()
+	defer p.attachMu.Unlock()
+
+	if p.Attached() || p.stopped() {
+		return nil
+	}
+	return p.attach()
+}
+
+// an attach in flight already owns the camera session; waiting for it would
+// deadlock when the client is the stream's own ffmpeg companion looping back
+// through the RTSP server while that attach dials it
+func (p *Preload) attachIfIdle() error {
+	if !p.attachMu.TryLock() {
+		return nil
+	}
 	defer p.attachMu.Unlock()
 
 	if p.Attached() || p.stopped() {
