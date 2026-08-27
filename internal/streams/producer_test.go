@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -444,4 +445,29 @@ func TestSetSourcesReconnectsConsumersAndPreload(t *testing.T) {
 	require.NoError(t, stream.AddConsumer(again))
 	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }), "a new consumer must get data from the new producer")
 	stream.RemoveConsumer(again)
+}
+
+func TestCompanionNotDialedWhenCameraCoversTheRequest(t *testing.T) {
+	registerTestRTSPHandler()
+	var dials atomic.Int32
+	HandleFunc("stubcompanion", func(string) (core.Producer, error) {
+		dials.Add(1)
+		return nil, errors.New("stub companion")
+	})
+
+	cam := newFakeCamera(t)
+	stream, err := New("companion_skip", cam.URL(), "stubcompanion://x#noVideo#noBackchannel#audio=opus#requirePrevAudio")
+	require.NoError(t, err)
+
+	query, _ := url.ParseQuery("video&audio&microphone")
+	cons := probe.Create("test", query)
+	require.NoError(t, stream.AddConsumer(cons))
+	require.Zero(t, dials.Load(), "camera video+audio cover the request and the companion has no talk channel, it must not be dialed")
+	stream.RemoveConsumer(cons)
+
+	query, _ = url.ParseQuery("video&audio=opus&microphone")
+	cons = probe.Create("test", query)
+	_ = stream.AddConsumer(cons)
+	require.Equal(t, int32(1), dials.Load(), "opus is not covered by the camera, the companion must be dialed")
+	stream.RemoveConsumer(cons)
 }

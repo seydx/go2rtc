@@ -12,6 +12,12 @@ import (
 // packets is considered stale (camera stopped sending audio).
 const audioStaleThreshold = 5 * time.Second
 
+type producerInfo struct {
+	prod   *Producer
+	prodN  int
+	medias []*core.Media
+}
+
 func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	// a stream with a preload is always negotiated by the preload first
 	if err = ensurePreload(s, cons); err != nil {
@@ -187,11 +193,6 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 		log.Trace().Msgf("[streams] no bestfit, using collect-then-assign matching")
 
 		// Phase 1: Dial all producers and collect their medias
-		type producerInfo struct {
-			prod   *Producer
-			prodN  int
-			medias []*core.Media
-		}
 		var availableProducers []producerInfo
 
 		// Track which consMedias have been pre-negotiated (by index)
@@ -225,6 +226,11 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 			// Check #requirePrevVideo - skip if previous producers don't have video
 			if prod.requirePrevVideo && !prevHasVideo && prodN > 0 {
 				log.Trace().Msgf("[streams] skip prod=%d (requires previous video but none available)", prodN)
+				continue
+			}
+
+			if !producerMayServe(prod, consMedias, availableProducers) {
+				log.Trace().Msgf("[streams] skip prod=%d (nothing left it could serve)", prodN)
 				continue
 			}
 
@@ -679,4 +685,50 @@ func appendString(s, elem string) string {
 		return elem
 	}
 	return s + ", " + elem
+}
+
+// a producer is dialed only while some consumer media is still uncovered by the
+// producers collected so far and its flags allow that media, so a #noBackchannel
+// companion never starts for a consumer whose only open media is the microphone
+func producerMayServe(prod *Producer, consMedias []*core.Media, collected []producerInfo) bool {
+	for _, consMedia := range consMedias {
+		if producerAllows(prod, consMedia) && !mediaCovered(consMedia, collected) {
+			return true
+		}
+	}
+	return false
+}
+
+func producerAllows(prod *Producer, consMedia *core.Media) bool {
+	switch consMedia.Direction {
+	case core.DirectionSendonly:
+		switch consMedia.Kind {
+		case core.KindVideo:
+			return prod.videoEnabled
+		case core.KindAudio:
+			return prod.audioEnabled
+		}
+	case core.DirectionRecvonly:
+		return prod.backchannelEnabled
+	}
+	return true
+}
+
+func mediaCovered(consMedia *core.Media, collected []producerInfo) bool {
+	for _, pInfo := range collected {
+		if !producerAllows(pInfo.prod, consMedia) {
+			continue
+		}
+		for _, prodMedia := range pInfo.medias {
+			if prodCodec, _ := prodMedia.MatchMedia(consMedia); prodCodec != nil {
+				return true
+			}
+			if consMedia.Direction == core.DirectionRecvonly && prodMedia.Direction == core.DirectionSendonly &&
+				prodMedia.Kind == consMedia.Kind && pInfo.prod.mixingEnabled &&
+				len(prodMedia.Codecs) > 0 && len(consMedia.Codecs) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
