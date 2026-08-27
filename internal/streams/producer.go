@@ -172,22 +172,39 @@ func (p *Producer) GetMedias() []*core.Media {
 	return p.visibleMedias(conn.GetMedias())
 }
 
-// #noBackchannel hides the talk media from consumers and from the stream
-// info, so a probe reports the source as one-way instead of skipping it
+// #noVideo, #noAudio and #noBackchannel hide the media from consumers and
+// from the stream info, so a probe reports what the source really offers
 func (p *Producer) visibleMedias(medias []*core.Media) []*core.Media {
-	if p.backchannelEnabled {
+	if p.videoEnabled && p.audioEnabled && p.backchannelEnabled {
 		return medias
 	}
 	kept := make([]*core.Media, 0, len(medias))
 	for _, media := range medias {
-		if media.Direction != core.DirectionSendonly {
+		if p.mediaVisible(media.Kind, media.Direction) {
 			kept = append(kept, media)
 		}
 	}
 	return kept
 }
 
-func stripBackchannelMedias(data []byte) []byte {
+func (p *Producer) mediaVisible(kind, direction string) bool {
+	if direction == core.DirectionSendonly {
+		return p.backchannelEnabled
+	}
+	switch kind {
+	case core.KindVideo:
+		return p.videoEnabled
+	case core.KindAudio:
+		return p.audioEnabled
+	}
+	return true
+}
+
+func (p *Producer) hasHiddenMedias() bool {
+	return !p.videoEnabled || !p.audioEnabled || !p.backchannelEnabled
+}
+
+func (p *Producer) stripHiddenMedias(data []byte) []byte {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(data, &obj) != nil {
 		return data
@@ -198,7 +215,9 @@ func stripBackchannelMedias(data []byte) []byte {
 	}
 	kept := medias[:0]
 	for _, media := range medias {
-		if !strings.Contains(media, ", "+core.DirectionSendonly) {
+		// Media.String() is "kind, direction, codecs..."
+		parts := strings.SplitN(media, ", ", 3)
+		if len(parts) < 2 || p.mediaVisible(parts[0], parts[1]) {
 			kept = append(kept, media)
 		}
 	}
@@ -351,8 +370,8 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !p.backchannelEnabled {
-			connData = stripBackchannelMedias(connData)
+		if p.hasHiddenMedias() {
+			connData = p.stripHiddenMedias(connData)
 		}
 
 		// If no mixer, return as-is

@@ -413,6 +413,35 @@ func TestNoBackchannelHidesTalkMedia(t *testing.T) {
 	require.Len(t, p.GetMedias(), 2)
 }
 
+func TestNoAudioAndNoVideoHideTheirMedia(t *testing.T) {
+	medias := []*core.Media{
+		{Kind: core.KindVideo, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{{Name: core.CodecH264, ClockRate: 90000}}},
+		{Kind: core.KindAudio, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{{Name: core.CodecAAC, ClockRate: 16000}}},
+		{Kind: core.KindAudio, Direction: core.DirectionSendonly, Codecs: []*core.Codec{{Name: core.CodecPCMA, ClockRate: 8000}}},
+	}
+
+	p := NewProducer("rtsp://127.0.0.1/stream#noAudio")
+	p.conn = &stubProducer{medias: medias}
+	p.state = stateMedias
+	got := p.GetMedias()
+	require.Len(t, got, 2)
+	require.Equal(t, core.KindVideo, got[0].Kind)
+	require.Equal(t, core.DirectionSendonly, got[1].Direction, "the talk channel is not audio from the camera and stays")
+	data, err := p.MarshalJSON()
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "audio, recvonly")
+	require.Contains(t, string(data), "audio, sendonly")
+
+	p = NewProducer("rtsp://127.0.0.1/stream#noVideo")
+	p.conn = &stubProducer{medias: medias}
+	p.state = stateMedias
+	got = p.GetMedias()
+	require.Len(t, got, 2)
+	for _, media := range got {
+		require.NotEqual(t, core.KindVideo, media.Kind)
+	}
+}
+
 func TestSetSourcesReconnectsConsumersAndPreload(t *testing.T) {
 	registerTestRTSPHandler()
 
