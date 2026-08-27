@@ -165,7 +165,49 @@ func (p *Producer) GetMedias() []*core.Media {
 		return nil
 	}
 
-	return conn.GetMedias()
+	return p.visibleMedias(conn.GetMedias())
+}
+
+// #noBackchannel hides the talk media from consumers and from the stream
+// info, so a probe reports the source as one-way instead of skipping it
+func (p *Producer) visibleMedias(medias []*core.Media) []*core.Media {
+	if p.backchannelEnabled {
+		return medias
+	}
+	kept := make([]*core.Media, 0, len(medias))
+	for _, media := range medias {
+		if media.Direction != core.DirectionSendonly {
+			kept = append(kept, media)
+		}
+	}
+	return kept
+}
+
+func stripBackchannelMedias(data []byte) []byte {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return data
+	}
+	var medias []string
+	if json.Unmarshal(obj["medias"], &medias) != nil {
+		return data
+	}
+	kept := medias[:0]
+	for _, media := range medias {
+		if !strings.Contains(media, ", "+core.DirectionSendonly) {
+			kept = append(kept, media)
+		}
+	}
+	raw, err := json.Marshal(kept)
+	if err != nil {
+		return data
+	}
+	obj["medias"] = raw
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return data
+	}
+	return out
 }
 
 func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
@@ -304,6 +346,9 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
 		connData, err := json.Marshal(conn)
 		if err != nil {
 			return nil, err
+		}
+		if !p.backchannelEnabled {
+			connData = stripBackchannelMedias(connData)
 		}
 
 		// If no mixer, return as-is

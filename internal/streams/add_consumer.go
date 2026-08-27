@@ -228,12 +228,6 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 				continue
 			}
 
-			// Skip producers with backchannel disabled when consumer requests backchannel
-			if consumerRequestsBackchannel && !prod.backchannelEnabled && !prod.videoExplicitlySet && !prod.audioExplicitlySet {
-				log.Trace().Msgf("[streams] skip prod=%d (consumer requests backchannel, producer has #noBackchannel)", prodN)
-				continue
-			}
-
 			// CRITICAL: Before dialing a producer with requirePrevAudio/Video,
 			// we must SETUP all tracks from previous producers FIRST.
 			// This is because dialing a dependent producer may trigger an internal consumer that

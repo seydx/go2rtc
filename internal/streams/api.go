@@ -215,6 +215,7 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 			Src      string `json:"src"`
 			Status   string `json:"status"`
 			Attached bool   `json:"attached"`
+			Query    string `json:"query,omitempty"`
 			Error    string `json:"error,omitempty"`
 		}{
 			Src:    src,
@@ -224,6 +225,7 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 		if p := GetPreload(src); p != nil {
 			response.Status = "started"
 			response.Attached = p.Attached()
+			response.Query = p.Query
 			if err := p.Err(); err != nil {
 				response.Error = err.Error()
 			}

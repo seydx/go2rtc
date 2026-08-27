@@ -3,6 +3,7 @@ package streams
 import (
 	"bufio"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -372,4 +373,41 @@ func TestSilentCameraWedgesSetupThenRecovers(t *testing.T) {
 	require.True(t, waitUntil(10*time.Second, func() bool { return cons.Send > sendBefore }), "existing consumer must receive data after recovery")
 
 	stream.RemoveConsumer(cons)
+}
+
+type stubProducer struct {
+	core.Producer
+	medias []*core.Media
+}
+
+func (s *stubProducer) GetMedias() []*core.Media { return s.medias }
+
+func (s *stubProducer) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]any{"medias": s.medias, "url": "stub"})
+}
+
+func TestNoBackchannelHidesTalkMedia(t *testing.T) {
+	medias := []*core.Media{
+		{Kind: core.KindVideo, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{{Name: core.CodecH264, ClockRate: 90000}}},
+		{Kind: core.KindAudio, Direction: core.DirectionSendonly, Codecs: []*core.Codec{{Name: core.CodecPCMA, ClockRate: 8000}}},
+	}
+
+	p := NewProducer("rtsp://127.0.0.1/stream#noBackchannel")
+	p.conn = &stubProducer{medias: medias}
+	p.state = stateMedias
+
+	got := p.GetMedias()
+	require.Len(t, got, 1)
+	require.Equal(t, core.KindVideo, got[0].Kind)
+
+	data, err := p.MarshalJSON()
+	require.NoError(t, err)
+	require.NotContains(t, string(data), core.DirectionSendonly)
+	require.Contains(t, string(data), "video, recvonly")
+	require.Contains(t, string(data), `"url":"stub"`)
+
+	p = NewProducer("rtsp://127.0.0.1/stream")
+	p.conn = &stubProducer{medias: medias}
+	p.state = stateMedias
+	require.Len(t, p.GetMedias(), 2)
 }
