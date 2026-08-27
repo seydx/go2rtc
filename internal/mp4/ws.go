@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/api/ws"
@@ -9,6 +10,10 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/mp4"
 )
+
+type ctxKey string
+
+const mseStopKey ctxKey = "mse/stop"
 
 func handlerWSMSE(tr *ws.Transport, msg *ws.Message) error {
 	stream, _ := streams.GetOrPatch(tr.Request.URL.Query())
@@ -43,10 +48,31 @@ func handlerWSMSE(tr *ws.Transport, msg *ws.Message) error {
 
 	go cons.WriteTo(tr.Writer())
 
-	tr.OnClose(func() {
-		stream.RemoveConsumer(cons)
+	// one fMP4 consumer per transport: a client that switched away (auto mode
+	// settled on WebRTC) sends mse/stop, a client that re-sends mse replaces it
+	stop := sync.OnceFunc(func() { stream.RemoveConsumer(cons) })
+	var prev func()
+	tr.WithContext(func(ctx map[any]any) {
+		prev, _ = ctx[mseStopKey].(func())
+		ctx[mseStopKey] = stop
 	})
+	if prev != nil {
+		prev()
+	}
+	tr.OnClose(stop)
 
+	return nil
+}
+
+func handlerWSMSEStop(tr *ws.Transport, _ *ws.Message) error {
+	var stop func()
+	tr.WithContext(func(ctx map[any]any) {
+		stop, _ = ctx[mseStopKey].(func())
+		delete(ctx, mseStopKey)
+	})
+	if stop != nil {
+		stop()
+	}
 	return nil
 }
 

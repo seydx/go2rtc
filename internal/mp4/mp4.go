@@ -20,6 +20,7 @@ func Init() {
 	log = app.GetLogger("mp4")
 
 	ws.HandleFunc("mse", handlerWSMSE)
+	ws.HandleFunc("mse/stop", handlerWSMSEStop)
 	ws.HandleFunc("mp4", handlerWSMP4)
 
 	api.HandleFunc("api/frame.mp4", handlerKeyframe)
