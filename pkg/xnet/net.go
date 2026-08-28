@@ -3,16 +3,51 @@ package xnet
 import (
 	"net"
 	"strconv"
+	"strings"
 )
 
-// Docker has common docker addresses (class B):
-// https://en.wikipedia.org/wiki/Private_network
-// - docker0 172.17.0.1/16
-// - br-xxxx 172.18.0.1/16
-// - hassio  172.30.32.1/23
-var Docker = net.IPNet{
-	IP:   []byte{172, 16, 0, 0},
-	Mask: []byte{255, 240, 0, 0},
+// container bridges by interface name: docker0, br-xxxx (docker networks),
+// hassio (supervisor), podman/cni/flannel/cali (podman, k8s), virbr (libvirt),
+// lxc/lxd. Matching by name instead of the 172.16.0.0/12 range keeps LANs in
+// that range (172.21.x.x is not rare) usable for WebRTC and mDNS.
+var containerInterfacePrefixes = []string{
+	"docker", "br-", "veth", "hassio", "podman", "cni", "flannel", "cali", "virbr", "lxc", "lxd",
+}
+
+func IsContainerInterface(name string) bool {
+	for _, prefix := range containerInterfacePrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// ContainerIPs returns the addresses of container bridge interfaces, which
+// are unreachable from the LAN.
+func ContainerIPs() (ips []net.IP) {
+	ifaces, _ := net.Interfaces()
+	for _, iface := range ifaces {
+		if !IsContainerInterface(iface.Name) {
+			continue
+		}
+		addrs, _ := iface.Addrs()
+		for _, addr := range addrs {
+			if v, ok := addr.(*net.IPNet); ok {
+				ips = append(ips, v.IP)
+			}
+		}
+	}
+	return
+}
+
+func IsContainerIP(ip net.IP) bool {
+	for _, cip := range ContainerIPs() {
+		if cip.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseUnspecifiedPort will return port if address is unspecified

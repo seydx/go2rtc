@@ -132,12 +132,12 @@ func NewServerAPI(network, address string, filters *Filters) (*webrtc.API, error
 			return core.Contains(filters.IPs, ip.String())
 		}
 	} else {
-		// try filter all Docker-like interfaces
+		// skip container bridge interfaces (docker0, br-xxxx, hassio, ...)
 		ipFilter = func(ip net.IP) bool {
-			return !xnet.Docker.Contains(ip)
+			return !xnet.IsContainerIP(ip)
 		}
-		// if there are no such interfaces - disable the filter
-		// the user will need to enable port forwarding
+		// if there are no other interfaces (go2rtc inside a bridge-mode
+		// container) - disable the filter, the user will need port forwarding
 		if nets, _ := xnet.IPNets(ipFilter); len(nets) == 0 {
 			ipFilter = nil
 		}

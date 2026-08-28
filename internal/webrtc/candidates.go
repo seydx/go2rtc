@@ -76,8 +76,8 @@ func FilterCandidate(candidate *pion.ICECandidate) bool {
 		return false
 	}
 
-	// remove any Docker-like IP from candidates
-	if ip := net.ParseIP(candidate.Address); ip != nil && xnet.Docker.Contains(ip) {
+	// remove container bridge addresses (docker0, br-xxxx, hassio, ...)
+	if ip := net.ParseIP(candidate.Address); ip != nil && xnet.IsContainerIP(ip) {
 		return false
 	}
 

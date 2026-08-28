@@ -181,7 +181,7 @@ type Browser struct {
 func (b *Browser) ListenMulticastUDP() error {
 	// 1. Collect IPv4 interfaces
 	nets, err := xnet.IPNets(func(ip net.IP) bool {
-		return !xnet.Docker.Contains(ip)
+		return !xnet.IsContainerIP(ip)
 	})
 	if err != nil {
 		return err
