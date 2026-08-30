@@ -28,8 +28,11 @@ type Conn struct {
 	OnClose     func() error
 	PacketSize  uint16
 	SessionName string
-	Timeout     int
-	Transport   string // custom transport support, ex. RTSP over WebSocket
+	// Timeout bounds the wait for media in seconds; HandshakeTimeout bounds
+	// each RTSP request/response exchange. Zero means the package default.
+	Timeout          int
+	HandshakeTimeout int
+	Transport        string // custom transport support, ex. RTSP over WebSocket
 
 	UseGOP bool
 
@@ -361,12 +364,11 @@ func (c *Conn) handleRawPacket(channel byte, buf []byte) error {
 }
 
 // handshakeTimeout returns the deadline used for RTSP command request/response
-// exchanges (DESCRIBE, SETUP, PLAY, ...). It prefers the per-connection Timeout
-// (ex. rtsp://...#timeout=30) and falls back to the package default when unset,
-// so existing behavior is unchanged whenever Timeout == 0.
+// exchanges (DESCRIBE, SETUP, PLAY, ...). A slow-waking camera needs more time
+// here without the media timeout changing (ex. rtsp://...#handshake_timeout=30).
 func (c *Conn) handshakeTimeout() time.Duration {
-	if c.Timeout != 0 {
-		return time.Second * time.Duration(c.Timeout)
+	if c.HandshakeTimeout > 0 {
+		return time.Second * time.Duration(c.HandshakeTimeout)
 	}
 	return Timeout
 }

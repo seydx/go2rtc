@@ -25,6 +25,23 @@ func TestTimeout(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrDeadlineExceeded)
 }
 
+func TestHandshakeTimeout(t *testing.T) {
+	oldTimeout := Timeout
+	defer func() { Timeout = oldTimeout }()
+
+	Timeout = 5 * time.Second
+
+	conn := &Conn{}
+	require.Equal(t, 5*time.Second, conn.handshakeTimeout())
+
+	// the media timeout must not leak into the handshake
+	conn.Timeout = 60
+	require.Equal(t, 5*time.Second, conn.handshakeTimeout())
+
+	conn.HandshakeTimeout = 15
+	require.Equal(t, 15*time.Second, conn.handshakeTimeout())
+}
+
 func TestMissedControl(t *testing.T) {
 	Timeout = time.Millisecond
 
