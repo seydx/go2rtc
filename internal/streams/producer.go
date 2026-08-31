@@ -676,7 +676,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 			track = core.NewReceiver(receiver.Media, receiver.Codec)
 			log.Debug().Msgf("[streams] reconnect parks %s track url=%s", receiver.Codec.Name, url)
 		}
-		receiver.Replace(track)
+		receiver.Retire(track)
 		p.receivers[i] = track
 	}
 	p.mu.Unlock()

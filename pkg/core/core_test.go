@@ -108,7 +108,7 @@ func TestName(t *testing.T) {
 	media2 := prod2.GetMedias()[0]
 	require.NotEqual(t, fmt.Sprintf("%p", media1), fmt.Sprintf("%p", media2))
 	track2, _ := prod2.GetTrack(media2, media2.Codecs[0])
-	track1.Replace(track2)
+	track1.Retire(track2)
 
 	_ = prod1.Stop()
 

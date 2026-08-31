@@ -31,7 +31,7 @@ type Node struct {
 	id     uint32
 	childs []*Node
 	parent *Node
-	// movedTo points at the node that took this node's children in MoveNode.
+	// movedTo is set by MoveNode on a node that is retired for good.
 	// A child attaching afterwards belongs on the successor: the topology
 	// swap and the consumer attach race, and the loser must not end up on a
 	// node nothing feeds anymore.
@@ -69,6 +69,17 @@ func (n *Node) AppendChild(child *Node) {
 	child.mu.Lock()
 	child.parent = n
 	child.mu.Unlock()
+}
+
+// AttachRelay adds child to n's childs without linking child's parent.
+// A relay keeps its own lifecycle: the upward close cascade from the
+// relay's last consumer must not detach it from n, and n's teardown must
+// not close the consumers riding on it (the owner detaches it explicitly
+// via RemoveChild instead).
+func (n *Node) AttachRelay(child *Node) {
+	n.mu.Lock()
+	n.childs = append(n.childs, child)
+	n.mu.Unlock()
 }
 
 // Attached reports whether the node is still listed as a child of its
@@ -124,6 +135,9 @@ func (n *Node) Close() {
 	}
 }
 
+// MoveNode rewires src's children onto dst and marks src as retired:
+// children attaching later are handed to dst, so an attach racing the swap
+// cannot end up on a node nothing feeds anymore. src must be discarded.
 func MoveNode(dst, src *Node) {
 	src.mu.Lock()
 	childs := src.childs

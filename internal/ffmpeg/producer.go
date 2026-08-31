@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -13,9 +14,13 @@ import (
 
 type Producer struct {
 	core.Connection
-	url    string
-	query  url.Values
-	ffmpeg core.Producer
+	url   string
+	query url.Values
+
+	mu      sync.Mutex
+	ffmpeg  core.Producer
+	tracks  []*core.Receiver
+	stopped bool
 }
 
 // NewProducer - FFmpeg producer with auto selection video/audio codec based on client capabilities
@@ -44,34 +49,80 @@ func NewProducer(url string) (core.Producer, error) {
 }
 
 func (p *Producer) Start() error {
-	var err error
-	if p.ffmpeg, err = streams.GetProducer(p.newURL()); err != nil {
+	ff, err := streams.GetProducer(p.newURL())
+	if err != nil {
 		return err
 	}
 
-	for i, media := range p.ffmpeg.GetMedias() {
-		track, err := p.ffmpeg.GetTrack(media, media.Codecs[0])
+	p.mu.Lock()
+	if p.stopped {
+		p.mu.Unlock()
+		return ff.Stop()
+	}
+	p.ffmpeg = ff
+	p.mu.Unlock()
+
+	// the placeholder receivers stay the attach point for consumers and are
+	// fed by the inner producer's tracks: consumers never sit on a track the
+	// inner teardown would close, and the streams layer sees them (readers,
+	// staleness, reconnect moves)
+	for i, media := range ff.GetMedias() {
+		if i >= len(p.Receivers) {
+			break
+		}
+		track, err := ff.GetTrack(media, media.Codecs[0])
 		if err != nil {
 			return err
 		}
-		p.Receivers[i].Replace(track)
+
+		p.mu.Lock()
+		if p.stopped {
+			p.mu.Unlock()
+			return errors.New("ffmpeg: stopped during setup")
+		}
+		track.AttachRelay(&p.Receivers[i].Node)
+		p.tracks = append(p.tracks, track)
+		p.mu.Unlock()
 	}
 
-	return p.ffmpeg.Start()
+	return ff.Start()
 }
 
+// Stop detaches the relay receivers before the inner teardown, so closing
+// the inner tracks cannot close the consumers riding on them.
 func (p *Producer) Stop() error {
-	if p.ffmpeg == nil {
+	p.mu.Lock()
+	p.stopped = true
+	ff := p.ffmpeg
+	for i, track := range p.tracks {
+		if i < len(p.Receivers) {
+			track.RemoveChild(&p.Receivers[i].Node)
+		}
+	}
+	p.tracks = nil
+	p.mu.Unlock()
+
+	if ff == nil {
 		return nil
 	}
-	return p.ffmpeg.Stop()
+	return ff.Stop()
+}
+
+// Interrupt breaks a hung inner producer so Start returns and the worker
+// can reconnect.
+func (p *Producer) Interrupt() error {
+	return p.Stop()
 }
 
 func (p *Producer) MarshalJSON() ([]byte, error) {
-	if p.ffmpeg == nil {
+	p.mu.Lock()
+	ff := p.ffmpeg
+	p.mu.Unlock()
+
+	if ff == nil {
 		return json.Marshal(p.Connection)
 	}
-	return json.Marshal(p.ffmpeg)
+	return json.Marshal(ff)
 }
 
 func (p *Producer) newURL() string {

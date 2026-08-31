@@ -114,8 +114,10 @@ func (r *Receiver) Senders() []*Sender {
 	}
 }
 
-// Deprecated: should be removed
-func (r *Receiver) Replace(target *Receiver) {
+// Retire moves the consumers onto target and marks this receiver as gone
+// for good, so a consumer attach that lost the race against the swap still
+// reaches the successor. Only for receivers that are discarded.
+func (r *Receiver) Retire(target *Receiver) {
 	MoveNode(&target.Node, &r.Node)
 }
 

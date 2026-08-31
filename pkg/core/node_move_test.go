@@ -18,11 +18,11 @@ func countingSender() (*Sender, *int) {
 	return s, &count
 }
 
-func TestMoveNodeForwardsLateAttaches(t *testing.T) {
+func TestRetireForwardsLateAttaches(t *testing.T) {
 	oldRecv := moveTestReceiver()
 	newRecv := moveTestReceiver()
 
-	oldRecv.Replace(newRecv)
+	oldRecv.Retire(newRecv)
 
 	// the consumer picked oldRecv up before the swap and attaches after it
 	late, hits := countingSender()
@@ -30,14 +30,14 @@ func TestMoveNodeForwardsLateAttaches(t *testing.T) {
 
 	newRecv.Input(&rtp.Packet{})
 	if *hits == 0 {
-		t.Fatal("a sender attached to a replaced receiver gets nothing")
+		t.Fatal("a sender attached to a retired receiver gets nothing")
 	}
 	if !late.Node.Attached() {
 		t.Fatal("the late sender is not attached to the successor")
 	}
 }
 
-func TestMoveNodeKeepsTheTargetsOwnChildren(t *testing.T) {
+func TestRetireKeepsTheTargetsOwnChildren(t *testing.T) {
 	oldRecv := moveTestReceiver()
 	newRecv := moveTestReceiver()
 
@@ -47,7 +47,7 @@ func TestMoveNodeKeepsTheTargetsOwnChildren(t *testing.T) {
 	moved, movedHits := countingSender()
 	moved.WithParent(oldRecv)
 
-	oldRecv.Replace(newRecv)
+	oldRecv.Retire(newRecv)
 
 	newRecv.Input(&rtp.Packet{})
 	if *earlyHits == 0 {

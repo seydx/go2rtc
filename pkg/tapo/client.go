@@ -218,15 +218,13 @@ func (c *Client) Handle() error {
 
 		c.recv += size
 
+		// a part whose body exceeds its Content-Length must not be read with
+		// a drained buffer: multipart returns (0, nil) then and the loop
+		// would spin forever, unbreakable by Close/Interrupt. ReadFull stops
+		// at size, NextRawPart skips the leftovers.
 		body := make([]byte, size)
-
-		b := body
-		for {
-			if n, err2 := p.Read(b); err2 == nil {
-				b = b[n:]
-			} else {
-				break
-			}
+		if _, err = io.ReadFull(p, body); err != nil {
+			return err
 		}
 
 		body = c.decrypt(body)
