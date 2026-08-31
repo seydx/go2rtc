@@ -211,6 +211,35 @@ func (s *Stream) stopProducers() {
 	s.mu.Unlock()
 }
 
+// offeredKinds lists the media kinds that connected, self-sufficient
+// producers currently offer to consumers. Producers that only piggyback on
+// others (#requirePrevAudio/#requirePrevVideo) don't count: a fresh attach
+// could never obtain their media on its own, and chasing it would loop.
+func (s *Stream) offeredKinds() map[string]bool {
+	s.mu.Lock()
+	producers := append([]*Producer(nil), s.producers...)
+	s.mu.Unlock()
+
+	kinds := map[string]bool{}
+	for _, prod := range producers {
+		if prod.requirePrevAudio || prod.requirePrevVideo {
+			continue
+		}
+		prod.mu.RLock()
+		conn := prod.conn
+		prod.mu.RUnlock()
+		if conn == nil {
+			continue
+		}
+		for _, media := range prod.GetMedias() {
+			if media.Direction == core.DirectionRecvonly {
+				kinds[media.Kind] = true
+			}
+		}
+	}
+	return kinds
+}
+
 // isAudioStale returns true if all audio receivers across all started producers
 // exist but have not received any packets recently. This detects cameras that
 // advertise audio but stopped sending it (e.g. hardware issue).

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/stretchr/testify/require"
 )
 
@@ -172,4 +173,86 @@ func TestEnsurePreloadDoesNotWaitForRunningAttach(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("ensurePreload must not block on an attach in progress")
 	}
+}
+
+func preloadAudioPackets(p *Preload) int {
+	p.mu.Lock()
+	cons := p.cons
+	p.mu.Unlock()
+	if cons == nil {
+		return 0
+	}
+	for _, sender := range cons.Senders {
+		if sender.Codec != nil && core.GetKind(sender.Codec.Name) == core.KindAudio {
+			return sender.Packets
+		}
+	}
+	return -1
+}
+
+// A camera that starts advertising audio mid-life (microphone switched on)
+// must reach the preload without a restart.
+func TestPreloadWidensWhenAudioAppears(t *testing.T) {
+	registerTestRTSPHandler()
+	speedUpWatchdog(t)
+
+	cam := newFakeCamera(t)
+	cam.noAudio.Store(true)
+
+	stream, err := New("preload_widen", cam.URL())
+	require.NoError(t, err)
+	require.NoError(t, AddPreload("preload_widen", "video&audio"))
+	t.Cleanup(func() { _ = DelPreload("preload_widen") })
+
+	p := GetPreload("preload_widen")
+	require.True(t, waitUntil(10*time.Second, func() bool { return p.Attached() && receiverActive(stream) }))
+	require.Len(t, p.cons.Senders, 1, "camera without audio serves video only")
+
+	// microphone switched on: the camera session comes back offering audio
+	cam.noAudio.Store(false)
+	cam.dropConns()
+
+	require.True(t, waitUntil(30*time.Second, func() bool { return preloadAudioPackets(p) > 0 }),
+		"the preload must widen to audio and the track must carry packets")
+	require.True(t, p.Attached())
+
+	// the widened state is stable: no further re-attach happens
+	p.mu.Lock()
+	cons := p.cons
+	p.mu.Unlock()
+	time.Sleep(preloadCheckInterval + time.Second)
+	p.mu.Lock()
+	same := p.cons == cons
+	p.mu.Unlock()
+	require.True(t, same, "the supervisor must settle once fully served")
+}
+
+// A camera that never offers audio must not make the preload re-negotiate.
+func TestSilentCameraDoesNotChurnThePreload(t *testing.T) {
+	registerTestRTSPHandler()
+
+	cam := newFakeCamera(t)
+	cam.noAudio.Store(true)
+
+	stream, err := New("preload_silent", cam.URL())
+	require.NoError(t, err)
+	require.NoError(t, AddPreload("preload_silent", "video&audio"))
+	t.Cleanup(func() { _ = DelPreload("preload_silent") })
+
+	p := GetPreload("preload_silent")
+	require.True(t, waitUntil(10*time.Second, func() bool { return p.Attached() && receiverActive(stream) }))
+
+	p.mu.Lock()
+	cons := p.cons
+	p.mu.Unlock()
+	dials := cam.dialCount.Load()
+
+	time.Sleep(preloadCheckInterval + 3*time.Second)
+
+	p.mu.Lock()
+	same := p.cons == cons
+	p.mu.Unlock()
+	require.True(t, same, "no re-attach for a kind nobody offers")
+	require.Equal(t, dials, cam.dialCount.Load(), "no new camera sessions")
+	require.True(t, p.Attached())
 }

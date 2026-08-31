@@ -153,8 +153,8 @@ func (c *fakeCamera) serve(conn net.Conn) {
 }
 
 func (c *fakeCamera) sendRTP(conn net.Conn, stop chan struct{}) {
-	var seq uint16
-	var ts uint32
+	var seq, aseq uint16
+	var ts, ats uint32
 
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -190,6 +190,30 @@ func (c *fakeCamera) sendRTP(conn net.Conn, stop chan struct{}) {
 
 			seq++
 			ts += 3000
+
+			if c.noAudio.Load() {
+				continue
+			}
+
+			// PCMU payload on the audio channel from interleaved=2-3
+			apkt := make([]byte, 12+160)
+			apkt[0] = 0x80
+			binary.BigEndian.PutUint16(apkt[2:], aseq)
+			binary.BigEndian.PutUint32(apkt[4:], ats)
+			binary.BigEndian.PutUint32(apkt[8:], 0x55667788)
+
+			aframe := make([]byte, 4+len(apkt))
+			aframe[0] = '$'
+			aframe[1] = 2
+			binary.BigEndian.PutUint16(aframe[2:], uint16(len(apkt)))
+			copy(aframe[4:], apkt)
+
+			if _, err := conn.Write(aframe); err != nil {
+				return
+			}
+
+			aseq++
+			ats += 400
 		}
 	}
 }

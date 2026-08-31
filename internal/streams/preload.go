@@ -161,6 +161,44 @@ func (p *Preload) Attached() bool {
 	return p.cons != nil && p.cons.IsActive()
 }
 
+// fullyServed reports whether every media kind the query asks for that some
+// producer offers is covered by a sender. A kind nobody offers (camera
+// without audio) is not missing: the check stays quiet until the producer
+// starts advertising it, e.g. after the camera's microphone was switched on.
+func (p *Preload) fullyServed() bool {
+	p.mu.Lock()
+	cons := p.cons
+	p.mu.Unlock()
+	if cons == nil {
+		return false
+	}
+
+	wanted := map[string]bool{}
+	for kind := range p.query {
+		if kind == core.KindVideo || kind == core.KindAudio {
+			wanted[kind] = true
+		}
+	}
+	for _, sender := range cons.Senders {
+		if sender.Codec != nil {
+			delete(wanted, core.GetKind(sender.Codec.Name))
+		}
+	}
+	if len(wanted) == 0 {
+		return true
+	}
+	for kind := range p.stream.offeredKinds() {
+		if wanted[kind] {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *Preload) healthy() bool {
+	return p.Attached() && p.fullyServed()
+}
+
 // Err returns the last attach error, nil while attached.
 func (p *Preload) Err() error {
 	p.mu.Lock()
@@ -226,12 +264,12 @@ func (p *Preload) attach() error {
 	return nil
 }
 
-// tryAttach attaches the preload unless it's already attached or stopped.
+// tryAttach attaches the preload unless it's already fully served or stopped.
 func (p *Preload) tryAttach() error {
 	p.attachMu.Lock()
 	defer p.attachMu.Unlock()
 
-	if p.Attached() || p.stopped() {
+	if p.healthy() || p.stopped() {
 		return nil
 	}
 	return p.attach()
@@ -246,7 +284,7 @@ func (p *Preload) attachIfIdle() error {
 	}
 	defer p.attachMu.Unlock()
 
-	if p.Attached() || p.stopped() {
+	if p.healthy() || p.stopped() {
 		return nil
 	}
 	return p.attach()
@@ -256,7 +294,7 @@ func (p *Preload) supervise() {
 	retry := 0
 	for {
 		delay := preloadCheckInterval
-		if !p.Attached() {
+		if !p.healthy() {
 			delay = reconnectDelay(retry)
 		}
 
@@ -266,7 +304,7 @@ func (p *Preload) supervise() {
 		case <-time.After(delay):
 		}
 
-		if p.Attached() {
+		if p.healthy() {
 			retry = 0
 			continue
 		}
@@ -274,10 +312,15 @@ func (p *Preload) supervise() {
 		log.Debug().Str("name", p.name).Int("retry", retry).Msg("[preload] re-attaching")
 
 		if err := p.tryAttach(); err != nil {
-			retry++
 			log.Debug().Err(err).Str("name", p.name).Msg("[preload] attach failed")
-		} else {
+		}
+
+		// a nil error can still leave the preload underserved (a widen whose
+		// SETUP failed): back off on the outcome, not on the error
+		if p.healthy() {
 			retry = 0
+		} else {
+			retry++
 		}
 	}
 }
