@@ -28,10 +28,12 @@ func redirectCui(rawURL string) (string, error) {
 		return "", err
 	}
 
-	log.Debug().Msgf("[cui] new uri=%s", client.URL)
-
+	location := client.URL
 	if rawQuery != "" {
-		return client.URL + "#" + rawQuery, nil
+		location += "#" + rawQuery
 	}
-	return client.URL, nil
+
+	log.Debug().Msgf("[cui] new uri=%s", location)
+
+	return location, nil
 }
