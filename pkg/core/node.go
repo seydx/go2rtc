@@ -31,6 +31,11 @@ type Node struct {
 	id     uint32
 	childs []*Node
 	parent *Node
+	// movedTo points at the node that took this node's children in MoveNode.
+	// A child attaching afterwards belongs on the successor: the topology
+	// swap and the consumer attach race, and the loser must not end up on a
+	// node nothing feeds anymore.
+	movedTo *Node
 
 	owner any
 
@@ -53,6 +58,11 @@ func (n *Node) WithParent(parent *Node) *Node {
 
 func (n *Node) AppendChild(child *Node) {
 	n.mu.Lock()
+	if moved := n.movedTo; moved != nil {
+		n.mu.Unlock()
+		moved.AppendChild(child)
+		return
+	}
 	n.childs = append(n.childs, child)
 	n.mu.Unlock()
 
@@ -118,10 +128,12 @@ func MoveNode(dst, src *Node) {
 	src.mu.Lock()
 	childs := src.childs
 	src.childs = nil
+	src.movedTo = dst
 	src.mu.Unlock()
 
+	// append: dst may already carry children of its own, and they stay
 	dst.mu.Lock()
-	dst.childs = childs
+	dst.childs = append(dst.childs, childs...)
 	dst.mu.Unlock()
 
 	for _, child := range childs {
