@@ -34,7 +34,7 @@ func newFakeCompanionConn() *fakeCompanionConn {
 	c.Medias = []*core.Media{{
 		Kind:      core.KindAudio,
 		Direction: core.DirectionRecvonly,
-		Codecs:    []*core.Codec{{Name: core.CodecOpus, ClockRate: 48000}},
+		Codecs:    []*core.Codec{{Name: core.CodecOpus, ClockRate: 48000, Channels: 2}},
 	}}
 	return c
 }
@@ -204,4 +204,84 @@ func senderState(p *probe.Probe) string {
 		return "none"
 	}
 	return p.Senders[0].State()
+}
+
+// A redirect source (the cui, hass, onvif class) must re-resolve on every
+// reconnect: the plugin may serve from a new address after a restart, and
+// attached viewers have to land on the re-resolved producer's tracks.
+func TestRedirectReResolvesOnReconnect(t *testing.T) {
+	registerTestRTSPHandler()
+
+	cam1 := newFakeCamera(t)
+	cam2 := newFakeCamera(t)
+
+	var target atomic.Value
+	target.Store(cam1.URL())
+	RedirectFunc("fkredir", func(string) (string, error) {
+		return target.Load().(string), nil
+	})
+
+	s := NewStream("fkredir:cam")
+
+	viewer := newProbeConsumer()
+	require.NoError(t, s.AddConsumer(viewer))
+	require.True(t, waitUntil(2*time.Second, func() bool { return receiverActive(s) }),
+		"no packets from the first resolution")
+
+	// the plugin restarts and serves from a new address
+	target.Store(cam2.URL())
+	cam1.Close()
+
+	require.True(t, waitUntil(10*time.Second, func() bool {
+		return cam2.dialCount.Load() > 0 && receiverActive(s)
+	}), "reconnect did not re-resolve the redirect (cam2 dials=%d)", cam2.dialCount.Load())
+	require.True(t, viewer.IsActive(), "the viewer lost its track over the redirect reconnect")
+}
+
+// go2rtc's mixing case: one producer serves the video, another the audio
+// codec the camera cannot. Both tracks must flow, and a camera reconnect
+// must not disturb the audio producer.
+func TestSplitVideoAndAudioAcrossProducers(t *testing.T) {
+	registerTestRTSPHandler()
+	speedUpWatchdog(t)
+
+	cam := newFakeCamera(t)
+	registerCompanion("fkcomp5")
+
+	s := NewStream([]string{cam.URL(), "fkcomp5:x"})
+
+	query, _ := url.ParseQuery("video&audio=opus")
+	viewer := probe.Create("split", query)
+	require.NoError(t, s.AddConsumer(viewer))
+	require.Len(t, viewer.Senders, 2, "viewer did not get both tracks")
+
+	bothFlow := func() bool {
+		for _, sender := range viewer.Senders {
+			if sender.Packets == 0 {
+				return false
+			}
+		}
+		return true
+	}
+	require.True(t, waitUntil(2*time.Second, bothFlow), "video and audio never both flowed")
+
+	// camera reboot: video reconnects, audio keeps running
+	audioBefore := audioPackets(viewer)
+	cam.dropConns()
+
+	require.True(t, waitUntil(10*time.Second, func() bool {
+		return cam.dialCount.Load() > 1 && receiverActive(s)
+	}), "camera video did not come back")
+	require.True(t, waitUntil(2*time.Second, func() bool { return audioPackets(viewer) > audioBefore }),
+		"audio stalled over the camera reconnect")
+	require.True(t, viewer.IsActive(), "the viewer lost a track over the camera reconnect")
+}
+
+func audioPackets(p *probe.Probe) int {
+	for _, sender := range p.Senders {
+		if sender.Codec != nil && sender.Codec.IsAudio() {
+			return sender.Packets
+		}
+	}
+	return 0
 }
