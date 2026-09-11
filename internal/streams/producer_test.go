@@ -524,3 +524,78 @@ func TestCompanionNotDialedWhenCameraCoversTheRequest(t *testing.T) {
 	require.Equal(t, int32(1), dials.Load(), "opus is not covered by the camera, the companion must be dialed")
 	stream.RemoveConsumer(cons)
 }
+
+// stopTrackingProducer records whether its connection was closed.
+type stopTrackingProducer struct {
+	stubProducer
+	stopped atomic.Bool
+}
+
+func (s *stopTrackingProducer) Stop() error {
+	s.stopped.Store(true)
+	return nil
+}
+
+func TestStopDuringDialDoesNotClobberNewerDial(t *testing.T) {
+	release := make(chan struct{})
+	dialed := make(chan *stopTrackingProducer, 2)
+	var dials atomic.Int32
+	HandleFunc("stubslowdial", func(string) (core.Producer, error) {
+		dials.Add(1)
+		<-release
+		prod := &stopTrackingProducer{}
+		dialed <- prod
+		return prod, nil
+	})
+
+	p := NewProducer("stubslowdial://cam")
+
+	dial := func() <-chan error {
+		ch := make(chan error, 1)
+		go func() { ch <- p.Dial() }()
+		return ch
+	}
+	result := func(name string, ch <-chan error) error {
+		select {
+		case err := <-ch:
+			return err
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s dial hung", name)
+			return nil
+		}
+	}
+
+	// slow camera wake: dial A is in flight and a second consumer waits on it
+	first := dial()
+	require.True(t, waitUntil(time.Second, func() bool { return dials.Load() == 1 }))
+	waiter := dial()
+	time.Sleep(50 * time.Millisecond) // let the waiter block on A's dial
+
+	// every consumer leaves while A is still dialing, then a new one arrives
+	p.stop()
+	second := dial()
+	require.True(t, waitUntil(time.Second, func() bool { return dials.Load() == 2 }))
+
+	release <- struct{}{} // A returns after the stop
+	stale := <-dialed
+	require.ErrorIs(t, result("first", first), errDialStopped)
+	require.ErrorIs(t, result("waiter", waiter), errDialStopped)
+	require.True(t, stale.stopped.Load(), "a dial finishing after stop must close its conn, not leak it")
+
+	p.mu.RLock()
+	state, conn := p.state, p.conn
+	p.mu.RUnlock()
+	require.Equal(t, stateDialing, state, "the stale dial must not touch the newer dial's state")
+	require.Nil(t, conn)
+
+	release <- struct{}{} // B returns, used to panic with "close of closed channel"
+	fresh := <-dialed
+	require.NoError(t, result("second", second), "the newer dial must complete normally")
+
+	p.mu.RLock()
+	state, conn = p.state, p.conn
+	p.mu.RUnlock()
+	require.Equal(t, stateMedias, state)
+	require.Same(t, fresh, conn)
+	require.False(t, fresh.stopped.Load())
+}

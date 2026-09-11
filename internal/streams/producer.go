@@ -40,6 +40,7 @@ type Producer struct {
 	trackMu            sync.Mutex    // Serializes conn.GetTrack calls to prevent concurrent protocol operations
 	dialDone           chan struct{} // Closed when dial completes (success or failure)
 	dialErr            error         // Error from dial attempt (if any)
+	dialEpoch          uint64        // Bumped by stop() so a dial returning afterwards can't install its conn
 	workerID           int
 	backchannelEnabled bool // Whether this producer supports backchannel (default: true)
 	mixingEnabled      bool // Whether to enable audio mixing for multiple backchannel consumers (default: true)
@@ -110,6 +111,11 @@ func (p *Producer) SetSource(s string) {
 	}
 }
 
+// errDialStopped is returned by a dial that completed after the producer was
+// stopped. Its conn is discarded, since the producer's state may already
+// belong to a newer dial.
+var errDialStopped = errors.New("streams: producer stopped during dial")
+
 func (p *Producer) Dial() error {
 	p.mu.Lock()
 
@@ -119,6 +125,10 @@ func (p *Producer) Dial() error {
 		p.state = stateDialing
 		p.dialDone = make(chan struct{})
 		p.dialErr = nil
+		// Keep our own channel and epoch: if stop() runs while we dial and a
+		// new dial starts, p.dialDone and p.state belong to that newer dial.
+		dialDone := p.dialDone
+		epoch := p.dialEpoch
 		url := p.url
 		p.mu.Unlock()
 
@@ -127,29 +137,45 @@ func (p *Producer) Dial() error {
 
 		// Reacquire lock to update state
 		p.mu.Lock()
+		if p.dialEpoch != epoch {
+			// Stopped while dialing. Only wake our own waiters, leave the
+			// state alone and don't leak the conn into a stopped producer.
+			close(dialDone)
+			p.mu.Unlock()
+			// a failed dial may return a typed nil producer, so only stop on success
+			if err == nil {
+				_ = conn.Stop()
+			}
+			return errDialStopped
+		}
+
 		if err != nil {
 			p.dialErr = err
 			p.state = stateNone
-			close(p.dialDone)
+			close(dialDone)
 			p.mu.Unlock()
 			return err
 		}
 
 		p.conn = conn
 		p.state = stateMedias
-		close(p.dialDone)
+		close(dialDone)
 		p.mu.Unlock()
 		return nil
 
 	case stateDialing:
 		// Someone else is dialing - wait for them to finish
 		dialDone := p.dialDone
+		epoch := p.dialEpoch
 		p.mu.Unlock()
 
 		<-dialDone // Wait for dial to complete
 
 		p.mu.Lock()
 		err := p.dialErr
+		if p.dialEpoch != epoch {
+			err = errDialStopped
+		}
 		p.mu.Unlock()
 		return err
 
@@ -799,6 +825,9 @@ func (p *Producer) stop() {
 	}
 
 	log.Debug().Msgf("[streams] stop producer url=%s", p.url)
+
+	// invalidate a dial that may still be in flight
+	p.dialEpoch++
 
 	if p.conn != nil {
 		_ = p.conn.Stop()
