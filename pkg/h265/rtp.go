@@ -15,6 +15,17 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	buf := make([]byte, 0, 512*1024) // 512K
 	var nuStart int
 	var seqNum uint16
+	var timestamp uint32
+	var fragmented bool
+
+	// drop discards the access unit being assembled, it is incomplete. The stream
+	// goes on with the next access unit without waiting for a keyframe: go2rtc
+	// feeds NVRs and recorders, decoders conceal missing references, but a gap
+	// of a whole GOP in a recording can't be repaired.
+	drop := func() {
+		buf = buf[:0]
+		fragmented = false
+	}
 
 	fmtpLineUpdated := false
 
@@ -24,9 +35,27 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 			return
 		}
 
+		// A sequence gap, or a new timestamp inside a fragmented NAL unit, means
+		// the access unit being assembled lost data. Between access units nothing
+		// is dropped, so seq wraps and cameras restarting RTP numbering go on.
+		// Tracked before any early return, so skipped packets keep continuity.
+		if len(buf) > 0 && (packet.SequenceNumber-seqNum != 1 || (fragmented && packet.Timestamp != timestamp)) {
+			drop()
+		}
+		seqNum, timestamp = packet.SequenceNumber, packet.Timestamp
+
+		// Memory overflow protection, same as the h264 depay: a camera whose
+		// marker never reaches the flush (ex. every access unit ends with a
+		// marked SEI) would grow the buffer without limit. Resetting fragmented
+		// matters, nuStart would otherwise point past the shrunken buffer.
+		if len(buf) > 5*1024*1024 {
+			buf = buf[: 0 : 512*1024]
+			fragmented = false
+		}
+
 		data := packet.Payload
 		if len(data) < 3 {
-			return
+			return // too short to carry H265 data, ex. padding only
 		}
 
 		nuType := (data[0] >> 1) & 0x3F
@@ -42,19 +71,13 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 			}
 		}
 
-		// when we collect data into one buffer, we need to make sure
-		// that all of it falls into the same sequence
-		if len(buf) > 0 && packet.SequenceNumber-seqNum != 1 {
-			//log.Printf("broken H265 sequence")
-			buf = buf[:0] // drop data
-			return
-		}
-
-		seqNum = packet.SequenceNumber
-
 		if nuType == NALUTypeFU {
 			switch data[2] >> 6 {
 			case 0b10: // begin
+				if fragmented {
+					drop() // the previous fragmented unit never ended
+				}
+				fragmented = true
 				nuType = data[2] & 0x3F
 
 				// push PS data before keyframe
@@ -68,23 +91,27 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 				buf = append(buf, data[3:]...)
 				return
 			case 0b00: // continue
-				if len(buf) == 0 {
-					//log.Printf("broken H265 fragment")
+				if !fragmented {
+					drop() // the start of this unit was lost
 					return
 				}
 
 				buf = append(buf, data[3:]...)
 				return
 			case 0b01: // end
-				if len(buf) == 0 {
-					//log.Printf("broken H265 fragment")
+				if !fragmented {
+					drop() // the start of this unit was lost
 					return
 				}
+				fragmented = false
 
 				buf = append(buf, data[3:]...)
 
 				binary.BigEndian.PutUint32(buf[nuStart:], uint32(len(buf)-nuStart-4))
 			case 0b11: // wrong RFC 7798 realisation from OpenIPC project
+				if fragmented {
+					drop()
+				}
 				// A non-fragmented NAL unit MUST NOT be transmitted in one FU; i.e.,
 				// the Start bit and End bit must not both be set to 1 in the same FU
 				// header.
@@ -99,15 +126,18 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 			// packetizer (e.g. exec/ffmpeg sources), which bundles VPS+SPS+PPS into
 			// one packet. Split it into individual AVCC length-prefixed NAL units.
 			// The AP already carries parameter sets in-band — don't prepend ps.
+			if fragmented {
+				drop() // an AP can't continue a fragmented unit, its end was lost
+			}
 			for i := 2; i < len(data); {
 				if i+2 > len(data) {
-					buf = buf[:0] // drop truncated AP (same convention as FU)
+					drop() // drop truncated AP (same convention as FU)
 					return
 				}
 				size := int(binary.BigEndian.Uint16(data[i:]))
 				i += 2
 				if size < 2 || i+size > len(data) {
-					buf = buf[:0] // drop corrupted AP
+					drop() // drop corrupted AP
 					return
 				}
 				buf = binary.BigEndian.AppendUint32(buf, uint32(size)) // NAL unit size
@@ -115,6 +145,9 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 				i += size
 			}
 		} else {
+			if fragmented {
+				drop() // a single NAL unit can't continue a fragmented unit
+			}
 			buf = binary.BigEndian.AppendUint32(buf, uint32(len(data))) // NAL unit size
 			buf = append(buf, data...)
 		}
