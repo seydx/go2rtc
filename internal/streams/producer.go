@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/creds"
 )
 
 type state byte
@@ -57,6 +58,11 @@ type Producer struct {
 const SourceTemplate = "{input}"
 
 func NewProducer(source string) *Producer {
+	// Credentials written literally into the source (ex. client_secret=...) are
+	// masked from logs and the API. Registered here, not at dial, because the
+	// streams API serialises producers that never dialed.
+	creds.AddURLSecrets(source)
+
 	// Parse all stream parameters
 	rawSource, gopEnabled, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(source)
 
@@ -92,6 +98,8 @@ func NewProducer(source string) *Producer {
 }
 
 func (p *Producer) SetSource(s string) {
+	creds.AddURLSecrets(s)
+
 	rawSource, gopEnabled, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(s)
 	p.source = s
 	p.gopEnabled = gopEnabled
