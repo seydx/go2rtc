@@ -11,13 +11,22 @@ import (
 )
 
 func TestRecursion(t *testing.T) {
+	HandleFunc("stubproto", func(string) (core.Producer, error) { return nil, errors.New("stub") }) // bypass HasProducer
+
+	const src = "rtsp://localhost:8554/from_yaml?video"
+	// a leftover alias would make New treat "from_yaml" as an alias on the next run
+	t.Cleanup(func() {
+		Delete("from_yaml")
+		Delete(src)
+	})
+
 	// create stream with some source
-	stream1, err := New("from_yaml", "does_not_matter")
+	stream1, err := New("from_yaml", "stubproto://does_not_matter")
 	require.NoError(t, err)
-	require.Len(t, streams, 1)
+	require.Same(t, stream1, Get("from_yaml"))
 
 	// ask another unnamed stream that links go2rtc
-	query, err := url.ParseQuery("src=rtsp://localhost:8554/from_yaml?video")
+	query, err := url.ParseQuery("src=" + src)
 	require.NoError(t, err)
 	stream2, err := GetOrPatch(query)
 	require.NoError(t, err)
@@ -26,11 +35,15 @@ func TestRecursion(t *testing.T) {
 	require.Equal(t, stream1, stream2)
 	// check stream urls is same
 	require.Equal(t, stream1.producers[0].url, stream2.producers[0].url)
-	require.Len(t, streams, 2)
+	// the link is registered as an alias, not as a second stream; the streams
+	// map is shared by the whole package, so check by name instead of by size
+	require.Same(t, stream1, Get(src))
 }
 
 func TestTempate(t *testing.T) {
-	HandleFunc("rtsp", func(url string) (core.Producer, error) { return nil, nil }) // bypass HasProducer
+	HandleFunc("rtsp", func(url string) (core.Producer, error) { return nil, nil })              // bypass HasProducer
+	HandleFunc("ffmpeg", func(string) (core.Producer, error) { return nil, errors.New("stub") }) // bypass HasProducer
+	t.Cleanup(func() { Delete("camera.from_hass") })
 
 	// config from yaml
 	stream1, err := New("camera.from_hass", "ffmpeg:{input}#video=copy")
