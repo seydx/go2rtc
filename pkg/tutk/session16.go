@@ -179,6 +179,15 @@ func (s *Session16) RecvFrameData() (frameInfo, frameData []byte, err error) {
 }
 
 func (s *Session16) SessionRead(chID byte, cmd []byte) int {
+	// every message starts with a command header, a truncated one from a
+	// broken or hostile peer must not index past the buffer
+	if len(cmd) < cmdHdrSize {
+		if chID != 0 {
+			return msgUnknown
+		}
+		return msgMediaLost
+	}
+
 	if chID != 0 {
 		return s.handleCh1(cmd)
 	}
@@ -221,12 +230,22 @@ func (s *Session16) SessionRead(chID byte, cmd []byte) int {
 			s.waitCSeq = 0
 
 			payloadSize := binary.LittleEndian.Uint32(cmd[8:])
+			// the size comes from the packet, never slice past the assembled
+			// frame. A longer frame (ex. padding in the last chunk) is still
+			// delivered, dropping it would cost a frame that decodes fine.
+			if int(payloadSize) > len(s.waitData) {
+				s.waitData = s.waitData[:0]
+				return msgMediaLost
+			}
 			packetData[0] = bytes.Clone(s.waitData[payloadSize:])
 			packetData[1] = bytes.Clone(s.waitData[:payloadSize])
 
 		case 0x04:
 			data := cmd[24:]
 			hdrSize := binary.LittleEndian.Uint16(cmd[14:])
+			if int(hdrSize) > len(data) {
+				return msgMediaLost
+			}
 			packetData[0] = bytes.Clone(data[:hdrSize])
 			packetData[1] = bytes.Clone(data[hdrSize:])
 
@@ -298,6 +317,9 @@ func (s *Session16) handleCh1(cmd []byte) int {
 	// - respond on every 0008 command for smooth playback
 	switch cid := string(cmd[:2]); cid {
 	case "\x00\x00": // client start
+		if len(cmd) < cmdHdrSize+32 {
+			return msgUnknown // the ack echoes the last 32 bytes, the config
+		}
 		_ = s.SessionWrite(1, s.msgAck0000(cmd))
 		_ = s.SessionWrite(1, s.msg0012())
 		return msgClientStart
