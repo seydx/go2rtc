@@ -118,6 +118,7 @@ func TestSlice1(t *testing.T) {
 		} `tlv8:"3"`
 	}
 
+	// readers accept any zero-length TLV as separator, 0xFF included
 	s := `030b010280070202380403011e ff00 030b010200050202d00203011e`
 	b1, err := hex.DecodeString(strings.ReplaceAll(s, " ", ""))
 	require.NoError(t, err)
@@ -127,10 +128,11 @@ func TestSlice1(t *testing.T) {
 
 	require.Len(t, v.VideoAttrs, 2)
 
+	// lists are written with 0x00
 	b2, err := Marshal(v)
 	require.NoError(t, err)
 
-	require.Equal(t, b1, b2)
+	require.Equal(t, strings.ReplaceAll(s, " ff00 ", "0000"), hex.EncodeToString(b2))
 }
 
 func TestSlice2(t *testing.T) {
@@ -140,6 +142,7 @@ func TestSlice2(t *testing.T) {
 		Framerate uint8  `tlv8:"3"`
 	}
 
+	// readers accept any zero-length TLV as separator, 0xFF included
 	s := `010280070202380403011e ff00 010200050202d00203011e`
 	b1, err := hex.DecodeString(strings.ReplaceAll(s, " ", ""))
 	require.NoError(t, err)
@@ -149,8 +152,9 @@ func TestSlice2(t *testing.T) {
 
 	require.Len(t, v, 2)
 
+	// lists are written with 0x00
 	b2, err := Marshal(v)
 	require.NoError(t, err)
 
-	require.Equal(t, b1, b2)
+	require.Equal(t, strings.ReplaceAll(s, " ff00 ", "0000"), hex.EncodeToString(b2))
 }

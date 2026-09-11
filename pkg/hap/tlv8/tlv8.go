@@ -55,9 +55,11 @@ func Marshal(v any) ([]byte, error) {
 	return nil, errors.New("tlv8: not implemented: " + kind.String())
 }
 
-// separator the most confusing meaning in the documentation.
-// It can have a value of 0x00 or 0xFF or even 0x05.
-const separator = 0xFF
+// separator between list items. Readers accept any zero-length TLV (see
+// unmarshalTLV), but lists in characteristics are written with 0x00, like
+// HAP-NodeJS and real accessories (Aqara G3, Scrypted) do. 0xFF is the
+// separator for pairing lists only (kTLVType_Separator), go2rtc never writes those.
+const separator = 0x00
 
 func appendSlice(b []byte, value reflect.Value) ([]byte, error) {
 	for i := 0; i < value.Len(); i++ {
