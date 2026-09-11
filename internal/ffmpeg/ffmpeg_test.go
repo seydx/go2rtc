@@ -1,6 +1,8 @@
 package ffmpeg
 
 import (
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/AlexxIT/go2rtc/pkg/ffmpeg"
@@ -56,30 +58,67 @@ func TestParseArgsDevice(t *testing.T) {
 	tests := []struct {
 		name   string
 		source string
+		inputs map[string]string // device input per runtime.GOOS, see expectDevice
 		expect string
 	}{
 		{
 			name:   "[DEVICE] video will be output for MJPEG to pipe, with size 1920x1080",
 			source: "device?video=0&video_size=1920x1080",
-			expect: `ffmpeg -hide_banner -f dshow -video_size 1920x1080 -i "video=0" -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+			inputs: map[string]string{
+				"windows": `-f dshow -video_size 1920x1080 -i "video=0"`,
+				"darwin":  `-f avfoundation -video_size 1920x1080 -i "0:"`,
+				"linux":   `-f v4l2 -video_size 1920x1080 -i 0`,
+			},
+			expect: `ffmpeg -hide_banner {input} -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 		{
 			name:   "[DEVICE] video will be transcoded to H265 with framerate 20, audio will be skipped",
 			source: "device?video=0&framerate=20#video=h265",
-			expect: `ffmpeg -hide_banner -f dshow -framerate 20 -i "video=0" -c:v libx265 -g 50 -profile:v main -x265-params level=5.1:high-tier=0 -preset:v superfast -tune:v zerolatency -pix_fmt:v yuv420p -an -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+			inputs: map[string]string{
+				"windows": `-f dshow -framerate 20 -i "video=0"`,
+				"darwin":  `-f avfoundation -framerate 20 -i "0:"`,
+				"linux":   `-f v4l2 -framerate 20 -i 0`,
+			},
+			expect: `ffmpeg -hide_banner {input} -c:v libx265 -g 50 -profile:v main -x265-params level=5.1:high-tier=0 -preset:v superfast -tune:v zerolatency -pix_fmt:v yuv420p -an -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 		{
 			name:   "[DEVICE] video/audio",
 			source: "device?video=FaceTime HD Camera&audio=Microphone (High Definition Audio Device)",
-			expect: `ffmpeg -hide_banner -f dshow -i "video=FaceTime HD Camera:audio=Microphone (High Definition Audio Device)" -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+			// v4l2 has no combined video+audio input, linux audio is covered by the ALSA case
+			inputs: map[string]string{
+				"windows": `-f dshow -i "video=FaceTime HD Camera:audio=Microphone (High Definition Audio Device)"`,
+				"darwin":  `-f avfoundation -i "FaceTime HD Camera:Microphone (High Definition Audio Device)"`,
+			},
+			expect: `ffmpeg -hide_banner {input} -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+		},
+		{
+			name:   "[DEVICE] audio from ALSA",
+			source: "device?audio=default&channels=1",
+			inputs: map[string]string{
+				"linux": `-f alsa -channels 1 -i default`,
+			},
+			expect: `ffmpeg -hide_banner {input} -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			expect := expectDevice(t, test.inputs, test.expect)
 			args := parseArgs(test.source)
-			require.Equal(t, test.expect, args.String())
+			require.Equal(t, expect, args.String())
 		})
 	}
+}
+
+// expectDevice fills the {input} placeholder with the device input for the OS
+// the test runs on. Device args are built per OS by build tags (dshow,
+// avfoundation, v4l2/alsa). Tests never set the ffmpeg binary for device
+// listing, so no real devices are found and indexes are used as-is.
+func expectDevice(t *testing.T, inputs map[string]string, expect string) string {
+	input, ok := inputs[runtime.GOOS]
+	if !ok {
+		t.Skipf("no device expectation for %s", runtime.GOOS)
+	}
+	return strings.Replace(expect, "{input}", input, 1)
 }
 
 func TestParseArgsIpCam(t *testing.T) {
@@ -201,6 +240,7 @@ func TestParseArgsHwVaapi(t *testing.T) {
 	tests := []struct {
 		name   string
 		source string
+		inputs map[string]string // only for device sources, see expectDevice
 		expect string
 	}{
 		{
@@ -226,13 +266,22 @@ func TestParseArgsHwVaapi(t *testing.T) {
 		{
 			name:   "[DEVICE] MJPEG video with size 1920x1080 will be transcoded to H265",
 			source: "device?video=0&video_size=1920x1080#video=h265#hardware=vaapi",
-			expect: `ffmpeg -hide_banner -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_flags allow_profile_mismatch -f dshow -video_size 1920x1080 -i "video=0" -c:v hevc_vaapi -g 50 -bf 0 -profile:v main -level:v 5.1 -sei:v 0 -an -vf "format=vaapi|nv12,hwupload" -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+			inputs: map[string]string{
+				"windows": `-f dshow -video_size 1920x1080 -i "video=0"`,
+				"darwin":  `-f avfoundation -video_size 1920x1080 -i "0:"`,
+				"linux":   `-f v4l2 -video_size 1920x1080 -i 0`,
+			},
+			expect: `ffmpeg -hide_banner -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_flags allow_profile_mismatch {input} -c:v hevc_vaapi -g 50 -bf 0 -profile:v main -level:v 5.1 -sei:v 0 -an -vf "format=vaapi|nv12,hwupload" -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			expect := test.expect
+			if test.inputs != nil {
+				expect = expectDevice(t, test.inputs, expect)
+			}
 			args := parseArgs(test.source)
-			require.Equal(t, test.expect, args.String())
+			require.Equal(t, expect, args.String())
 		})
 	}
 }
@@ -376,6 +425,9 @@ func TestDrawText(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
+	// verAV is global, restore it so tests running afterwards keep the default args
+	prevAV := verAV
+	t.Cleanup(func() { verAV = prevAV })
 	verAV = ffmpeg.Version61
 	tests := []struct {
 		name   string
