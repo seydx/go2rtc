@@ -13,7 +13,7 @@ func TestEncryption(t *testing.T) {
 	key := []byte(core.RandString(16, 0))
 	salt := core.RandString(32, 0)
 
-	c, err := Client(nil, key, salt, true)
+	c, err := NewConn(nil, key, salt, true)
 	require.NoError(t, err)
 
 	buf := bytes.NewBuffer(nil)
@@ -23,9 +23,9 @@ func TestEncryption(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 4, n)
 
-	c, err = Client(nil, key, salt, false)
-	c.rd = bufio.NewReader(buf)
+	c, err = NewConn(nil, key, salt, false)
 	require.NoError(t, err)
+	c.rd = bufio.NewReader(buf)
 
 	b := make([]byte, 32)
 	n, err = c.Read(b)
