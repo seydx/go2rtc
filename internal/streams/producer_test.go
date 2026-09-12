@@ -29,6 +29,7 @@ type fakeCamera struct {
 	noAudio    atomic.Bool // DESCRIBE omits the audio media
 	reject     atomic.Bool // connections are accepted and closed at once (camera booting)
 	h265       atomic.Bool // DESCRIBE offers H265 video instead of H264 (codec reconfigured)
+	aac        atomic.Bool // DESCRIBE offers AAC audio instead of PCMU (codec reconfigured)
 
 	dialCount  atomic.Int32
 	setupCount atomic.Int32
@@ -133,9 +134,16 @@ func (c *fakeCamera) serve(conn net.Conn) {
 				"t=0 0\r\n" +
 				video
 			if !c.noAudio.Load() {
-				sdp += "m=audio 0 RTP/AVP 0\r\n" +
-					"a=rtpmap:0 PCMU/8000\r\n" +
-					"a=control:trackID=1\r\n"
+				if c.aac.Load() {
+					sdp += "m=audio 0 RTP/AVP 97\r\n" +
+						"a=rtpmap:97 MPEG4-GENERIC/16000\r\n" +
+						"a=fmtp:97 streamtype=5;profile-level-id=1;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=1408\r\n" +
+						"a=control:trackID=1\r\n"
+				} else {
+					sdp += "m=audio 0 RTP/AVP 0\r\n" +
+						"a=rtpmap:0 PCMU/8000\r\n" +
+						"a=control:trackID=1\r\n"
+				}
 			}
 			writeResponse(conn, cseq, "Content-Type: application/sdp\r\n", sdp)
 

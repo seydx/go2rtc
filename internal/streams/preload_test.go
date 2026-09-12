@@ -52,8 +52,8 @@ func TestPreloadSurvivesPartialReconnectAndHeals(t *testing.T) {
 	t.Cleanup(func() { _ = DelPreload("preload_partial") })
 
 	p := GetPreload("preload_partial")
-	require.True(t, waitUntil(10*time.Second, func() bool { return p.Attached() && receiverActive(stream) }))
-	require.Len(t, p.cons.Senders, 2, "video and audio negotiated")
+	waitForCodecs(t, p, core.CodecH264, core.CodecPCMU)
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
 
 	// camera reboots without audio: video is swapped, audio gets parked
 	dials := cam.dialCount.Load()
@@ -64,7 +64,9 @@ func TestPreloadSurvivesPartialReconnectAndHeals(t *testing.T) {
 
 	// the parked audio track keeps the preload's sender open instead of closing it
 	require.True(t, p.Attached(), "partial reconnect must not close the preload's tracks")
-	require.Equal(t, "connected", p.cons.Senders[1].State())
+	audio := preloadSender(p, core.CodecPCMU)
+	require.NotNil(t, audio, "the audio sender must still be there")
+	require.Equal(t, "connected", audio.State())
 
 	// camera reboots with audio again: the parked track is re-negotiated
 	setups := cam.setupCount.Load()
@@ -75,7 +77,9 @@ func TestPreloadSurvivesPartialReconnectAndHeals(t *testing.T) {
 	require.True(t, waitUntil(30*time.Second, func() bool { return cam.setupCount.Load() >= setups+2 }), "video and audio must both be set up again")
 	require.True(t, waitUntil(30*time.Second, func() bool { return receiverActive(stream) }))
 	require.True(t, p.Attached())
-	require.Equal(t, "connected", p.cons.Senders[1].State())
+	audio = preloadSender(p, core.CodecPCMU)
+	require.NotNil(t, audio, "the audio track must be live again")
+	require.Equal(t, "connected", audio.State())
 }
 
 func TestPreloadReattachesAfterProducerStop(t *testing.T) {
@@ -208,8 +212,8 @@ func TestPreloadWidensWhenAudioAppears(t *testing.T) {
 	t.Cleanup(func() { _ = DelPreload("preload_widen") })
 
 	p := GetPreload("preload_widen")
-	require.True(t, waitUntil(10*time.Second, func() bool { return p.Attached() && receiverActive(stream) }))
-	require.Len(t, p.cons.Senders, 1, "camera without audio serves video only")
+	waitForCodecs(t, p, core.CodecH264)
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }), "camera without audio serves video only")
 
 	// microphone switched on: the camera session comes back offering audio
 	cam.noAudio.Store(false)
@@ -277,6 +281,45 @@ func codecNames(s *Stream) []string {
 	return names
 }
 
+// preloadCodecs reads the preload's current consumer codecs under its lock.
+func preloadCodecs(p *Preload) []string {
+	p.mu.Lock()
+	cons := p.cons
+	p.mu.Unlock()
+	if cons == nil {
+		return nil
+	}
+	return senderCodecs(cons)
+}
+
+// waitForCodecs waits until the preload serves exactly these codecs. Order is
+// not compared: the query is a map, so the tracks come out in any order. The
+// first attach can also come back with fewer tracks (a SETUP racing the
+// camera) and gets widened by the supervisor, so never judge one snapshot.
+func waitForCodecs(t *testing.T, p *Preload, codecs ...string) {
+	t.Helper()
+	want := slices.Sorted(slices.Values(codecs))
+	require.True(t, waitUntil(30*time.Second, func() bool {
+		return slices.Equal(slices.Sorted(slices.Values(preloadCodecs(p))), want)
+	}), "preload must serve %v, got %v", want, preloadCodecs(p))
+}
+
+// preloadSender returns the preload's sender for that codec, or nil.
+func preloadSender(p *Preload, codec string) *core.Sender {
+	p.mu.Lock()
+	cons := p.cons
+	p.mu.Unlock()
+	if cons == nil {
+		return nil
+	}
+	for _, sender := range cons.Senders {
+		if sender.Codec != nil && sender.Codec.Name == codec {
+			return sender
+		}
+	}
+	return nil
+}
+
 func senderCodecs(cons *probe.Probe) []string {
 	var names []string
 	for _, sender := range cons.Senders {
@@ -301,8 +344,8 @@ func TestPreloadHealsAfterCodecChange(t *testing.T) {
 	t.Cleanup(func() { _ = DelPreload("preload_codec_change") })
 
 	p := GetPreload("preload_codec_change")
-	require.True(t, waitUntil(10*time.Second, func() bool { return p.Attached() && receiverActive(stream) }))
-	require.Equal(t, []string{core.CodecH264, core.CodecPCMU}, senderCodecs(p.cons))
+	waitForCodecs(t, p, core.CodecH264, core.CodecPCMU)
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
 
 	// camera is switched to h265 and drops the session
 	dials := cam.dialCount.Load()
@@ -318,10 +361,7 @@ func TestPreloadHealsAfterCodecChange(t *testing.T) {
 
 	// ...and the preload must end up serving it, not a dead h264 track
 	require.True(t, waitUntil(30*time.Second, func() bool {
-		p.mu.Lock()
-		cons := p.cons
-		p.mu.Unlock()
-		return slices.Contains(senderCodecs(cons), core.CodecH265)
+		return slices.Contains(preloadCodecs(p), core.CodecH265)
 	}), "preload must re-negotiate the new codec")
 	require.True(t, p.Attached())
 	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
@@ -363,5 +403,50 @@ func TestReconnectSwapsWhenEveryTrackIsStale(t *testing.T) {
 	require.NoError(t, stream.AddConsumer(next))
 	t.Cleanup(func() { stream.RemoveConsumer(next) })
 	require.Equal(t, []string{core.CodecH265}, senderCodecs(next))
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+}
+
+// The stale-track rule is about media kind, not about video: an audio codec
+// swapped on the camera (PCMU -> AAC) has to be dropped and re-negotiated
+// the same way, while the untouched video track keeps serving its consumers.
+func TestPreloadHealsAfterAudioCodecChange(t *testing.T) {
+	registerTestRTSPHandler()
+	speedUpWatchdog(t)
+
+	cam := newFakeCamera(t)
+
+	stream, err := New("preload_audio_codec", cam.URL())
+	require.NoError(t, err)
+
+	require.NoError(t, AddPreload("preload_audio_codec", "video&audio"))
+	t.Cleanup(func() { _ = DelPreload("preload_audio_codec") })
+
+	p := GetPreload("preload_audio_codec")
+	waitForCodecs(t, p, core.CodecH264, core.CodecPCMU)
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+
+	// a video-only client that must survive the audio reconfiguration
+	videoOnly := newProbeConsumer()
+	require.NoError(t, stream.AddConsumer(videoOnly))
+	t.Cleanup(func() { stream.RemoveConsumer(videoOnly) })
+
+	// camera keeps its video codec but switches audio to AAC
+	dials := cam.dialCount.Load()
+	cam.aac.Store(true)
+	cam.dropConns()
+	require.True(t, waitUntil(30*time.Second, func() bool { return cam.dialCount.Load() > dials }))
+
+	require.True(t, waitUntil(30*time.Second, func() bool {
+		return slices.Contains(codecNames(stream), core.CodecAAC)
+	}), "producer must pick up the new audio codec")
+	require.NotContains(t, codecNames(stream), core.CodecPCMU, "the pcmu track must not linger")
+	require.Contains(t, codecNames(stream), core.CodecH264, "video is untouched by an audio change")
+
+	require.True(t, waitUntil(30*time.Second, func() bool {
+		return slices.Contains(preloadCodecs(p), core.CodecAAC)
+	}), "preload must re-negotiate the new audio codec")
+
+	// the video-only consumer never lost its track
+	require.True(t, videoOnly.IsActive(), "an unrelated video consumer must not be disturbed")
 	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
 }
