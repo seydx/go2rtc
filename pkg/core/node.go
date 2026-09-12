@@ -63,12 +63,23 @@ func (n *Node) AppendChild(child *Node) {
 		moved.AppendChild(child)
 		return
 	}
-	n.childs = append(n.childs, child)
+	childs := make([]*Node, len(n.childs), len(n.childs)+1)
+	copy(childs, n.childs)
+	n.childs = append(childs, child)
 	n.mu.Unlock()
 
 	child.mu.Lock()
 	child.parent = n
 	child.mu.Unlock()
+}
+
+// children returns the child slice for lock-free iteration. childs is
+// copy-on-write — AppendChild and RemoveChild never mutate it in place — so
+// the returned slice stays valid while packets are forwarded onto it.
+func (n *Node) children() []*Node {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.childs
 }
 
 // AttachRelay adds child to n's childs without linking child's parent.
@@ -109,7 +120,10 @@ func (n *Node) RemoveChild(child *Node) {
 	n.mu.Lock()
 	for i, ch := range n.childs {
 		if ch == child {
-			n.childs = append(n.childs[:i], n.childs[i+1:]...)
+			childs := make([]*Node, 0, len(n.childs)-1)
+			childs = append(childs, n.childs[:i]...)
+			childs = append(childs, n.childs[i+1:]...)
+			n.childs = childs
 			break
 		}
 	}
@@ -117,14 +131,18 @@ func (n *Node) RemoveChild(child *Node) {
 }
 
 func (n *Node) Close() {
-	if parent := n.parent; parent != nil {
+	n.mu.Lock()
+	parent := n.parent
+	n.mu.Unlock()
+
+	if parent != nil {
 		parent.RemoveChild(n)
 
-		if len(parent.childs) == 0 {
+		if len(parent.children()) == 0 {
 			parent.Close()
 		}
 	} else {
-		for _, child := range n.childs {
+		for _, child := range n.children() {
 			// Skip closing mixers - they manage their own lifecycle
 			// Mixers are closed by RemoveParent when the last parent is removed
 			if _, isMixer := child.owner.(*RTPMixer); isMixer {

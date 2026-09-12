@@ -65,7 +65,7 @@ func (r *Receiver) forward(packet *Packet) {
 		r.Forward(packet)
 		return
 	}
-	for _, child := range r.childs {
+	for _, child := range r.children() {
 		child.Input(packet)
 	}
 }
@@ -107,7 +107,7 @@ func (r *Receiver) WriteRTP(packet *rtp.Packet) {
 
 // Deprecated: should be removed
 func (r *Receiver) Senders() []*Sender {
-	if len(r.childs) > 0 {
+	if len(r.children()) > 0 {
 		return []*Sender{{}}
 	} else {
 		return nil
@@ -130,9 +130,7 @@ func (r *Receiver) Close() {
 
 	// Before closing, check if this receiver has any mixer nodes as children
 	// If so, call RemoveParent on those mixers
-	r.Node.mu.Lock()
-	children := r.Node.childs
-	r.Node.mu.Unlock()
+	children := r.Node.children()
 
 	for _, child := range children {
 		// Check if this child is a mixer node (has RTPMixer as owner)
@@ -339,7 +337,7 @@ func (r *Receiver) MarshalJSON() ([]byte, error) {
 		Bytes:   r.Bytes,
 		Packets: r.Packets,
 	}
-	for _, child := range r.childs {
+	for _, child := range r.children() {
 		v.Childs = append(v.Childs, child.id)
 	}
 	return json.Marshal(v)

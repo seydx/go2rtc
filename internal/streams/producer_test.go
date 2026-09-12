@@ -28,6 +28,7 @@ type fakeCamera struct {
 	silentRTP  atomic.Bool // PLAY succeeds but no RTP is sent
 	noAudio    atomic.Bool // DESCRIBE omits the audio media
 	reject     atomic.Bool // connections are accepted and closed at once (camera booting)
+	h265       atomic.Bool // DESCRIBE offers H265 video instead of H264 (codec reconfigured)
 
 	dialCount  atomic.Int32
 	setupCount atomic.Int32
@@ -115,14 +116,22 @@ func (c *fakeCamera) serve(conn net.Conn) {
 			writeResponse(conn, cseq, "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER\r\n", "")
 
 		case "DESCRIBE":
+			video := "m=video 0 RTP/AVP 96\r\n" +
+				"a=rtpmap:96 H264/90000\r\n" +
+				"a=fmtp:96 packetization-mode=1;profile-level-id=42E01F\r\n" +
+				"a=control:trackID=0\r\n"
+			if c.h265.Load() {
+				video = "m=video 0 RTP/AVP 98\r\n" +
+					"a=rtpmap:98 H265/90000\r\n" +
+					"a=fmtp:98 profile-id=1;sprop-vps=QAEMAf//AUAAAAMAAAMAAAMAAAMAmawJ;sprop-sps=QgEBAUAAAAMAAAMAAAMAAAMAmaABQCAFof5a7kbBrlUE;sprop-pps=RAHAc8BMkA==\r\n" +
+					"a=control:trackID=0\r\n"
+			}
+
 			sdp := "v=0\r\n" +
 				"o=- 1 1 IN IP4 127.0.0.1\r\n" +
 				"s=Fake\r\n" +
 				"t=0 0\r\n" +
-				"m=video 0 RTP/AVP 96\r\n" +
-				"a=rtpmap:96 H264/90000\r\n" +
-				"a=fmtp:96 packetization-mode=1;profile-level-id=42E01F\r\n" +
-				"a=control:trackID=0\r\n"
+				video
 			if !c.noAudio.Load() {
 				sdp += "m=audio 0 RTP/AVP 0\r\n" +
 					"a=rtpmap:0 PCMU/8000\r\n" +
@@ -168,8 +177,11 @@ func (c *fakeCamera) sendRTP(conn net.Conn, stop chan struct{}) {
 				continue
 			}
 
-			// single-NAL H264 payload, marker set
+			// single-NAL keyframe payload, marker set
 			payload := []byte{0x65, 0x88, 0x84, 0x00, 0x01, 0x02, 0x03}
+			if c.h265.Load() {
+				payload = []byte{0x26, 0x01, 0x88, 0x84, 0x00, 0x01, 0x02, 0x03} // IDR_W_RADL
+			}
 			pkt := make([]byte, 12+len(payload))
 			pkt[0] = 0x80
 			pkt[1] = 0x60 | 0x80

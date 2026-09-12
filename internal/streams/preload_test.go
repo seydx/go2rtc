@@ -1,10 +1,12 @@
 package streams
 
 import (
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/probe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -255,4 +257,110 @@ func TestSilentCameraDoesNotChurnThePreload(t *testing.T) {
 	require.True(t, same, "no re-attach for a kind nobody offers")
 	require.Equal(t, dials, cam.dialCount.Load(), "no new camera sessions")
 	require.True(t, p.Attached())
+}
+
+// codecNames of the producer's current receivers.
+func codecNames(s *Stream) []string {
+	s.mu.Lock()
+	producers := append([]*Producer(nil), s.producers...)
+	s.mu.Unlock()
+
+	var names []string
+	for _, prod := range producers {
+		prod.mu.RLock()
+		for _, recv := range prod.receivers {
+			names = append(names, recv.Codec.Name)
+		}
+		prod.mu.RUnlock()
+	}
+	return names
+}
+
+func senderCodecs(cons *probe.Probe) []string {
+	var names []string
+	for _, sender := range cons.Senders {
+		names = append(names, sender.Codec.Name)
+	}
+	return names
+}
+
+// A camera whose video codec is reconfigured (h264 -> h265) must not leave
+// its consumers parked on the old track: that track can never be served
+// again, so the preload has to notice and re-negotiate the new codec.
+func TestPreloadHealsAfterCodecChange(t *testing.T) {
+	registerTestRTSPHandler()
+	speedUpWatchdog(t)
+
+	cam := newFakeCamera(t)
+
+	stream, err := New("preload_codec_change", cam.URL())
+	require.NoError(t, err)
+
+	require.NoError(t, AddPreload("preload_codec_change", "video&audio"))
+	t.Cleanup(func() { _ = DelPreload("preload_codec_change") })
+
+	p := GetPreload("preload_codec_change")
+	require.True(t, waitUntil(10*time.Second, func() bool { return p.Attached() && receiverActive(stream) }))
+	require.Equal(t, []string{core.CodecH264, core.CodecPCMU}, senderCodecs(p.cons))
+
+	// camera is switched to h265 and drops the session
+	dials := cam.dialCount.Load()
+	cam.h265.Store(true)
+	cam.dropConns()
+	require.True(t, waitUntil(30*time.Second, func() bool { return cam.dialCount.Load() > dials }))
+
+	// the producer must follow the camera...
+	require.True(t, waitUntil(30*time.Second, func() bool {
+		return slices.Contains(codecNames(stream), core.CodecH265)
+	}), "producer must pick up the new codec")
+	require.NotContains(t, codecNames(stream), core.CodecH264, "the h264 track must not linger")
+
+	// ...and the preload must end up serving it, not a dead h264 track
+	require.True(t, waitUntil(30*time.Second, func() bool {
+		p.mu.Lock()
+		cons := p.cons
+		p.mu.Unlock()
+		return slices.Contains(senderCodecs(cons), core.CodecH265)
+	}), "preload must re-negotiate the new codec")
+	require.True(t, p.Attached())
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+}
+
+// Same reconfiguration on a video-only stream: no track can be moved at all,
+// which must not be mistaken for a wedged camera and retried forever.
+func TestReconnectSwapsWhenEveryTrackIsStale(t *testing.T) {
+	registerTestRTSPHandler()
+	speedUpWatchdog(t)
+
+	cam := newFakeCamera(t)
+	cam.noAudio.Store(true)
+
+	stream, err := New("codec_change_video_only", cam.URL())
+	require.NoError(t, err)
+
+	cons := newProbeConsumer()
+	require.NoError(t, stream.AddConsumer(cons))
+	t.Cleanup(func() { stream.RemoveConsumer(cons) })
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+
+	dials := cam.dialCount.Load()
+	cam.h265.Store(true)
+	cam.dropConns()
+	require.True(t, waitUntil(30*time.Second, func() bool { return cam.dialCount.Load() > dials }))
+
+	// the stale h264 track is released instead of parked forever
+	require.True(t, waitUntil(30*time.Second, func() bool { return !cons.IsActive() }), "stale track must be released")
+	require.Empty(t, codecNames(stream))
+
+	// and the camera is not hammered by a reconnect loop that can never match
+	dials = cam.dialCount.Load()
+	time.Sleep(5 * time.Second)
+	require.Equal(t, dials, cam.dialCount.Load(), "no reconnect loop after the swap")
+
+	// a fresh consumer negotiates the codec the camera offers now
+	next := newProbeConsumer()
+	require.NoError(t, stream.AddConsumer(next))
+	t.Cleanup(func() { stream.RemoveConsumer(next) })
+	require.Equal(t, []string{core.CodecH265}, senderCodecs(next))
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
 }

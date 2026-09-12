@@ -646,15 +646,27 @@ func (p *Producer) reconnect(workerID, retry int) {
 	}
 	var moves []trackMove
 
+	// matched: the new conn still offers this receiver's codec (even if the
+	// SETUP for it failed). offered: which media kinds it advertises at all.
+	// Together they tell a track that is temporarily unavailable from one
+	// that the camera has reconfigured away.
+	matched := make(map[*core.Receiver]bool, len(receivers))
+	offered := map[string]bool{}
+
 	for _, media := range conn.GetMedias() {
 		if media.Direction != core.DirectionRecvonly {
 			continue
 		}
+
+		offered[media.Kind] = true
+
 		for i, receiver := range receivers {
 			codec := media.MatchCodec(receiver.Codec)
 			if codec == nil {
 				continue
 			}
+
+			matched[receiver] = true
 
 			track, err := conn.GetTrack(media, codec)
 			if err != nil {
@@ -662,6 +674,21 @@ func (p *Producer) reconnect(workerID, retry int) {
 			}
 
 			moves = append(moves, trackMove{receiver: receiver, index: i, track: track})
+			break
+		}
+	}
+
+	// stale: the camera still sends this kind, just not in this receiver's
+	// codec (h264 -> h265 in the camera settings). Such a track can never be
+	// served again, so the swap has to go ahead and drop it.
+	stale := func(receiver *core.Receiver) bool {
+		return !matched[receiver] && offered[core.GetKind(receiver.Codec.Name)]
+	}
+
+	var hasStale bool
+	for _, receiver := range receivers {
+		if stale(receiver) {
+			hasStale = true
 			break
 		}
 	}
@@ -676,7 +703,10 @@ func (p *Producer) reconnect(workerID, retry int) {
 	// A partial result (only some receivers movable) still swaps: a camera
 	// may legitimately come back with fewer medias (e.g. audio disabled),
 	// and refusing forever would kill the working tracks too.
-	if len(receivers) > 0 && len(moves) == 0 {
+	// A reconfigured camera is the exception: none of its tracks can be moved,
+	// yet retrying would never produce a match — swap and let the consumers
+	// re-negotiate the new codec.
+	if len(receivers) > 0 && len(moves) == 0 && !hasStale {
 		conn.Stop()
 		log.Debug().Msgf("[streams] reconnect got no tracks, retry=%d url=%s", retry, url)
 		p.scheduleReconnect(workerID, retry)
@@ -703,17 +733,44 @@ func (p *Producer) reconnect(workerID, retry int) {
 		replacements[m.receiver] = m.track
 	}
 
+	var dropped []*core.Receiver
+
 	p.mu.Lock()
-	for i, receiver := range p.receivers {
+	kept := make([]*core.Receiver, 0, len(p.receivers))
+	for _, receiver := range p.receivers {
 		track, ok := replacements[receiver]
 		if !ok {
+			if stale(receiver) {
+				// Parking would leave every consumer on a receiver nothing can
+				// ever feed again. Drop it instead: their senders detach, which
+				// is how they learn to negotiate the camera's new codec.
+				dropped = append(dropped, receiver)
+				log.Debug().Msgf("[streams] reconnect drops stale %s track url=%s", receiver.Codec.Name, url)
+				continue
+			}
 			track = core.NewReceiver(receiver.Media, receiver.Codec)
 			log.Debug().Msgf("[streams] reconnect parks %s track url=%s", receiver.Codec.Name, url)
 		}
 		receiver.Retire(track)
-		p.receivers[i] = track
+		kept = append(kept, track)
 	}
+	p.receivers = kept
 	p.mu.Unlock()
+
+	for _, receiver := range dropped {
+		receiver.Close()
+	}
+
+	// Everything the consumers held is gone and nobody asked for the new
+	// codec yet: shut the producer down instead of running a track-less
+	// session. The next consumer — a preload re-attaching, or a client —
+	// dials fresh and negotiates what the camera offers now.
+	if len(kept) == 0 && len(senders) == 0 {
+		conn.Stop()
+		log.Debug().Msgf("[streams] reconnect released producer url=%s", url)
+		p.stop()
+		return
+	}
 
 	// Re-establish the backchannel on the new conn.
 	for _, media := range conn.GetMedias() {
