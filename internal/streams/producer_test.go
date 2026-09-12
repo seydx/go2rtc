@@ -289,6 +289,12 @@ func speedUpWatchdog(t *testing.T) {
 	})
 }
 
+func streamConsumers(s *Stream) []core.Consumer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]core.Consumer(nil), s.consumers...)
+}
+
 func waitUntil(timeout time.Duration, cond func() bool) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -406,8 +412,8 @@ func TestSilentCameraWedgesSetupThenRecovers(t *testing.T) {
 	require.True(t, waitUntil(60*time.Second, func() bool { return receiverActive(stream) }), "stream must recover without a restart")
 
 	// the consumer attached before the outage must receive data again
-	sendBefore := cons.Send
-	require.True(t, waitUntil(10*time.Second, func() bool { return cons.Send > sendBefore }), "existing consumer must receive data after recovery")
+	sendBefore := cons.Bytes()
+	require.True(t, waitUntil(10*time.Second, func() bool { return cons.Bytes() > sendBefore }), "existing consumer must receive data after recovery")
 
 	stream.RemoveConsumer(cons)
 }
@@ -501,7 +507,7 @@ func TestSetSourcesReconnectsConsumersAndPreload(t *testing.T) {
 	require.Same(t, stream, updated, "the stream object must survive a source change")
 	require.False(t, stream.producers[0].backchannelEnabled)
 	require.False(t, cons.IsActive(), "consumers of the old source get disconnected")
-	require.NotContains(t, stream.consumers, core.Consumer(cons))
+	require.NotContains(t, streamConsumers(stream), core.Consumer(cons))
 
 	require.True(t, waitUntil(30*time.Second, func() bool { return cam.dialCount.Load() > dialsBefore }), "the new producer must dial the camera")
 	require.True(t, waitUntil(3*time.Second, func() bool { return GetPreload(name).Attached() }), "preload must re-attach right away")

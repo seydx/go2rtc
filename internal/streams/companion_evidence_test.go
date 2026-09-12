@@ -111,7 +111,7 @@ func audioViewer(name string) *probe.Probe {
 }
 
 func viewerBytes(v *probe.Probe) int {
-	return v.Send
+	return v.Bytes()
 }
 
 // A second viewer joining while the companion runs must get audio too.
@@ -257,7 +257,7 @@ func TestSplitVideoAndAudioAcrossProducers(t *testing.T) {
 
 	bothFlow := func() bool {
 		for _, sender := range viewer.Senders {
-			if sender.Packets == 0 {
+			if _, packets, _ := sender.Stats(); packets == 0 {
 				return false
 			}
 		}
@@ -280,7 +280,8 @@ func TestSplitVideoAndAudioAcrossProducers(t *testing.T) {
 func audioPackets(p *probe.Probe) int {
 	for _, sender := range p.Senders {
 		if sender.Codec != nil && sender.Codec.IsAudio() {
-			return sender.Packets
+			_, packets, _ := sender.Stats()
+			return packets
 		}
 	}
 	return 0

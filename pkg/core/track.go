@@ -45,11 +45,12 @@ func NewReceiver(media *Media, codec *Codec) *Receiver {
 	r.SetOwner(r)
 
 	r.Input = func(packet *Packet) {
-		r.Bytes += len(packet.Payload)
-		r.Packets++
 		r.lastPacket.Store(time.Now().UnixNano())
 
 		r.gopMu.Lock()
+		// counters live under gopMu: the API marshals them while packets flow
+		r.Bytes += len(packet.Payload)
+		r.Packets++
 		if r.gop != nil {
 			r.gop.Input(packet)
 		}
@@ -140,6 +141,14 @@ func (r *Receiver) Close() {
 	}
 
 	r.Node.Close()
+}
+
+// Stats reports the received totals. Use it instead of reading the fields
+// directly: they are written on the producer's goroutine.
+func (r *Receiver) Stats() (bytes, packets int) {
+	r.gopMu.Lock()
+	defer r.gopMu.Unlock()
+	return r.Bytes, r.Packets
 }
 
 // IsActive returns true if the receiver has received packets recently (within maxAge).
@@ -293,6 +302,14 @@ func (s *Sender) discard() {
 	}
 }
 
+// Stats reports the forwarded totals. Use it instead of reading the fields
+// directly: they are written on the producer's goroutine.
+func (s *Sender) Stats() (bytes, packets, drops int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Bytes, s.Packets, s.Drops
+}
+
 func (s *Sender) Wait() {
 	if done := s.done; done != nil {
 		<-done
@@ -325,6 +342,7 @@ func (s *Sender) Close() {
 }
 
 func (r *Receiver) MarshalJSON() ([]byte, error) {
+	bytes, packets := r.Stats()
 	v := struct {
 		ID      uint32   `json:"id"`
 		Codec   *Codec   `json:"codec"`
@@ -334,8 +352,8 @@ func (r *Receiver) MarshalJSON() ([]byte, error) {
 	}{
 		ID:      r.Node.id,
 		Codec:   r.Node.Codec,
-		Bytes:   r.Bytes,
-		Packets: r.Packets,
+		Bytes:   bytes,
+		Packets: packets,
 	}
 	for _, child := range r.children() {
 		v.Childs = append(v.Childs, child.id)
@@ -352,14 +370,16 @@ func (s *Sender) MarshalJSON() ([]byte, error) {
 		Packets int    `json:"packets,omitempty"`
 		Drops   int    `json:"drops,omitempty"`
 	}{
-		ID:      s.Node.id,
-		Codec:   s.Node.Codec,
-		Bytes:   s.Bytes,
-		Packets: s.Packets,
-		Drops:   s.Drops,
+		ID:    s.Node.id,
+		Codec: s.Node.Codec,
 	}
-	if s.parent != nil {
-		v.Parent = s.parent.id
+	v.Bytes, v.Packets, v.Drops = s.Stats()
+
+	s.mu.Lock()
+	parent := s.parent
+	s.mu.Unlock()
+	if parent != nil {
+		v.Parent = parent.id
 	}
 	return json.Marshal(v)
 }

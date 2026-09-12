@@ -5,24 +5,60 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 )
 
 type Handler func(source string) (core.Producer, error)
 
+// handlers and redirects are written by module Init() at startup, but tests
+// register while streams already run — and a concurrent map read/write is a
+// hard crash, not just a race.
 var handlers = map[string]Handler{}
+var redirectsMu sync.RWMutex
 
 func HandleFunc(scheme string, handler Handler) {
+	redirectsMu.Lock()
 	handlers[scheme] = handler
+	redirectsMu.Unlock()
+}
+
+func getHandler(scheme string) (Handler, bool) {
+	redirectsMu.RLock()
+	defer redirectsMu.RUnlock()
+	handler, ok := handlers[scheme]
+	return handler, ok
+}
+
+func getRedirect(scheme string) (Redirect, bool) {
+	redirectsMu.RLock()
+	defer redirectsMu.RUnlock()
+	redirect, ok := redirects[scheme]
+	return redirect, ok
+}
+
+func schemeNames() ([]string, []string) {
+	redirectsMu.RLock()
+	defer redirectsMu.RUnlock()
+	h := make([]string, 0, len(handlers))
+	for scheme := range handlers {
+		h = append(h, scheme)
+	}
+	r := make([]string, 0, len(redirects))
+	for scheme := range redirects {
+		r = append(r, scheme)
+	}
+	return h, r
 }
 
 func SupportedSchemes() []string {
-	uniqueKeys := make(map[string]struct{}, len(handlers)+len(redirects))
-	for scheme := range handlers {
+	handlerSchemes, redirectSchemes := schemeNames()
+	uniqueKeys := make(map[string]struct{}, len(handlerSchemes)+len(redirectSchemes))
+	for _, scheme := range handlerSchemes {
 		uniqueKeys[scheme] = struct{}{}
 	}
-	for scheme := range redirects {
+	for _, scheme := range redirectSchemes {
 		uniqueKeys[scheme] = struct{}{}
 	}
 	resultKeys := make([]string, 0, len(uniqueKeys))
@@ -36,11 +72,11 @@ func HasProducer(url string) bool {
 	if i := strings.IndexByte(url, ':'); i > 0 {
 		scheme := url[:i]
 
-		if _, ok := handlers[scheme]; ok {
+		if _, ok := getHandler(scheme); ok {
 			return true
 		}
 
-		if _, ok := redirects[scheme]; ok {
+		if _, ok := getRedirect(scheme); ok {
 			return true
 		}
 	}
@@ -52,7 +88,7 @@ func GetProducer(url string) (core.Producer, error) {
 	if i := strings.IndexByte(url, ':'); i > 0 {
 		scheme := url[:i]
 
-		if redirect, ok := redirects[scheme]; ok {
+		if redirect, ok := getRedirect(scheme); ok {
 			location, err := redirect(url)
 			if err != nil {
 				return nil, err
@@ -62,7 +98,7 @@ func GetProducer(url string) (core.Producer, error) {
 			}
 		}
 
-		if handler, ok := handlers[scheme]; ok {
+		if handler, ok := getHandler(scheme); ok {
 			return handler(url)
 		}
 	}
@@ -76,14 +112,16 @@ type Redirect func(url string) (string, error)
 var redirects = map[string]Redirect{}
 
 func RedirectFunc(scheme string, redirect Redirect) {
+	redirectsMu.Lock()
 	redirects[scheme] = redirect
+	redirectsMu.Unlock()
 }
 
 func Location(url string) (string, error) {
 	if i := strings.IndexByte(url, ':'); i > 0 {
 		scheme := url[:i]
 
-		if redirect, ok := redirects[scheme]; ok {
+		if redirect, ok := getRedirect(scheme); ok {
 			return redirect(url)
 		}
 	}

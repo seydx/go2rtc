@@ -148,7 +148,7 @@ func TestPreloadOwnsTheDial(t *testing.T) {
 	err = stream.AddConsumer(newProbeConsumer())
 	require.ErrorContains(t, err, "preload")
 	require.Equal(t, int32(1), cam.dialCount.Load()-dials)
-	require.Empty(t, stream.consumers)
+	require.Empty(t, streamConsumers(stream))
 }
 
 func TestEnsurePreloadDoesNotWaitForRunningAttach(t *testing.T) {
@@ -186,7 +186,8 @@ func preloadAudioPackets(p *Preload) int {
 	}
 	for _, sender := range cons.Senders {
 		if sender.Codec != nil && core.GetKind(sender.Codec.Name) == core.KindAudio {
-			return sender.Packets
+			_, packets, _ := sender.Stats()
+			return packets
 		}
 	}
 	return -1

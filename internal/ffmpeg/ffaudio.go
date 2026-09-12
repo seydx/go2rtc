@@ -257,11 +257,12 @@ func (p *ffaudioProducer) MarshalJSON() ([]byte, error) {
 	var receivers []receiverInfo
 	for _, inst := range p.instances {
 		if inst.receiver != nil {
+			bytes, packets := inst.receiver.Stats()
 			receivers = append(receivers, receiverInfo{
 				ID:      inst.receiver.ID,
 				Codec:   inst.receiver.Codec,
-				Bytes:   inst.receiver.Bytes,
-				Packets: inst.receiver.Packets,
+				Bytes:   bytes,
+				Packets: packets,
 			})
 		}
 	}

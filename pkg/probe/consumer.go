@@ -1,8 +1,10 @@
 package probe
 
 import (
+	"encoding/json"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
@@ -11,6 +13,21 @@ import (
 
 type Probe struct {
 	core.Connection
+
+	mu sync.Mutex // guards Send: every track's handler writes it
+}
+
+// Bytes reports how much the probe has consumed so far.
+func (p *Probe) Bytes() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Send
+}
+
+func (p *Probe) MarshalJSON() ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return json.Marshal(&p.Connection)
 }
 
 func Create(name string, query url.Values) *Probe {
@@ -39,7 +56,9 @@ func (p *Probe) AddTrack(media *core.Media, codec *core.Codec, track *core.Recei
 	sender := core.NewSender(media, track.Codec)
 
 	handler := func(pkt *core.Packet) {
+		p.mu.Lock()
 		p.Send += len(pkt.Payload)
+		p.mu.Unlock()
 	}
 
 	// Apply format handlers to update FmtpLine from first keyframe

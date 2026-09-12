@@ -252,3 +252,41 @@ func TestSenderCloseDuringReplay(t *testing.T) {
 	sender.Wait()
 	close(recv)
 }
+
+// The API marshals receivers and senders while packets flow, so the counters
+// must not be read off the producer's goroutine unguarded. Meaningful under
+// -race; a plain run just exercises the paths.
+func TestStatsAreConcurrencySafe(t *testing.T) {
+	receiver := newVideoReceiver()
+	sender := NewSender(nil, receiver.Codec)
+	sender.Output = func(*Packet) {}
+	sender.WithParent(receiver)
+	sender.Start()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 2000 {
+			receiver.Input(avcFrame("K", uint32(i)*3600))
+		}
+	}()
+
+	for range 2000 {
+		_, _ = receiver.Stats()
+		_, _, _ = sender.Stats()
+		if _, err := receiver.MarshalJSON(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sender.MarshalJSON(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	<-done
+	sender.Close()
+	sender.Wait()
+
+	bytes, packets := receiver.Stats()
+	require.Positive(t, bytes)
+	require.Equal(t, 2000, packets)
+}
