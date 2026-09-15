@@ -317,6 +317,12 @@ func (c *Conn) SetupMedia(media *core.Media) (byte, error) {
 			if err = c.Reconnect(); err != nil {
 				return 0, err
 			}
+			// The new session has no backchannel, so the talk media itself
+			// can't be set up in it. Reconnect already restored the other
+			// tracks, the session stays playable without talk.
+			if media.Direction == core.DirectionSendonly {
+				return 0, ErrBackchannelBusy
+			}
 			return c.SetupMedia(media)
 		}
 

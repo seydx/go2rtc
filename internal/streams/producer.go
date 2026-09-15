@@ -347,20 +347,31 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 		}
 
 		// No mixer exists yet, create one with the producer's codec as output (e.g., AAC for camera)
-		p.mixer = core.NewRTPMixer(ffmpegBin, media, codec)
+		mixer := core.NewRTPMixer(ffmpegBin, media, codec)
+		p.mixer = mixer
 		// Add parent with its actual codec (e.g., Opus from browser) - mixer will transcode to output
-		p.mixer.AddParentWithCodec(&track.Node, track.Codec)
+		mixer.AddParentWithCodec(&track.Node, track.Codec)
 
 		// Connect mixer to underlying protocol
 		// Get consumer reference and release lock BEFORE calling AddTrack
 		consumer := p.conn.(core.Consumer)
 		mixerReceiver := core.NewReceiver(media, codec)
-		mixerReceiver.ParentNode = &p.mixer.Node
+		mixerReceiver.ParentNode = &mixer.Node
 		p.mu.Unlock()
 
 		// Call underlying protocol's AddTrack WITHOUT holding the lock
 		// This prevents blocking API serialization during network operations
 		if err := consumer.AddTrack(media, codec, mixerReceiver); err != nil {
+			// Nothing reads from this mixer (the camera's talk slot is taken).
+			// Keeping it would hand every later talk request a mixer that
+			// reports success and discards the audio, and never retry the
+			// camera. Removing its only parent closes it.
+			p.mu.Lock()
+			if p.mixer == mixer {
+				p.mixer = nil
+			}
+			p.mu.Unlock()
+			mixer.RemoveParent(&track.Node)
 			return err
 		}
 
@@ -467,10 +478,17 @@ func (p *Producer) start() {
 	p.state = stateStart
 	p.workerID++
 
-	go p.worker(p.conn, p.workerID)
+	go p.worker(p.conn, p.workerID, 0)
 }
 
-func (p *Producer) worker(conn core.Producer, workerID int) {
+// workerMinUptime: a session that ends sooner without a single packet never
+// worked. Reconnecting it right away loops as fast as the camera answers —
+// thousands of sessions per second against a busy talk slot — so it takes the
+// reconnect backoff instead.
+var workerMinUptime = 5 * time.Second
+
+func (p *Producer) worker(conn core.Producer, workerID, retry int) {
+	started := time.Now()
 	watchdogStop := make(chan struct{})
 	go p.watchdog(conn, workerID, watchdogStop)
 
@@ -507,7 +525,33 @@ func (p *Producer) worker(conn core.Producer, workerID int) {
 		_ = interrupter.Interrupt()
 	}
 
+	if p.diedAtOnce(started) {
+		log.Debug().Msgf("[streams] session ended right after start, retry=%d url=%s", retry, p.url)
+		p.scheduleReconnect(workerID, retry)
+		return
+	}
+
 	p.reconnect(workerID, 0)
+}
+
+// diedAtOnce: the session ended within workerMinUptime and no receiver got a
+// packet since it started.
+func (p *Producer) diedAtOnce(started time.Time) bool {
+	uptime := time.Since(started)
+	if uptime >= workerMinUptime {
+		return false
+	}
+
+	p.mu.RLock()
+	receivers := p.receivers
+	p.mu.RUnlock()
+
+	for _, receiver := range receivers {
+		if receiver != nil && receiver.IsActive(uptime) {
+			return false
+		}
+	}
+	return true
 }
 
 // Watchdog defaults — tuned for typical camera reconnect / handshake timing.
@@ -833,7 +877,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	p.conn = conn
 	p.mu.Unlock()
 
-	go p.worker(conn, workerID)
+	go p.worker(conn, workerID, retry)
 }
 
 // reconnectDelay is the backoff ladder for repeated connection attempts.

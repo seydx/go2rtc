@@ -31,6 +31,18 @@ type fakeCamera struct {
 	h265       atomic.Bool // DESCRIBE offers H265 video instead of H264 (codec reconfigured)
 	aac        atomic.Bool // DESCRIBE offers AAC audio instead of PCMU (codec reconfigured)
 
+	// ONVIF backchannel like Dahua/Amcrest: offered only when DESCRIBE carries
+	// the Require header, and the camera has a single talk slot. A second
+	// session asking for it while another one holds it fails its SETUP.
+	backchannel  atomic.Bool
+	bcOwner      net.Conn     // session holding the talk slot
+	bcHoldDrop   atomic.Int64 // a session dropped without TEARDOWN keeps the slot this long (ns), like a session timeout
+	bcOmitBusy   atomic.Bool  // while the slot is taken, DESCRIBE leaves the talk media out instead of failing its SETUP
+	bcSetups     atomic.Int32
+	bcSetupFails atomic.Int32
+	describes    atomic.Int32
+	plays        atomic.Int32
+
 	dialCount  atomic.Int32
 	setupCount atomic.Int32
 
@@ -103,20 +115,24 @@ func (c *fakeCamera) serve(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	var rtpStop chan struct{}
 
+	defer c.dropTalkSlot(conn)
+
 	for {
-		method, cseq, transport, err := readRequest(reader)
+		req, err := readRequest(reader)
 		if err != nil {
 			if rtpStop != nil {
 				close(rtpStop)
 			}
 			return
 		}
+		cseq, transport := req.cseq, req.transport
 
-		switch method {
+		switch req.method {
 		case "OPTIONS":
 			writeResponse(conn, cseq, "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER\r\n", "")
 
 		case "DESCRIBE":
+			c.describes.Add(1)
 			video := "m=video 0 RTP/AVP 96\r\n" +
 				"a=rtpmap:96 H264/90000\r\n" +
 				"a=fmtp:96 packetization-mode=1;profile-level-id=42E01F\r\n" +
@@ -145,6 +161,12 @@ func (c *fakeCamera) serve(conn net.Conn) {
 						"a=control:trackID=1\r\n"
 				}
 			}
+			if c.backchannel.Load() && strings.Contains(req.require, "backchannel") && !(c.bcOmitBusy.Load() && c.talkSlotHeld()) {
+				sdp += "m=audio 0 RTP/AVP 8\r\n" +
+					"a=rtpmap:8 PCMA/8000\r\n" +
+					"a=sendonly\r\n" +
+					"a=control:trackID=5\r\n"
+			}
 			writeResponse(conn, cseq, "Content-Type: application/sdp\r\n", sdp)
 
 		case "SETUP":
@@ -153,14 +175,30 @@ func (c *fakeCamera) serve(conn net.Conn) {
 				// swallow the request, the client hangs until its own deadline
 				continue
 			}
+			if strings.Contains(req.uri, "trackID=5") {
+				c.bcSetups.Add(1)
+				c.mu.Lock()
+				busy := c.bcOwner != nil && c.bcOwner != conn
+				if !busy {
+					c.bcOwner = conn
+				}
+				c.mu.Unlock()
+				if busy {
+					c.bcSetupFails.Add(1)
+					_, _ = fmt.Fprintf(conn, "RTSP/1.0 453 Not Enough Bandwidth\r\nCSeq: %s\r\nContent-Length: 0\r\n\r\n", cseq)
+					continue
+				}
+			}
 			writeResponse(conn, cseq, "Transport: "+transport+"\r\nSession: 12345678;timeout=60\r\n", "")
 
 		case "PLAY":
+			c.plays.Add(1)
 			writeResponse(conn, cseq, "Session: 12345678\r\nRange: npt=0.000-\r\n", "")
 			rtpStop = make(chan struct{})
 			go c.sendRTP(conn, rtpStop)
 
 		case "TEARDOWN":
+			c.releaseTalkSlot(conn)
 			writeResponse(conn, cseq, "Session: 12345678\r\n", "")
 
 		default: // GET_PARAMETER and other keepalives
@@ -238,31 +276,64 @@ func (c *fakeCamera) sendRTP(conn net.Conn, stop chan struct{}) {
 	}
 }
 
-func readRequest(reader *bufio.Reader) (method, cseq, transport string, err error) {
+type rtspRequest struct {
+	method, uri, cseq, transport, require string
+}
+
+func readRequest(reader *bufio.Reader) (req rtspRequest, err error) {
 	line, err := reader.ReadString('\n')
 	if err != nil {
-		return "", "", "", err
+		return req, err
 	}
-	if i := strings.IndexByte(line, ' '); i > 0 {
-		method = line[:i]
+	if parts := strings.Fields(line); len(parts) >= 2 {
+		req.method, req.uri = parts[0], parts[1]
 	}
 
 	for {
 		line, err = reader.ReadString('\n')
 		if err != nil {
-			return "", "", "", err
+			return req, err
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
-			return method, cseq, transport, nil
+			return req, nil
 		}
 		if v, ok := strings.CutPrefix(line, "CSeq: "); ok {
-			cseq = v
+			req.cseq = v
 		}
 		if v, ok := strings.CutPrefix(line, "Transport: "); ok {
-			transport = v
+			req.transport = v
+		}
+		if v, ok := strings.CutPrefix(line, "Require: "); ok {
+			req.require = v
 		}
 	}
+}
+
+// releaseTalkSlot frees the backchannel slot if conn holds it.
+func (c *fakeCamera) releaseTalkSlot(conn net.Conn) {
+	c.mu.Lock()
+	if c.bcOwner == conn {
+		c.bcOwner = nil
+	}
+	c.mu.Unlock()
+}
+
+// dropTalkSlot is a session ending without TEARDOWN: the camera only notices
+// after its session timeout, so the slot stays taken until then.
+func (c *fakeCamera) dropTalkSlot(conn net.Conn) {
+	if hold := time.Duration(c.bcHoldDrop.Load()); hold > 0 {
+		time.AfterFunc(hold, func() { c.releaseTalkSlot(conn) })
+		return
+	}
+	c.releaseTalkSlot(conn)
+}
+
+// talkSlotHeld reports whether some session currently holds the backchannel.
+func (c *fakeCamera) talkSlotHeld() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bcOwner != nil
 }
 
 func writeResponse(w io.Writer, cseq, headers, body string) {
@@ -281,6 +352,36 @@ func registerTestRTSPHandler() {
 		}
 		return conn, nil
 	})
+}
+
+// registerBackchannelRTSPHandler registers "rtspbc", which dials exactly like
+// internal/rtsp.rtspHandler (not importable here): backchannel requested by
+// default, and a DESCRIBE failure retried without it.
+func registerBackchannelRTSPHandler() {
+	HandleFunc("rtspbc", func(rawURL string) (core.Producer, error) {
+		rawURL = "rtsp" + strings.TrimPrefix(rawURL, "rtspbc")
+		rawURL, _, _ = strings.Cut(rawURL, "#")
+
+		conn := rtsp.NewClient(rawURL)
+		conn.Backchannel = true
+		if err := conn.Dial(); err != nil {
+			return nil, err
+		}
+		if err := conn.Describe(); err != nil {
+			conn.Backchannel = false
+			if err = conn.Dial(); err != nil {
+				return nil, err
+			}
+			if err = conn.Describe(); err != nil {
+				return nil, err
+			}
+		}
+		return conn, nil
+	})
+}
+
+func (c *fakeCamera) BackchannelURL() string {
+	return "rtspbc://" + c.ln.Addr().String() + "/stream"
 }
 
 func speedUpWatchdog(t *testing.T) {

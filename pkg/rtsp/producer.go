@@ -168,15 +168,30 @@ func (c *Conn) Reconnect() error {
 	}
 
 	// restore previous medias
+	restored := false
 	for _, receiver := range c.Receivers {
 		if _, err := c.SetupMedia(receiver.Media); err != nil {
 			return err
 		}
+		restored = true
 	}
-	for _, sender := range c.Senders {
-		if _, err := c.SetupMedia(sender.Media); err != nil {
-			return err
+	// talk tracks only exist in a session that asked for the backchannel;
+	// setting them up in one that didn't fails and would take the tracks
+	// restored above down with it
+	if c.Backchannel {
+		for _, sender := range c.Senders {
+			if _, err := c.SetupMedia(sender.Media); err != nil {
+				return err
+			}
+			restored = true
 		}
+	}
+
+	// Dial left the session in CONN. It is set up again, so Start() must be
+	// able to PLAY it — otherwise it fails at once and the producer
+	// reconnects in a tight loop.
+	if restored {
+		c.state = StateSetup
 	}
 
 	return nil

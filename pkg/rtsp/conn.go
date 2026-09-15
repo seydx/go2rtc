@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -63,6 +64,10 @@ type Conn struct {
 	seqOffset       map[byte]uint16
 	trackMu         sync.Mutex
 }
+
+// ErrBackchannelBusy: the camera refused the talk track, typically because
+// another session holds its single backchannel (Dahua/Amcrest).
+var ErrBackchannelBusy = errors.New("rtsp: backchannel is busy")
 
 const (
 	ProtoRTSP      = "RTSP/1.0"
