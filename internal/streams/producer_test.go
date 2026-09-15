@@ -162,7 +162,10 @@ func (c *fakeCamera) serve(conn net.Conn) {
 				}
 			}
 			if c.backchannel.Load() && strings.Contains(req.require, "backchannel") && !(c.bcOmitBusy.Load() && c.talkSlotHeld()) {
-				sdp += "m=audio 0 RTP/AVP 8\r\n" +
+				// several talk codecs, AAC first — like an Amcrest
+				sdp += "m=audio 0 RTP/AVP 97 0 8\r\n" +
+					"a=rtpmap:97 MPEG4-GENERIC/48000\r\n" +
+					"a=rtpmap:0 PCMU/8000\r\n" +
 					"a=rtpmap:8 PCMA/8000\r\n" +
 					"a=sendonly\r\n" +
 					"a=control:trackID=5\r\n"

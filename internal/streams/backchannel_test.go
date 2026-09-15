@@ -223,3 +223,58 @@ func TestWorkerBacksOffWhenSessionDiesAtOnce(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	require.Less(t, dials.Load(), int32(10), "a session that dies at once must be retried with backoff")
 }
+
+func mixerCodec(s *Stream) *core.Codec {
+	for _, p := range streamProducers(s) {
+		p.mu.RLock()
+		mixer := p.mixer
+		p.mu.RUnlock()
+		if mixer != nil {
+			return mixer.Codec
+		}
+	}
+	return nil
+}
+
+// A camera offers several talk codecs. The one it encodes its own audio in
+// is the natural pick: a talker in that codec passes through the mixer
+// without ffmpeg. Wildcard microphones (the preload asks for ANY) used to
+// take the first offered codec instead — AAC 48 kHz on an Amcrest, which
+// forced a transcode for every talker.
+func TestTalkCodecFollowsCameraAudio(t *testing.T) {
+	registerBackchannelRTSPHandler()
+
+	cases := []struct {
+		name    string
+		aac     bool // camera audio is AAC/16000, which the talk media doesn't offer
+		noAudio bool
+		want    string
+		rate    uint32
+	}{
+		{name: "camera audio offered for talk", want: core.CodecPCMU, rate: 8000},
+		{name: "camera audio not offered for talk", aac: true, want: core.CodecAAC, rate: 48000},
+		{name: "camera without audio", noAudio: true, want: core.CodecAAC, rate: 48000},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cam := newFakeCamera(t)
+			cam.backchannel.Store(true)
+			cam.aac.Store(tc.aac)
+			cam.noAudio.Store(tc.noAudio)
+
+			stream, err := New(fmt.Sprintf("talk_codec_%d", i), cam.BackchannelURL())
+			require.NoError(t, err)
+
+			cons := micProbe()
+			require.NoError(t, stream.AddConsumer(cons))
+			t.Cleanup(func() { stream.RemoveConsumer(cons) })
+
+			require.True(t, talkWired(stream))
+			codec := mixerCodec(stream)
+			require.NotNil(t, codec)
+			require.Equal(t, tc.want, codec.Name)
+			require.Equal(t, tc.rate, codec.ClockRate)
+		})
+	}
+}

@@ -203,7 +203,86 @@ func (p *Producer) GetMedias() []*core.Media {
 		return nil
 	}
 
-	return p.visibleMedias(conn.GetMedias())
+	return p.visibleMedias(p.preferTalkCodec(conn.GetMedias()))
+}
+
+// preferTalkCodec moves the codec the camera encodes its own audio in to the
+// front of the talk (sendonly audio) media, when the camera offers it there.
+// Every talk negotiation takes the first matching codec — a wildcard
+// microphone like the preload's ANY simply the first one offered — and the
+// first talker fixes the mixer's output for all later ones. Following the
+// camera's audio keeps talk in a codec it verifiably handles and lets a
+// talker in that codec pass through without ffmpeg. Otherwise the camera's
+// order stays.
+func (p *Producer) preferTalkCodec(medias []*core.Media) []*core.Media {
+	audio := p.cameraAudioCodec(medias)
+	if audio == nil {
+		return medias
+	}
+
+	var out []*core.Media
+	for i, media := range medias {
+		if media.Kind != core.KindAudio || media.Direction != core.DirectionSendonly {
+			continue
+		}
+
+		idx := -1
+		for j, codec := range media.Codecs {
+			if sameCodec(codec, audio) {
+				idx = j
+				break
+			}
+		}
+		if idx <= 0 {
+			continue // not offered, or already first
+		}
+
+		// a reordered copy: the conn's media is shared. RTSP still finds it
+		// for SETUP, medias are matched by their control ID.
+		codecs := make([]*core.Codec, 0, len(media.Codecs))
+		codecs = append(codecs, media.Codecs[idx])
+		codecs = append(codecs, media.Codecs[:idx]...)
+		codecs = append(codecs, media.Codecs[idx+1:]...)
+		clone := *media
+		clone.Codecs = codecs
+
+		if out == nil {
+			out = append([]*core.Media(nil), medias...)
+		}
+		out[i] = &clone
+	}
+
+	if out == nil {
+		return medias
+	}
+	return out
+}
+
+// cameraAudioCodec is the codec of the audio the camera sends: the negotiated
+// audio track if there is one, else the first codec it offers for audio.
+func (p *Producer) cameraAudioCodec(medias []*core.Media) *core.Codec {
+	p.mu.RLock()
+	receivers := p.receivers
+	p.mu.RUnlock()
+
+	for _, receiver := range receivers {
+		if receiver != nil && receiver.Codec != nil && receiver.Codec.IsAudio() {
+			return receiver.Codec
+		}
+	}
+
+	for _, media := range medias {
+		if media.Kind == core.KindAudio && media.Direction == core.DirectionRecvonly && len(media.Codecs) > 0 {
+			return media.Codecs[0]
+		}
+	}
+	return nil
+}
+
+// sameCodec: same format and clock rate; channels count only when both say.
+func sameCodec(a, b *core.Codec) bool {
+	return a.Name == b.Name && a.ClockRate == b.ClockRate &&
+		(a.Channels == b.Channels || a.Channels == 0 || b.Channels == 0)
 }
 
 // #noVideo, #noAudio and #noBackchannel hide the media from consumers and
@@ -817,7 +896,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	}
 
 	// Re-establish the backchannel on the new conn.
-	for _, media := range conn.GetMedias() {
+	for _, media := range p.preferTalkCodec(conn.GetMedias()) {
 		if !backchannelEnabled || media.Direction != core.DirectionSendonly {
 			continue
 		}
