@@ -7,36 +7,46 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/mpegts"
 )
 
+// probeTimeout bounds how long Dial waits for the first video packet
+var probeTimeout = core.ProbeTimeout
+
 func (c *Client) GetMedias() []*core.Media {
 	if c.medias == nil {
-		// don't know if all Tapo has this capabilities...
-		c.medias = []*core.Media{
-			{
-				Kind:      core.KindVideo,
-				Direction: core.DirectionRecvonly,
-				Codecs: []*core.Codec{
-					{Name: core.CodecH264, ClockRate: 90000, PayloadType: core.PayloadTypeRAW},
-					{Name: core.CodecH265, ClockRate: 90000, PayloadType: core.PayloadTypeRAW},
-				},
-			},
-			{
-				Kind:      core.KindAudio,
-				Direction: core.DirectionRecvonly,
-				Codecs: []*core.Codec{
-					{Name: core.CodecPCMA, ClockRate: 8000, PayloadType: 8},
-				},
-			},
-			{
-				Kind:      core.KindAudio,
-				Direction: core.DirectionSendonly,
-				Codecs: []*core.Codec{
-					{Name: core.CodecPCMA, ClockRate: 8000, PayloadType: 8},
-				},
-			},
-		}
+		c.medias = newMedias(videoCodecs()...)
 	}
-
 	return c.medias
+}
+
+func videoCodecs() []*core.Codec {
+	return []*core.Codec{
+		{Name: core.CodecH264, ClockRate: 90000, PayloadType: core.PayloadTypeRAW},
+		{Name: core.CodecH265, ClockRate: 90000, PayloadType: core.PayloadTypeRAW},
+	}
+}
+
+func newMedias(video ...*core.Codec) []*core.Media {
+	// don't know if all Tapo has this capabilities...
+	return []*core.Media{
+		{
+			Kind:      core.KindVideo,
+			Direction: core.DirectionRecvonly,
+			Codecs:    video,
+		},
+		{
+			Kind:      core.KindAudio,
+			Direction: core.DirectionRecvonly,
+			Codecs: []*core.Codec{
+				{Name: core.CodecPCMA, ClockRate: 8000, PayloadType: 8},
+			},
+		},
+		{
+			Kind:      core.KindAudio,
+			Direction: core.DirectionSendonly,
+			Codecs: []*core.Codec{
+				{Name: core.CodecPCMA, ClockRate: 8000, PayloadType: 8},
+			},
+		},
+	}
 }
 
 func (c *Client) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {

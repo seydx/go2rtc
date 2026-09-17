@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/mpegts"
@@ -36,6 +37,9 @@ type Client struct {
 
 	conn1 net.Conn
 	conn2 net.Conn
+
+	// rd reads conn1 and replays what the codec probe already consumed
+	rd *core.ReadBuffer
 
 	decrypt func(b []byte) []byte
 
@@ -72,6 +76,10 @@ func Dial(rawURL string) (*Client, error) {
 
 	c := &Client{url: u}
 	if c.conn1, err = c.newConn(); err != nil {
+		return nil, err
+	}
+	if err = c.probe(); err != nil {
+		_ = c.Close()
 		return nil, err
 	}
 	return c, nil
@@ -193,9 +201,86 @@ func (c *Client) SetupStream() (err error) {
 	return
 }
 
+// probe starts the stream and reads it up to the first video packet. The
+// camera can be set to H264 or H265 and tells it nowhere else, while a track
+// negotiated with the other codec never gets a packet. Everything read here is
+// replayed to Handle. Without video in time both codecs stay possible.
+func (c *Client) probe() error {
+	if err := c.SetupStream(); err != nil {
+		return err
+	}
+
+	c.rd = core.NewReadBuffer(c.conn1)
+	c.rd.BufferSize = core.ProbeSize
+	defer c.rd.Reset()
+
+	_ = c.conn1.SetReadDeadline(time.Now().Add(probeTimeout))
+	defer func() { _ = c.conn1.SetReadDeadline(time.Time{}) }()
+
+	video, err := c.probeVideo()
+	switch {
+	case video != nil:
+		c.medias = newMedias(video)
+	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed):
+		return err
+	default:
+		c.medias = newMedias(videoCodecs()...)
+	}
+	return nil
+}
+
+func (c *Client) probeVideo() (*core.Codec, error) {
+	rd := multipart.NewReader(c.rd, "--device-stream-boundary--")
+	demux := mpegts.NewDemuxer()
+
+	for {
+		p, err := rd.NextRawPart()
+		if err != nil {
+			return nil, err
+		}
+
+		if ct := p.Header.Get("Content-Type"); ct != "video/mp2t" {
+			continue
+		}
+
+		size, err := strconv.Atoi(p.Header.Get("Content-Length"))
+		if err != nil {
+			return nil, err
+		}
+
+		body := make([]byte, size)
+		if _, err = io.ReadFull(p, body); err != nil {
+			return nil, err
+		}
+
+		bytesRd := bytes.NewReader(c.decrypt(body))
+		for {
+			pkt, err2 := demux.ReadPacket(bytesRd)
+			if pkt == nil || err2 == io.EOF {
+				break
+			}
+			if err2 != nil {
+				return nil, err2
+			}
+
+			switch pkt.PayloadType {
+			case mpegts.StreamTypeH264:
+				return &core.Codec{Name: core.CodecH264, ClockRate: 90000, PayloadType: core.PayloadTypeRAW}, nil
+			case mpegts.StreamTypeH265:
+				return &core.Codec{Name: core.CodecH265, ClockRate: 90000, PayloadType: core.PayloadTypeRAW}, nil
+			}
+		}
+	}
+}
+
 // Handle - first run will be in probe state
 func (c *Client) Handle() error {
-	rd := multipart.NewReader(c.conn1, "--device-stream-boundary--")
+	var stream io.Reader = c.conn1
+	if c.rd != nil {
+		stream = c.rd
+	}
+
+	rd := multipart.NewReader(stream, "--device-stream-boundary--")
 	demux := mpegts.NewDemuxer()
 
 	var transcode func([]byte) []byte
