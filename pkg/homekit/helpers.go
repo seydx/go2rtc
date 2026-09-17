@@ -81,7 +81,7 @@ func trackToVideo(track *core.Receiver, video0 *camera.VideoCodecConfiguration, 
 	var attrs camera.VideoCodecAttributes
 
 	if track != nil {
-		profile := h264.GetProfileLevelID(track.Codec.FmtpLine)
+		profile := h264.GetProfileLevelID(track.Codec.Fmtp())
 
 		for i, s := range videoProfiles {
 			if s == profile[:4] {

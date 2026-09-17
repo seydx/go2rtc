@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/pion/sdp/v3"
@@ -14,8 +15,37 @@ type Codec struct {
 	Name        string // H264, PCMU, PCMA, opus...
 	ClockRate   uint32 // 90000, 8000, 16000...
 	Channels    uint8  // 0, 1, 2
-	FmtpLine    string
+	FmtpLine    string // read with Fmtp and written with SetFmtp once the codec is in use
 	PayloadType uint8
+}
+
+// fmtpMu guards FmtpLine of codecs in use. A track's codec is shared by all
+// its consumers, and their depacketizers fill in the parameter sets from the
+// first keyframe while the API marshals the codec and attaching consumers
+// read or clone it. One lock for all codecs: Codec is copied by value, and
+// updates are rare (once per consumer start).
+var fmtpMu sync.RWMutex
+
+// Fmtp returns FmtpLine of a codec that may be in use.
+func (c *Codec) Fmtp() string {
+	fmtpMu.RLock()
+	defer fmtpMu.RUnlock()
+	return c.FmtpLine
+}
+
+// SetFmtp replaces FmtpLine of a codec that may be in use.
+func (c *Codec) SetFmtp(fmtp string) {
+	fmtpMu.Lock()
+	c.FmtpLine = fmtp
+	fmtpMu.Unlock()
+}
+
+// UpdateFmtp rewrites FmtpLine of a codec that may be in use in one step, so
+// concurrent updates don't lose each other.
+func (c *Codec) UpdateFmtp(update func(fmtp string) string) {
+	fmtpMu.Lock()
+	c.FmtpLine = update(c.FmtpLine)
+	fmtpMu.Unlock()
 }
 
 // MarshalJSON - return FFprobe compatible output
@@ -26,7 +56,7 @@ func (c *Codec) MarshalJSON() ([]byte, error) {
 		info["codec_type"] = c.Kind()
 	}
 	if c.Name == CodecH264 {
-		profile, level := DecodeH264(c.FmtpLine)
+		profile, level := DecodeH264(c.Fmtp())
 		if profile != "" {
 			info["profile"] = profile
 			info["level"] = level
@@ -125,7 +155,9 @@ func (c *Codec) PrintName() string {
 }
 
 func (c *Codec) Clone() *Codec {
+	fmtpMu.RLock()
 	clone := *c
+	fmtpMu.RUnlock()
 	return &clone
 }
 

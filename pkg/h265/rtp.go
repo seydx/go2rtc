@@ -9,7 +9,7 @@ import (
 )
 
 func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
-	vps, sps, pps := GetParameterSet(codec.FmtpLine)
+	vps, sps, pps := GetParameterSet(codec.Fmtp())
 	ps := h264.JoinNALU(vps, sps, pps)
 
 	buf := make([]byte, 0, 512*1024) // 512K
@@ -164,9 +164,9 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 		if !fmtpLineUpdated && ContainsParameterSets(buf) {
 			newFmtpLine := GetFmtpLine(buf)
 			if newFmtpLine != "" {
-				codec.FmtpLine = newFmtpLine
+				codec.SetFmtp(newFmtpLine)
 				// Re-extract VPS/SPS/PPS with updated FmtpLine
-				vps, sps, pps = GetParameterSet(codec.FmtpLine)
+				vps, sps, pps = GetParameterSet(newFmtpLine)
 				ps = h264.JoinNALU(vps, sps, pps)
 			}
 			fmtpLineUpdated = true

@@ -16,7 +16,7 @@ const PSMaxSize = 128 // the biggest SPS I've seen is 48 (EZVIZ CS-CV210)
 func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	depack := &codecs.H264Packet{IsAVC: true}
 
-	sps, pps := GetParameterSet(codec.FmtpLine)
+	sps, pps := GetParameterSet(codec.Fmtp())
 	ps := JoinNALU(sps, pps)
 
 	buf := make([]byte, 0, 512*1024) // 512K
@@ -109,9 +109,9 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 		if !fmtpLineUpdated && ContainsParameterSets(payload) {
 			newFmtpLine := GetFmtpLine(payload)
 			if newFmtpLine != "" {
-				codec.FmtpLine = newFmtpLine
+				codec.SetFmtp(newFmtpLine)
 				// Re-extract SPS/PPS with updated FmtpLine
-				sps, pps = GetParameterSet(codec.FmtpLine)
+				sps, pps = GetParameterSet(newFmtpLine)
 				ps = JoinNALU(sps, pps)
 			}
 			fmtpLineUpdated = true

@@ -51,7 +51,7 @@ func (m *Muxer) GetInit() []byte {
 	for _, codec := range m.codecs {
 		switch codec.Name {
 		case core.CodecH264:
-			sps, pps := h264.GetParameterSet(codec.FmtpLine)
+			sps, pps := h264.GetParameterSet(codec.Fmtp())
 			if len(sps) == 0 {
 				sps = []byte{0x67, 0x42, 0x00, 0x0a, 0xf8, 0x41, 0xa2}
 			} else {
@@ -66,7 +66,7 @@ func (m *Muxer) GetInit() []byte {
 			b = append(b, EncodeTag(TagVideo, 0, video)...)
 
 		case core.CodecAAC:
-			s := core.Between(codec.FmtpLine, "config=", ";")
+			s := core.Between(codec.Fmtp(), "config=", ";")
 			config, _ := hex.DecodeString(s)
 			audio := append(encodeAVData(codec, 0), config...)
 			b = append(b, EncodeTag(TagAudio, 0, audio)...)

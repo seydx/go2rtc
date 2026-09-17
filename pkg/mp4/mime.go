@@ -23,7 +23,7 @@ func MimeCodecs(codecs []*core.Codec) string {
 
 		switch codec.Name {
 		case core.CodecH264:
-			s += "avc1." + h264.GetProfileLevelID(codec.FmtpLine)
+			s += "avc1." + h264.GetProfileLevelID(codec.Fmtp())
 		case core.CodecH265:
 			// H.265 profile=main level=5.1
 			// hvc1 - supported in Safari, hev1 - doesn't, both supported in Chrome

@@ -113,7 +113,7 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 		// the stream. Capture SPS/PPS once from the RTP payload and append
 		// them to the codec FmtpLine, like the depay path does for MSE/MP4.
 		captureSprop := codec.Name == core.CodecH264 &&
-			!strings.Contains(codec.FmtpLine, "sprop-parameter-sets=")
+			!strings.Contains(codec.Fmtp(), "sprop-parameter-sets=")
 		var spropSPS, spropPPS []byte
 
 		for {
@@ -160,12 +160,15 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 					save(pl)
 				}
 				if spropSPS != nil && spropPPS != nil {
-					if codec.FmtpLine != "" {
-						codec.FmtpLine += ";"
-					}
-					codec.FmtpLine += "sprop-parameter-sets=" +
+					sprop := "sprop-parameter-sets=" +
 						base64.StdEncoding.EncodeToString(spropSPS) + "," +
 						base64.StdEncoding.EncodeToString(spropPPS)
+					codec.UpdateFmtp(func(fmtp string) string {
+						if fmtp != "" {
+							fmtp += ";"
+						}
+						return fmtp + sprop
+					})
 					captureSprop = false
 				}
 			}

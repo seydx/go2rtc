@@ -11,7 +11,7 @@ import (
 )
 
 func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
-	sps, pps := GetParameterSet(codec.FmtpLine)
+	sps, pps := GetParameterSet(codec.Fmtp())
 	ps := JoinNALU(sps, pps)
 
 	fmtpLineUpdated := false
@@ -22,9 +22,9 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 		if !fmtpLineUpdated && ContainsParameterSets(packet.Payload) {
 			newFmtpLine := GetFmtpLine(packet.Payload)
 			if newFmtpLine != "" {
-				codec.FmtpLine = newFmtpLine
+				codec.SetFmtp(newFmtpLine)
 				// Re-extract SPS/PPS with updated FmtpLine
-				sps, pps = GetParameterSet(codec.FmtpLine)
+				sps, pps = GetParameterSet(newFmtpLine)
 				ps = JoinNALU(sps, pps)
 			}
 			fmtpLineUpdated = true

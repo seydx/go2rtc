@@ -33,7 +33,7 @@ func (m *Muxer) GetInit() ([]byte, error) {
 	for i, codec := range m.codecs {
 		switch codec.Name {
 		case core.CodecH264:
-			sps, pps := h264.GetParameterSet(codec.FmtpLine)
+			sps, pps := h264.GetParameterSet(codec.Fmtp())
 			// some dummy SPS and PPS not a problem for MP4, but problem for HLS :(
 			if len(sps) == 0 {
 				sps = []byte{0x67, 0x42, 0x00, 0x0a, 0xf8, 0x41, 0xa2}
@@ -56,7 +56,7 @@ func (m *Muxer) GetInit() ([]byte, error) {
 			)
 
 		case core.CodecH265:
-			vps, sps, pps := h265.GetParameterSet(codec.FmtpLine)
+			vps, sps, pps := h265.GetParameterSet(codec.Fmtp())
 			// some dummy SPS and PPS not a problem
 			if len(vps) == 0 {
 				vps = []byte{0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x01, 0x40, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x99, 0xac, 0x09}
@@ -82,7 +82,7 @@ func (m *Muxer) GetInit() ([]byte, error) {
 			)
 
 		case core.CodecAAC:
-			s := core.Between(codec.FmtpLine, "config=", ";")
+			s := core.Between(codec.Fmtp(), "config=", ";")
 			b, err := hex.DecodeString(s)
 			if err != nil {
 				return nil, err

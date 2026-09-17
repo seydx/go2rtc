@@ -46,11 +46,12 @@ func subscribe(tr *ws.Transport, _ *ws.Message) error {
 func run(tr *ws.Transport, watcher *streams.Watcher, done chan struct{}) {
 	defer watcher.Close()
 
-	sent := map[string]struct{}{}
+	// sent: the stream object each name was last sent for
+	sent := map[string]*streams.Stream{}
 	snapshot := map[string]*streams.State{}
 	for name, stream := range cuiStreams() {
 		snapshot[name] = streams.StateOf(name, stream)
-		sent[name] = struct{}{}
+		sent[name] = stream
 	}
 	write(tr, "cui/snapshot", map[string]any{"streams": snapshot})
 
@@ -74,18 +75,20 @@ func run(tr *ws.Transport, watcher *streams.Watcher, done chan struct{}) {
 	}
 }
 
-// flush sends the current state of every stream that changed, of every
-// stream that appeared, and null for every stream that is gone.
-func flush(tr *ws.Transport, watcher *streams.Watcher, sent map[string]struct{}) {
+// flush sends the current state of every stream that changed, of every name
+// that appeared or now points at another stream, and null for every name that
+// is gone. A relinked name (alias patched to another stream, or deleted and
+// created again within one flush) only signals the registry, it marks no
+// stream as changed, so the stream object behind a name is compared too.
+func flush(tr *ws.Transport, watcher *streams.Watcher, sent map[string]*streams.Stream) {
 	changed := watcher.Take()
 	current := cuiStreams()
 
 	for name, stream := range current {
-		_, known := sent[name]
-		if _, ok := changed[stream]; !ok && known {
+		if _, ok := changed[stream]; !ok && sent[name] == stream {
 			continue
 		}
-		sent[name] = struct{}{}
+		sent[name] = stream
 		write(tr, "cui/stream", map[string]any{"name": name, "state": streams.StateOf(name, stream)})
 	}
 

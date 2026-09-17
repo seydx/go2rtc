@@ -195,7 +195,9 @@ func (c *Client) Start() error {
 			if sps == nil || pps == nil {
 				collectParameterSets(packet.Payload, &sps, &pps)
 				if sps != nil && pps != nil {
-					videoTrack.Codec.FmtpLine = withParameterSets(videoTrack.Codec.FmtpLine, sps, pps)
+					videoTrack.Codec.UpdateFmtp(func(fmtp string) string {
+						return withParameterSets(fmtp, sps, pps)
+					})
 				}
 			}
 

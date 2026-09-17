@@ -338,3 +338,28 @@ func TestStatsCountTraffic(t *testing.T) {
 	require.Len(t, s.Consumers, 1)
 	require.Len(t, s.Consumers[0].Senders, 1)
 }
+
+// A name that starts pointing at another stream object (an alias relinked by
+// a patch, or a stream deleted and created again within one flush) must send
+// the new stream's state: the name alone was already known, and the registry
+// change only signals, it marks no stream.
+func TestRelinkedNameSendsTheNewStream(t *testing.T) {
+	newFakeCamera("relinka", core.CodecH264)
+	newFakeCamera("relinkb", core.CodecH264)
+	newStream(t, "cui_relink_a", "relinka://cam")
+	b := newStream(t, "cui_relink_b", "relinkb://cam")
+	attach(t, b) // b has a consumer, a has none
+
+	_, err := streams.Patch("cui_relink_alias", "cui_relink_a")
+	require.NoError(t, err)
+	t.Cleanup(func() { streams.Delete("cui_relink_alias") })
+
+	r := subscribed(t)
+	r.next(t, "cui/snapshot")
+
+	_, err = streams.Patch("cui_relink_alias", "cui_relink_b")
+	require.NoError(t, err)
+	require.Same(t, b, streams.Get("cui_relink_alias"))
+
+	r.nextStream(t, "cui_relink_alias", func(v *stateView) bool { return v != nil && len(v.Consumers) == 1 })
+}
