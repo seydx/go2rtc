@@ -120,6 +120,11 @@ func (c *Conn) Stop() (err error) {
 	if c.state != StateNone {
 		c.state = StateNone
 		err = c.Close()
+	} else if conn, _ := c.netIO(); c.mode == core.ModePassiveConsumer && conn != nil {
+		// A server-side consumer is attached at DESCRIBE, before SETUP moves
+		// it out of NONE. Stopped in between (ex. evicted by the stream), its
+		// client would wait on a session nothing feeds: close the connection.
+		err = conn.Close()
 	}
 	c.stateMu.Unlock()
 
@@ -143,8 +148,8 @@ func (c *Conn) Interrupt() error {
 	if c.OnClose != nil {
 		_ = c.OnClose()
 	}
-	if c.conn != nil {
-		return c.conn.Close()
+	if conn, _ := c.netIO(); conn != nil {
+		return conn.Close()
 	}
 	return nil
 }

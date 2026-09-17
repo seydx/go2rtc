@@ -221,6 +221,10 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 
 	switch mode {
 	case core.ModePassiveConsumer:
+		// Stop closes the PeerConnection, but a browser may only notice after
+		// its ICE consent check times out. The websocket close is immediate.
+		stream.OnEvict(conn, tr.Disconnect)
+
 		// 2. AddConsumer, so we get new tracks
 		if err = stream.AddConsumer(conn); err != nil {
 			log.Debug().Err(err).Msg("[webrtc] add consumer")

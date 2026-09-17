@@ -222,7 +222,8 @@ func (c *Conn) Accept() error {
 			res := &tcp.Response{Request: req}
 			_ = c.WriteResponse(res)
 			c.state = StateNone
-			return c.conn.Close()
+			conn, _ := c.netIO()
+			return conn.Close()
 
 		default:
 			return fmt.Errorf("unsupported method: %s", req.Method)

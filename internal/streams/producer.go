@@ -53,6 +53,10 @@ type Producer struct {
 	requirePrevVideo   bool // Only start if previous producer has video (#requirePrevVideo)
 
 	gopEnabled bool
+
+	// stream owns this producer; a reconnect that drops stale tracks tells it
+	// to evict the consumers bound to them
+	stream *Stream
 }
 
 const SourceTemplate = "{input}"
@@ -892,6 +896,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 		conn.Stop()
 		log.Debug().Msgf("[streams] reconnect released producer url=%s", url)
 		p.stop()
+		p.evictStale(dropped)
 		return
 	}
 
@@ -957,6 +962,17 @@ func (p *Producer) reconnect(workerID, retry int) {
 	p.mu.Unlock()
 
 	go p.worker(conn, workerID, retry)
+
+	p.evictStale(dropped)
+}
+
+// evictStale has the stream evict the consumers of tracks this reconnect
+// dropped. They negotiated a codec the camera no longer sends and have to
+// reconnect. Runs once the new session is in place.
+func (p *Producer) evictStale(dropped []*core.Receiver) {
+	if len(dropped) > 0 && p.stream != nil {
+		p.stream.evictStaleConsumers()
+	}
 }
 
 // reconnectDelay is the backoff ladder for repeated connection attempts.

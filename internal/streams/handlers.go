@@ -99,7 +99,13 @@ func GetProducer(url string) (core.Producer, error) {
 		}
 
 		if handler, ok := getHandler(scheme); ok {
-			return handler(url)
+			prod, err := handler(url)
+			if prod == nil && err == nil {
+				// every caller uses the producer on a nil error: a reconnect
+				// would crash on it instead of backing off
+				err = errors.New("streams: no producer for " + url)
+			}
+			return prod, err
 		}
 	}
 

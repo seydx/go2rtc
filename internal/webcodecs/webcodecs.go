@@ -36,6 +36,8 @@ func handlerWS(tr *ws.Transport, msg *ws.Message) error {
 		cons.UseGOP = true
 	}
 
+	stream.OnEvict(cons, tr.Disconnect)
+
 	if err := stream.AddConsumer(cons); err != nil {
 		log.Debug().Err(err).Msg("[webcodecs] add consumer")
 		return err

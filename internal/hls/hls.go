@@ -39,6 +39,51 @@ const keepalive = 5 * time.Second
 var sessions = map[string]*Session{}
 var sessionsMu sync.RWMutex
 
+// startSession attaches cons to stream and publishes an HLS session for it.
+// The session ends when the client stops polling (keepalive), or when the
+// stream evicts the consumer because the camera switched codecs: the session
+// is withdrawn, so the player gets 404 for its next playlist and reloads.
+// onEvict additionally ends a transport the client holds open.
+func startSession(stream *streams.Stream, cons core.Consumer, onEvict func()) (*Session, error) {
+	session := NewSession(cons)
+
+	var gone bool // guarded by sessionsMu: evicted before it was published
+	withdraw := func() {
+		sessionsMu.Lock()
+		gone = true
+		delete(sessions, session.id)
+		sessionsMu.Unlock()
+	}
+
+	// every playlist request resets the keepalive, so a polling player would
+	// keep an evicted session alive forever: it has to be withdrawn
+	stream.OnEvict(cons, func() {
+		withdraw()
+		if onEvict != nil {
+			onEvict()
+		}
+	})
+
+	if err := stream.AddConsumer(cons); err != nil {
+		return nil, err
+	}
+
+	session.alive = time.AfterFunc(keepalive, func() {
+		withdraw()
+		stream.RemoveConsumer(cons)
+	})
+
+	sessionsMu.Lock()
+	if !gone {
+		sessions[session.id] = session
+	}
+	sessionsMu.Unlock()
+
+	go session.Run()
+
+	return session, nil
+}
+
 func handlerStream(w http.ResponseWriter, r *http.Request) {
 	// CORS important for Chromecast
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -89,25 +134,11 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 		cons = c
 	}
 
-	if err := stream.AddConsumer(cons); err != nil {
+	session, err := startSession(stream, cons, nil)
+	if err != nil {
 		log.Error().Err(err).Caller().Send()
 		return
 	}
-
-	session := NewSession(cons)
-	session.alive = time.AfterFunc(keepalive, func() {
-		sessionsMu.Lock()
-		delete(sessions, session.id)
-		sessionsMu.Unlock()
-
-		stream.RemoveConsumer(cons)
-	})
-
-	sessionsMu.Lock()
-	sessions[session.id] = session
-	sessionsMu.Unlock()
-
-	go session.Run()
 
 	if _, err := w.Write(session.Main()); err != nil {
 		log.Error().Err(err).Caller().Send()

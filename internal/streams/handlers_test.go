@@ -38,3 +38,13 @@ func TestHandlerRegistryIsConcurrencySafe(t *testing.T) {
 	wg.Wait()
 	require.Contains(t, SupportedSchemes(), "stubscheme")
 }
+
+// A handler that returns neither a producer nor an error must not hand a nil
+// producer to a reconnect, which would dereference it.
+func TestGetProducerRejectsNilProducer(t *testing.T) {
+	HandleFunc("nilproducer", func(string) (core.Producer, error) { return nil, nil })
+
+	prod, err := GetProducer("nilproducer://camera")
+	require.Nil(t, prod)
+	require.Error(t, err)
+}

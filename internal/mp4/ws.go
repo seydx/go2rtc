@@ -39,6 +39,11 @@ func handlerWSMSE(tr *ws.Transport, msg *ws.Message) error {
 		cons.UseGOP = true // Default: GOP enabled
 	}
 
+	// evicted by the stream (the camera switched codecs): close the websocket,
+	// so the client reconnects and negotiates a new init segment. mse/stop
+	// and a re-sent mse remove the consumer without this.
+	stream.OnEvict(cons, tr.Disconnect)
+
 	if err := stream.AddConsumer(cons); err != nil {
 		log.Debug().Err(err).Msg("[mp4] add consumer")
 		return err
@@ -90,6 +95,8 @@ func handlerWSMP4(tr *ws.Transport, msg *ws.Message) error {
 
 	cons := mp4.NewKeyframe(medias)
 	cons.WithRequest(tr.Request)
+
+	stream.OnEvict(cons, tr.Disconnect)
 
 	if err := stream.AddConsumer(cons); err != nil {
 		log.Error().Err(err).Caller().Send()

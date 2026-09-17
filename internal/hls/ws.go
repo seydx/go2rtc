@@ -2,7 +2,6 @@ package hls
 
 import (
 	"errors"
-	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/api/ws"
@@ -24,26 +23,11 @@ func handlerWSHLS(tr *ws.Transport, msg *ws.Message) error {
 
 	log.Trace().Msgf("[hls] new ws consumer codecs=%s", codecs)
 
-	if err := stream.AddConsumer(cons); err != nil {
+	session, err := startSession(stream, cons, tr.Disconnect)
+	if err != nil {
 		log.Error().Err(err).Caller().Send()
 		return err
 	}
-
-	session := NewSession(cons)
-
-	session.alive = time.AfterFunc(keepalive, func() {
-		sessionsMu.Lock()
-		delete(sessions, session.id)
-		sessionsMu.Unlock()
-
-		stream.RemoveConsumer(cons)
-	})
-
-	sessionsMu.Lock()
-	sessions[session.id] = session
-	sessionsMu.Unlock()
-
-	go session.Run()
 
 	main := session.Main()
 	tr.Write(&ws.Message{Type: "hls", Value: string(main)})

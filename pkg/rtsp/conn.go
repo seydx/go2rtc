@@ -48,6 +48,7 @@ type Conn struct {
 	playOK    bool
 	playErr   error
 	reader    *bufio.Reader
+	ioMu      sync.RWMutex // guards conn and reader, which Dial swaps on reconnect
 	sequence  int
 	session   string
 	uri       string
@@ -154,12 +155,19 @@ func (c *Conn) Handle() (err error) {
 		go c.handleUDPData(byte(i))
 	}
 
+	// The loop stays on the connection it started with. A reconnect (SETUP
+	// during PLAY) swaps c.conn and c.reader under it: reading the fields
+	// again would pull bytes from the new session while the handshake reads
+	// its responses there. The old connection is closed by then, so this
+	// loop gets an error and ends, and Start plays the new session.
+	conn, reader := c.netIO()
+
 	for c.getState() != StateNone {
 		ts := time.Now()
 
-		_ = c.conn.SetReadDeadline(ts.Add(timeout))
+		_ = conn.SetReadDeadline(ts.Add(timeout))
 
-		if err = c.handleTCPData(); err != nil {
+		if err = c.handleTCPData(conn, reader); err != nil {
 			return
 		}
 	}
@@ -201,7 +209,7 @@ func (c *Conn) handleUDPData(channel byte) {
 	}
 }
 
-func (c *Conn) handleTCPData() error {
+func (c *Conn) handleTCPData(conn net.Conn, reader *bufio.Reader) error {
 	// we can read:
 	// 1. RTP interleaved: `$` + 1B channel number + 2B size
 	// 2. RTSP response:   RTSP/1.0 200 OK
@@ -209,7 +217,7 @@ func (c *Conn) handleTCPData() error {
 	var buf4 []byte // `$` + 1B channel number + 2B size
 	var err error
 
-	buf4, err = c.reader.Peek(4)
+	buf4, err = reader.Peek(4)
 	if err != nil {
 		return err
 	}
@@ -221,7 +229,7 @@ func (c *Conn) handleTCPData() error {
 		switch string(buf4) {
 		case "RTSP":
 			var res *tcp.Response
-			if res, err = c.ReadResponse(); err != nil {
+			if res, err = c.readResponse(conn, reader); err != nil {
 				return err
 			}
 			c.Fire(res)
@@ -231,13 +239,13 @@ func (c *Conn) handleTCPData() error {
 
 		case "OPTI", "TEAR", "DESC", "SETU", "PLAY", "PAUS", "RECO", "ANNO", "GET_", "SET_":
 			var req *tcp.Request
-			if req, err = c.ReadRequest(); err != nil {
+			if req, err = c.readRequest(conn, reader); err != nil {
 				return err
 			}
 			c.Fire(req)
 			if req.Method == MethodOptions {
 				res := &tcp.Response{Request: req}
-				if err = c.WriteResponse(res); err != nil {
+				if err = c.writeResponse(conn, res); err != nil {
 					return err
 				}
 			}
@@ -248,11 +256,11 @@ func (c *Conn) handleTCPData() error {
 
 			for i := 0; ; i++ {
 				// search next start symbol
-				if _, err = c.reader.ReadBytes('$'); err != nil {
+				if _, err = reader.ReadBytes('$'); err != nil {
 					return err
 				}
 
-				if channel, err = c.reader.ReadByte(); err != nil {
+				if channel, err = reader.ReadByte(); err != nil {
 					return err
 				}
 
@@ -262,7 +270,7 @@ func (c *Conn) handleTCPData() error {
 				}
 
 				buf4 = make([]byte, 2)
-				if _, err = io.ReadFull(c.reader, buf4); err != nil {
+				if _, err = io.ReadFull(reader, buf4); err != nil {
 					return err
 				}
 
@@ -285,15 +293,15 @@ func (c *Conn) handleTCPData() error {
 		// get data size
 		size = binary.BigEndian.Uint16(buf4[2:])
 
-		// skip 4 bytes from c.reader.Peek
-		if _, err = c.reader.Discard(4); err != nil {
+		// skip 4 bytes from reader.Peek
+		if _, err = reader.Discard(4); err != nil {
 			return err
 		}
 	}
 
 	// init memory for data
 	buf := make([]byte, size)
-	if _, err = io.ReadFull(c.reader, buf); err != nil {
+	if _, err = io.ReadFull(reader, buf); err != nil {
 		return err
 	}
 
@@ -405,21 +413,31 @@ func (c *Conn) WriteRequest(req *tcp.Request) error {
 
 	c.Fire(req)
 
-	if err := c.conn.SetWriteDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
+	conn, _ := c.netIO()
+	if err := conn.SetWriteDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return err
 	}
 
-	return req.Write(c.conn)
+	return req.Write(conn)
 }
 
 func (c *Conn) ReadRequest() (*tcp.Request, error) {
-	if err := c.conn.SetReadDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
+	return c.readRequest(c.netIO())
+}
+
+func (c *Conn) readRequest(conn net.Conn, reader *bufio.Reader) (*tcp.Request, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return nil, err
 	}
-	return tcp.ReadRequest(c.reader)
+	return tcp.ReadRequest(reader)
 }
 
 func (c *Conn) WriteResponse(res *tcp.Response) error {
+	conn, _ := c.netIO()
+	return c.writeResponse(conn, res)
+}
+
+func (c *Conn) writeResponse(conn net.Conn, res *tcp.Response) error {
 	if res.Proto == "" {
 		res.Proto = ProtoRTSP
 	}
@@ -454,16 +472,27 @@ func (c *Conn) WriteResponse(res *tcp.Response) error {
 
 	c.Fire(res)
 
-	if err := c.conn.SetWriteDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
+	if err := conn.SetWriteDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return err
 	}
 
-	return res.Write(c.conn)
+	return res.Write(conn)
 }
 
 func (c *Conn) ReadResponse() (*tcp.Response, error) {
-	if err := c.conn.SetReadDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
+	return c.readResponse(c.netIO())
+}
+
+func (c *Conn) readResponse(conn net.Conn, reader *bufio.Reader) (*tcp.Response, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(c.handshakeTimeout())); err != nil {
 		return nil, err
 	}
-	return tcp.ReadResponse(c.reader)
+	return tcp.ReadResponse(reader)
+}
+
+// netIO returns the current connection and its reader.
+func (c *Conn) netIO() (net.Conn, *bufio.Reader) {
+	c.ioMu.RLock()
+	defer c.ioMu.RUnlock()
+	return c.conn, c.reader
 }

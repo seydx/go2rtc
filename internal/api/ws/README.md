@@ -6,6 +6,8 @@ Query parameters:
 
 - `src` (required) - Stream name
 
+The server closes the websocket with code `1012` (Service Restart) when the session can't continue, ex. the camera switched codecs. Reconnect to negotiate again.
+
 ### WebRTC
 
 Request SDP:

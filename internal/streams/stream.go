@@ -13,9 +13,22 @@ type Stream struct {
 	consumers []core.Consumer
 	mu        sync.Mutex
 	pending   atomic.Int32
+
+	// bound: the producer receivers each consumer was attached to.
+	// evictHooks: how to end a consumer's connection when it gets evicted.
+	bound      map[core.Consumer][]*core.Receiver
+	evictHooks map[core.Consumer]func()
 }
 
 func NewStream(source any) *Stream {
+	s := newStream(source)
+	for _, prod := range s.producers {
+		prod.stream = s
+	}
+	return s
+}
+
+func newStream(source any) *Stream {
 	switch source := source.(type) {
 	case string:
 		return &Stream{
@@ -39,7 +52,7 @@ func NewStream(source any) *Stream {
 		}
 		return s
 	case map[string]any:
-		return NewStream(source["url"])
+		return newStream(source["url"])
 	case nil:
 		return new(Stream)
 	default:
@@ -84,7 +97,9 @@ func (s *Stream) setSources(sources []string) bool {
 			delete(reusable, source)
 			continue
 		}
-		producers = append(producers, NewProducer(source))
+		prod := NewProducer(source)
+		prod.stream = s
+		producers = append(producers, prod)
 		changed = true
 	}
 	if len(reusable) > 0 {
@@ -120,6 +135,7 @@ func (s *Stream) RemoveConsumer(cons core.Consumer) {
 			break
 		}
 	}
+	s.forget(cons)
 	s.mu.Unlock()
 
 	s.stopProducers()
@@ -165,7 +181,7 @@ func (s *Stream) RemoveConsumersByTag(tag string) int {
 }
 
 func (s *Stream) AddProducer(prod core.Producer) {
-	producer := &Producer{conn: prod, state: stateExternal, url: "external"}
+	producer := &Producer{conn: prod, state: stateExternal, url: "external", stream: s}
 	s.mu.Lock()
 	s.producers = append(s.producers, producer)
 	s.mu.Unlock()

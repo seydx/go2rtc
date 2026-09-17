@@ -66,6 +66,10 @@ func Init() {
 }
 
 func tcpHandle(netConn net.Conn) error {
+	// the client only learns that the session ended (consumer evicted,
+	// publisher gone) when the connection closes
+	defer func() { _ = netConn.Close() }()
+
 	rtmpConn, err := rtmp.NewServer(netConn)
 	if err != nil {
 		return err

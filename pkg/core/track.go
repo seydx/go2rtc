@@ -34,6 +34,8 @@ type Receiver struct {
 	// so a sender never sees a packet twice or misses one.
 	gop   *GopCache
 	gopMu sync.Mutex
+
+	closed atomic.Bool
 }
 
 func NewReceiver(media *Media, codec *Codec) *Receiver {
@@ -122,7 +124,30 @@ func (r *Receiver) Retire(target *Receiver) {
 	MoveNode(&target.Node, &r.Node)
 }
 
+// Gone reports whether a consumer bound to this receiver will never get data
+// from it again: the receiver — or the one a reconnect retired it to — was
+// closed. Retired receivers forward to their successor, so a consumer that
+// attached to one before or during a reconnect is judged by where its
+// sender actually ended up.
+func (r *Receiver) Gone() bool {
+	node := &r.Node
+	for {
+		node.mu.Lock()
+		next := node.movedTo
+		node.mu.Unlock()
+		if next == nil {
+			break
+		}
+		node = next
+	}
+
+	current, ok := node.owner.(*Receiver)
+	return ok && current.closed.Load()
+}
+
 func (r *Receiver) Close() {
+	r.closed.Store(true)
+
 	r.gopMu.Lock()
 	if r.gop != nil {
 		r.gop.Clear()

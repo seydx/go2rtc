@@ -68,8 +68,10 @@ func (c *Conn) Dial() (err error) {
 	c.auth = tcp.NewAuth(c.URL.User)
 	c.URL.User = nil
 
+	c.ioMu.Lock()
 	c.conn = conn
 	c.reader = bufio.NewReaderSize(conn, core.BufferSize)
+	c.ioMu.Unlock()
 	c.session = ""
 	c.sequence = 0
 	c.state = StateConn
@@ -115,7 +117,9 @@ func (c *Conn) Do(req *tcp.Request) (*tcp.Response, error) {
 
 		c.uri = u.String() // so auth will be saved on reconnect
 
-		_ = c.conn.Close()
+		if conn, _ := c.netIO(); conn != nil {
+			_ = conn.Close()
+		}
 
 		if err = c.Dial(); err != nil {
 			return nil, err
@@ -358,7 +362,8 @@ func (c *Conn) SetupMedia(media *core.Media) (byte, error) {
 			port2 := core.Atoi(s2)
 			// TODO: more smart handling empty server ports
 			if port1 > 0 && port2 > 0 {
-				remoteIP := c.conn.RemoteAddr().(*net.TCPAddr).IP
+				conn, _ := c.netIO()
+				remoteIP := conn.RemoteAddr().(*net.TCPAddr).IP
 				c.udpAddr = append(c.udpAddr,
 					&net.UDPAddr{IP: remoteIP, Port: port1},
 					&net.UDPAddr{IP: remoteIP, Port: port2},
@@ -414,7 +419,8 @@ func (c *Conn) Close() error {
 	for _, conn := range c.udpConn {
 		_ = conn.Close()
 	}
-	return c.conn.Close()
+	conn, _ := c.netIO()
+	return conn.Close()
 }
 
 func (c *Conn) WriteToUDP(b []byte, channel byte) (int, error) {

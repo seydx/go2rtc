@@ -231,6 +231,8 @@ func handlerWS(tr *ws.Transport, _ *ws.Message) error {
 	cons := mjpeg.NewConsumer()
 	cons.WithRequest(tr.Request)
 
+	stream.OnEvict(cons, tr.Disconnect)
+
 	if err := stream.AddConsumer(cons); err != nil {
 		log.Debug().Err(err).Msg("[mjpeg] add consumer")
 		return err

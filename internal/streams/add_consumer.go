@@ -19,10 +19,22 @@ type producerInfo struct {
 }
 
 func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
+	// an OnEvict hook registered ahead of a failed attach must not linger
+	defer func() {
+		if err != nil {
+			s.mu.Lock()
+			s.forget(cons)
+			s.mu.Unlock()
+		}
+	}()
+
 	// a stream with a preload is always negotiated by the preload first
 	if err = ensurePreload(s, cons); err != nil {
 		return err
 	}
+
+	// the producer receivers cons gets attached to
+	var bound []*core.Receiver
 
 	// support for multiple simultaneous pending from different consumers
 	consN := s.pending.Add(1) - 1
@@ -161,6 +173,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 						log.Info().Err(err).Msg("[streams] can't add track")
 						continue
 					}
+					bound = append(bound, track)
 
 				case core.DirectionSendonly:
 					if !bestFitProd.backchannelEnabled {
@@ -412,6 +425,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 						log.Info().Err(err).Msg("[streams] can't add track")
 						continue
 					}
+					bound = append(bound, track)
 
 					prodStarts = append(prodStarts, pInfo.prod)
 					matchedConsMedias[consMediaIdx] = true
@@ -530,6 +544,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 							log.Info().Err(err).Msg("[streams] can't add track")
 							continue
 						}
+						bound = append(bound, track)
 
 					case core.DirectionSendonly:
 						log.Trace().Msgf("[streams] match cons=%d => prod=%d media=%s (backchannel)", consN, pInfo.prodN, prodMedia.Kind)
@@ -576,7 +591,16 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 	s.mu.Lock()
 	s.consumers = append(s.consumers, cons)
+	s.bind(cons, bound)
 	s.mu.Unlock()
+
+	// A reconnect may have dropped a track while cons was attaching to it.
+	// Recorded first, checked second: a drop after this check finds cons in
+	// s.bound and evicts it, a drop before it is caught here.
+	if anyGone(bound) {
+		s.RemoveConsumer(cons)
+		return errTrackGone
+	}
 
 	// there may be duplicates, but that's not a problem
 	for _, prod := range prodStarts {

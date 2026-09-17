@@ -103,6 +103,10 @@ streams:
 http://localhost:1984/stream.html?src=unifi_camera&gop=0
 ```
 
+## Codec change
+
+A client negotiates its codecs once (MSE init segment, WebRTC answer, RTSP DESCRIBE). When a camera is reconfigured to another codec at runtime (ex. H264 to H265, PCMU to AAC), the source reconnects and drops the tracks it can no longer serve. Every client that received one of them is disconnected, so it reconnects and negotiates the new codec: websockets close with code `1012`, HTTP, RTSP and RTMP connections end, HLS sessions are withdrawn. Clients without an affected track keep playing, ex. a video-only viewer on an audio codec change. A reconnect with unchanged codecs, or a camera coming back without audio, disconnects nobody.
+
 ## Examples
 
 ```yaml

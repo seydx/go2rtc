@@ -108,6 +108,15 @@ func apiWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tr := &Transport{Request: r}
+	tr.OnDisconnect(func() {
+		// 1012 Service Restart: the session ended on the server side, the
+		// client is expected to reconnect. Closing the conn makes the read
+		// loop below return, which runs the transport's OnClose handlers.
+		deadline := time.Now().Add(time.Second)
+		msg := websocket.FormatCloseMessage(websocket.CloseServiceRestart, "session ended")
+		_ = ws.WriteControl(websocket.CloseMessage, msg, deadline)
+		_ = ws.Close()
+	})
 	tr.OnWrite(func(msg any) error {
 		_ = ws.SetWriteDeadline(time.Now().Add(time.Second * 5))
 
@@ -167,10 +176,11 @@ type Transport struct {
 	mx     sync.Mutex
 	wrmx   sync.Mutex
 
-	onChange func()
-	onWrite  func(msg any) error
-	onBinary func(data []byte)
-	onClose  []func()
+	onChange     func()
+	onWrite      func(msg any) error
+	onBinary     func(data []byte)
+	onClose      []func()
+	onDisconnect func()
 }
 
 func (t *Transport) OnBinary(f func(data []byte)) {
@@ -211,6 +221,27 @@ func (t *Transport) Close() {
 	t.mx.Unlock()
 
 	for _, f := range handlers {
+		f()
+	}
+}
+
+// OnDisconnect sets how the owner of the connection ends it from the server
+// side.
+func (t *Transport) OnDisconnect(f func()) {
+	t.mx.Lock()
+	t.onDisconnect = f
+	t.mx.Unlock()
+}
+
+// Disconnect ends the client connection from the server side, ex. when the
+// stream evicted a consumer this transport carries. Close only runs the
+// transport's handlers, the websocket would stay open.
+func (t *Transport) Disconnect() {
+	t.mx.Lock()
+	f := t.onDisconnect
+	t.mx.Unlock()
+
+	if f != nil {
 		f()
 	}
 }
