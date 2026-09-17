@@ -377,3 +377,57 @@ func TestOffersReadFmtpWhileDepacketizersUpdateIt(t *testing.T) {
 		require.Equal(t, want, video.Profile, "profile and fmtp of an offer come from the same read")
 	}
 }
+
+func talkOnly(codecs ...*core.Codec) []*core.Media {
+	return []*core.Media{{Kind: core.KindAudio, Direction: core.DirectionSendonly, Codecs: codecs}}
+}
+
+// Documented setups where a second source adds what the first lacks: isapi,
+// multitrans or doorbird for talk, a second RTSP for audio.
+func TestOffersTakeWhatEverySourceAdds(t *testing.T) {
+	registerOfferHandler()
+
+	t.Run("talk from a second source", func(t *testing.T) {
+		camera := connectedProducer("rtsp://camera/stream", cameraMedias(true, false))
+		isapi := connectedProducer("isapi://camera", talkOnly(&core.Codec{Name: core.CodecPCMU, ClockRate: 8000}))
+
+		offers := OffersOf(&Stream{producers: []*Producer{camera, isapi}})
+
+		require.NotNil(t, offers.Backchannel)
+		require.Equal(t, []string{"PCMU/8000/1"}, offerNames(offers.Backchannel.Codecs))
+		require.True(t, offers.Backchannel.Codecs[0].Native, "the camera's own talk channel, over another protocol")
+	})
+
+	t.Run("audio from a second source", func(t *testing.T) {
+		camera := connectedProducer("rtsp://camera/video", cameraMedias(false, false))
+		audio := connectedProducer("rtsp://camera/audio", []*core.Media{
+			{Kind: core.KindAudio, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{{Name: core.CodecPCMA, ClockRate: 8000, Channels: 1}}},
+		})
+
+		offers := OffersOf(&Stream{producers: []*Producer{camera, audio, NewProducer(companionSource)}})
+
+		require.Equal(t, []string{"PCMA/8000/1", "OPUS/48000/2", "MPEG4-GENERIC/8000/1"}, offerNames(offers.Audio), "the companion follows the audio of the second source")
+		require.True(t, offers.Audio[0].Native)
+		require.False(t, offers.Audio[1].Native)
+	})
+
+	t.Run("companion before the audio source", func(t *testing.T) {
+		camera := connectedProducer("rtsp://camera/video", cameraMedias(false, false))
+		audio := connectedProducer("rtsp://camera/audio", []*core.Media{
+			{Kind: core.KindAudio, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{{Name: core.CodecPCMA, ClockRate: 8000, Channels: 1}}},
+		})
+
+		offers := OffersOf(&Stream{producers: []*Producer{camera, NewProducer(companionSource), audio}})
+
+		require.Equal(t, []string{"PCMA/8000/1"}, offerNames(offers.Audio), "a source tied to earlier audio finds none before it")
+	})
+
+	t.Run("first source never connected", func(t *testing.T) {
+		isapi := connectedProducer("isapi://camera", talkOnly(&core.Codec{Name: core.CodecPCMU, ClockRate: 8000}))
+
+		offers := OffersOf(&Stream{producers: []*Producer{NewProducer("rtsp://camera/stream"), isapi}})
+
+		require.Equal(t, OffersUnknown, offers.State, "a talk channel alone says nothing about video")
+		require.Nil(t, offers.Backchannel)
+	})
+}

@@ -123,11 +123,10 @@ The stream info (`/api/streams`, `/api/streams?src=...`, a probe) carries `offer
 }
 ```
 
-- The first source without `#requirePrevAudio`/`#requirePrevVideo` decides whether video, audio and a backchannel exist, after `#noVideo`, `#noAudio` and `#noBackchannel`.
-- Codecs are collected from every source that would take part, without duplicates. A source that is not running reports what its options produce, ex. `ffmpeg:...#audio=opus`.
-- Audio always carries rate and channels, filled in from RTP where the source leaves them out (opus 48000/2, G.711 8000/1, one channel by default), and the static payload types of PCMA and G722. `profile` and `level` (times ten, 51 for 5.1) are set for H264 and H265, read from the SPS. `native` marks codecs the camera sends itself, the others are converted by another source.
+- Every source adds what it offers, in the order of the stream, the way a client is matched: a second source can bring the talk channel (`isapi`, `multitrans`, `doorbird`) or audio the first one lacks. A source with `#requirePrevAudio`/`#requirePrevVideo` counts only when an earlier source has that kind. `#noVideo`, `#noAudio` and `#noBackchannel` hide a kind of a source. Codecs are listed without duplicates. A source that is not running reports what its options produce, ex. `ffmpeg:...#audio=opus`.
+- Audio always carries rate and channels, filled in from RTP where the source leaves them out (opus 48000/2, G.711 8000/1, one channel by default), and the static payload types of PCMA and G722. `profile` and `level` (times ten, 51 for 5.1) are set for H264 and H265, read from the SPS. `native` marks codecs of the stream's own sources, the others come from a source tied to an earlier one, which converts what that one sends.
 - `transcode`: the backchannel accepts any codec from the client, the mixer converts it.
-- `state`: `live` while the first source is connected, `cached` with the medias of its last session after it stopped, `unknown` if it never connected. Changing the source forgets the last session.
+- `state`: `live` while the first source without `#requirePrev*` is connected, `cached` with the medias of its last session after it stopped, `unknown` if it never connected, then nothing else is listed either. Changing the source forgets the last session.
 
 ## Examples
 

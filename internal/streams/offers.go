@@ -16,9 +16,10 @@ const (
 	OffersUnknown = "unknown"
 )
 
-// Offers is what a consumer can get from a stream across all of its
-// producers: the primary producer decides whether a kind exists at all, every
-// producer that would take part adds its codecs.
+// Offers is what a consumer can get from a stream across all of its sources,
+// matched the way AddConsumer does: every source adds what it offers, in
+// order, one tied to an earlier source (#requirePrevAudio, #requirePrevVideo)
+// only when an earlier source has that kind.
 type Offers struct {
 	State string `json:"state"`
 	// one media per offered codec: video and audio sendonly, talk recvonly
@@ -85,52 +86,51 @@ func OffersOf(s *Stream) *Offers {
 	s.mu.Unlock()
 
 	offers := &Offers{State: OffersUnknown, Video: []*OfferCodec{}, Audio: []*OfferCodec{}}
+	talk := &BackchannelOffer{Codecs: []*OfferCodec{}}
 
-	var primary *Producer
+	// the first own source anchors the state: while it never connected, what
+	// another source (ex. a talk-only isapi) knows says nothing about video
 	for _, prod := range producers {
-		if !prod.requirePrevAudio && !prod.requirePrevVideo {
-			primary = prod
+		if !prod.tiedToPrevious() {
+			if _, state := prod.offerMedias(); state != OffersUnknown {
+				offers.State = state
+			}
 			break
 		}
 	}
-	if primary == nil {
+	if offers.State == OffersUnknown {
 		return offers
 	}
 
-	primaryMedias, state := primary.offerMedias()
-	if state == OffersUnknown {
-		return offers
-	}
-	offers.State = state
-
-	hasVideo := findMedia(primaryMedias, core.KindVideo, core.DirectionRecvonly) != nil
-	sourceAudio := findMedia(primaryMedias, core.KindAudio, core.DirectionRecvonly)
-	hasAudio := sourceAudio != nil
-	hasTalk := findMedia(primaryMedias, core.KindAudio, core.DirectionSendonly) != nil
-
-	talk := &BackchannelOffer{Codecs: []*OfferCodec{}}
+	var sourceAudio *core.Codec
+	var hasVideo bool
 
 	for _, prod := range producers {
-		if prod.requirePrevAudio && !hasAudio || prod.requirePrevVideo && !hasVideo {
+		if prod.requirePrevAudio && sourceAudio == nil || prod.requirePrevVideo && !hasVideo {
 			continue
 		}
 
-		medias := primaryMedias
-		if prod != primary {
-			if medias, state = prod.offerMedias(); state == OffersUnknown {
-				medias = prod.visibleMedias(configMedias(prod.urlSnapshot()))
-			}
+		medias, state := prod.offerMedias()
+		if state == OffersUnknown {
+			medias = prod.visibleMedias(configMedias(prod.urlSnapshot()))
 		}
+
+		// a source tied to an earlier one converts what that one sends
+		native := !prod.tiedToPrevious()
 
 		for _, media := range medias {
 			switch {
-			case media.Kind == core.KindVideo && media.Direction == core.DirectionRecvonly && hasVideo:
-				offers.Video = addOfferCodecs(offers.Video, media.Codecs, nil, prod == primary)
-			case media.Kind == core.KindAudio && media.Direction == core.DirectionRecvonly && hasAudio:
-				offers.Audio = addOfferCodecs(offers.Audio, media.Codecs, sourceAudio.Codecs[0], prod == primary)
-			case media.Kind == core.KindAudio && media.Direction == core.DirectionSendonly && hasTalk:
-				talk.Codecs = addOfferCodecs(talk.Codecs, media.Codecs, nil, prod == primary)
-				if prod.mixingEnabled {
+			case media.Kind == core.KindVideo && media.Direction == core.DirectionRecvonly:
+				offers.Video = addOfferCodecs(offers.Video, media.Codecs, nil, native)
+				hasVideo = hasVideo || len(media.Codecs) > 0
+			case media.Kind == core.KindAudio && media.Direction == core.DirectionRecvonly:
+				offers.Audio = addOfferCodecs(offers.Audio, media.Codecs, sourceAudio, native)
+				if sourceAudio == nil && len(media.Codecs) > 0 {
+					sourceAudio = media.Codecs[0]
+				}
+			case media.Kind == core.KindAudio && media.Direction == core.DirectionSendonly:
+				talk.Codecs = addOfferCodecs(talk.Codecs, media.Codecs, nil, native)
+				if prod.mixingEnabled && len(media.Codecs) > 0 {
 					talk.Transcode = true
 				}
 			}
@@ -145,6 +145,10 @@ func OffersOf(s *Stream) *Offers {
 	offers.SDP = offersSDP(offers)
 
 	return offers
+}
+
+func (p *Producer) tiedToPrevious() bool {
+	return p.requirePrevAudio || p.requirePrevVideo
 }
 
 // assignPayloadTypes gives codecs without a usable payload type (ex. an ffmpeg
@@ -316,15 +320,6 @@ func (p *Producer) urlSnapshot() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.url
-}
-
-func findMedia(medias []*core.Media, kind, direction string) *core.Media {
-	for _, media := range medias {
-		if media.Kind == kind && media.Direction == direction && len(media.Codecs) > 0 {
-			return media
-		}
-	}
-	return nil
 }
 
 // addOfferCodecs appends codecs not listed yet. A codec without a rate keeps
