@@ -12,6 +12,7 @@ type State struct {
 	Producers []*Producer     `json:"producers"`
 	Consumers []ConsumerState `json:"consumers"`
 	Preload   *PreloadState   `json:"preload"`
+	Offers    *Offers         `json:"offers"`
 }
 
 type ConsumerState struct {
@@ -57,6 +58,7 @@ func StateOf(name string, s *Stream) *State {
 		Status:    s.Status(),
 		Producers: producers,
 		Consumers: make([]ConsumerState, 0, len(consumers)),
+		Offers:    OffersOf(s),
 	}
 
 	if len(producers) > 0 {

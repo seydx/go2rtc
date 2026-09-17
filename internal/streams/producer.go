@@ -59,6 +59,10 @@ type Producer struct {
 	// stream owns this producer; a reconnect that drops stale tracks tells it
 	// to evict the consumers bound to them
 	stream *Stream
+
+	// lastMedias are the medias of the last session, kept after a stop so
+	// the stream still reports what a sleeping camera offers
+	lastMedias []*core.Media
 }
 
 const SourceTemplate = "{input}"
@@ -124,11 +128,14 @@ func (p *Producer) SetSource(s string) {
 	p.requirePrevAudio = requirePrevAudio
 	p.requirePrevVideo = requirePrevVideo
 
-	if p.template == "" {
-		p.url = rawSource
-	} else {
-		p.url = strings.Replace(p.template, SourceTemplate, rawSource, 1)
+	url := rawSource
+	if p.template != "" {
+		url = strings.Replace(p.template, SourceTemplate, rawSource, 1)
 	}
+	if url != p.url {
+		p.lastMedias = nil
+	}
+	p.url = url
 }
 
 // withSource returns a new producer like p — same template, same stream —
@@ -198,6 +205,7 @@ func (p *Producer) Dial() error {
 		p.state = stateMedias
 		close(dialDone)
 		p.mu.Unlock()
+		p.rememberMedias(conn)
 		p.notify()
 		return nil
 
@@ -946,6 +954,8 @@ func (p *Producer) reconnect(workerID, retry int) {
 	// session. The next consumer — a preload re-attaching, or a client —
 	// dials fresh and negotiates what the camera offers now.
 	if len(kept) == 0 && len(senders) == 0 {
+		// the offers must show the new codec, not the dropped one
+		p.keepMedias(conn.GetMedias())
 		conn.Stop()
 		log.Debug().Msgf("[streams] reconnect released producer url=%s", url)
 		p.stop()
@@ -1015,6 +1025,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	p.reconnecting = false
 	p.reconnectErr = nil
 	p.mu.Unlock()
+	p.rememberMedias(conn)
 	p.notify()
 
 	go p.worker(conn, workerID, retry)

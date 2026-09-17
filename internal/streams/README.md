@@ -107,6 +107,28 @@ http://localhost:1984/stream.html?src=unifi_camera&gop=0
 
 A client negotiates its codecs once (MSE init segment, WebRTC answer, RTSP DESCRIBE). When a camera is reconfigured to another codec at runtime (ex. H264 to H265, PCMU to AAC), the source reconnects and drops the tracks it can no longer serve. Every client that received one of them is disconnected, so it reconnects and negotiates the new codec: websockets close with code `1012`, HTTP, RTSP and RTMP connections end, HLS sessions are withdrawn. Clients without an affected track keep playing, ex. a video-only viewer on an audio codec change. A reconnect with unchanged codecs, or a camera coming back without audio, disconnects nobody.
 
+## Offers
+
+The stream info (`/api/streams`, `/api/streams?src=...`, a probe) carries `offers` next to `producers` and `consumers`: what a client can get from the stream across all of its sources, without matching the producers itself.
+
+```json
+"offers": {
+  "state": "live",
+  "video": [{ "codec": "H264", "rate": 90000, "fmtp": "packetization-mode=1;profile-level-id=640033", "payload_type": 96, "ffmpeg": "h264", "profile": "High", "level": 51, "native": true }],
+  "audio": [
+    { "codec": "MPEG4-GENERIC", "rate": 16000, "channels": 1, "fmtp": "config=1408", "payload_type": 97, "ffmpeg": "aac", "native": true },
+    { "codec": "OPUS", "rate": 48000, "channels": 2, "payload_type": 98, "ffmpeg": "opus", "native": false }
+  ],
+  "backchannel": { "codecs": [{ "codec": "PCMA", "rate": 8000, "channels": 1, "payload_type": 8, "ffmpeg": "pcm_alaw", "native": true }], "transcode": true }
+}
+```
+
+- The first source without `#requirePrevAudio`/`#requirePrevVideo` decides whether video, audio and a backchannel exist, after `#noVideo`, `#noAudio` and `#noBackchannel`.
+- Codecs are collected from every source that would take part, without duplicates. A source that is not running reports what its options produce, ex. `ffmpeg:...#audio=opus`.
+- Audio always carries rate and channels, filled in from RTP where the source leaves them out (opus 48000/2, G.711 8000/1, one channel by default), and the static payload types of PCMA and G722. `profile` and `level` (times ten, 51 for 5.1) are set for H264 and H265, read from the SPS. `native` marks codecs the camera sends itself, the others are converted by another source.
+- `transcode`: the backchannel accepts any codec from the client, the mixer converts it.
+- `state`: `live` while the first source is connected, `cached` with the medias of its last session after it stopped, `unknown` if it never connected. Changing the source forgets the last session.
+
 ## Examples
 
 ```yaml
