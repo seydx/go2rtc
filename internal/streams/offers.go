@@ -273,7 +273,7 @@ func (p *Producer) receiversSnapshot() []*core.Receiver {
 }
 
 // narrowToReceivers reduces a media that lists every codec its source might
-// send (ex. tapo: H264 or H265) to the codec its running track carries.
+// send (ex. tapo: H264 or H265) to the codec its running track receives.
 func narrowToReceivers(medias []*core.Media, receivers []*core.Receiver) ([]*core.Media, bool) {
 	var out []*core.Media
 	for i, media := range medias {
@@ -284,6 +284,11 @@ func narrowToReceivers(medias []*core.Media, receivers []*core.Receiver) ([]*cor
 		var actual []*core.Codec
 		for _, receiver := range receivers {
 			if receiver == nil || receiver.Codec == nil || receiver.Codec.Kind() != media.Kind {
+				continue
+			}
+			// a track is negotiated with the first listed codec (tapo: H264), but
+			// only the one the camera really sends ever gets a packet
+			if _, packets := receiver.Stats(); packets == 0 {
 				continue
 			}
 			for _, codec := range media.Codecs {

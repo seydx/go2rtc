@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/pion/rtp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -273,7 +274,15 @@ func TestOffersNarrowToTheRunningTrack(t *testing.T) {
 	offers := OffersOf(&Stream{producers: []*Producer{camera}})
 	require.Equal(t, []string{"H264/90000/0", "H265/90000/0"}, offerNames(offers.Video), "without a track both are possible")
 
-	camera.receivers = []*core.Receiver{core.NewReceiver(video, h264)}
+	// negotiated as H264 but silent, because the camera sends H265: proves nothing
+	silent := core.NewReceiver(video, h264)
+	camera.receivers = []*core.Receiver{silent}
+	offers = OffersOf(&Stream{producers: []*Producer{camera}})
+	require.Equal(t, []string{"H264/90000/0", "H265/90000/0"}, offerNames(offers.Video), "a silent track must not decide the codec")
+
+	receiving := core.NewReceiver(video, h264)
+	receiving.WriteRTP(&rtp.Packet{Payload: []byte{0x65, 0x88}})
+	camera.receivers = []*core.Receiver{receiving}
 	offers = OffersOf(&Stream{producers: []*Producer{camera}})
 	require.Equal(t, []string{"H264/90000/0"}, offerNames(offers.Video))
 	require.Equal(t, "High", offers.Video[0].Profile)
