@@ -101,10 +101,16 @@ func NewProducer(source string) *Producer {
 	}
 }
 
+// SetSource sets the producer's source. A live producer is not rewritten this
+// way: Stream.SetSource builds a new one with withSource.
 func (p *Producer) SetSource(s string) {
 	creds.AddURLSecrets(s)
 
 	rawSource, gopEnabled, backchannelEnabled, mixingEnabled, videoEnabled, audioEnabled, videoExplicitlySet, audioExplicitlySet, requirePrevAudio, requirePrevVideo := parseStreamParams(s)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	p.source = s
 	p.gopEnabled = gopEnabled
 	p.backchannelEnabled = backchannelEnabled
@@ -121,6 +127,21 @@ func (p *Producer) SetSource(s string) {
 	} else {
 		p.url = strings.Replace(p.template, SourceTemplate, rawSource, 1)
 	}
+}
+
+// withSource returns a new producer like p — same template, same stream —
+// pointed at input, or nil when p already points there.
+func (p *Producer) withSource(input string) *Producer {
+	p.mu.RLock()
+	template, source, stream := p.template, p.source, p.stream
+	p.mu.RUnlock()
+
+	next := &Producer{template: template, stream: stream}
+	next.SetSource(input)
+	if next.source == source {
+		return nil
+	}
+	return next
 }
 
 // errDialStopped is returned by a dial that completed after the producer was

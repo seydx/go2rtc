@@ -109,3 +109,88 @@ func TestNewLeavesAliasedStreamAlone(t *testing.T) {
 	require.Equal(t, "stubproto://cam", shared.producers[0].source)
 	require.Same(t, shared, Get("alias_origin"))
 }
+
+// A stream without templates, like camera.ui's camera plus exec companion,
+// swaps only its primary source on a patch. Setting every producer to the new
+// source collapsed the companion into a second copy of the camera.
+func TestSetSourceKeepsCompanion(t *testing.T) {
+	s := NewStream([]string{"rtsp://127.0.0.1/old", "ffmpeg:cam#audio=opus#requirePrevAudio"})
+	companion := s.producers[1]
+	cons := &stubConsumer{}
+	s.consumers = append(s.consumers, cons)
+
+	s.SetSource("rtsp://127.0.0.1/new")
+
+	require.Len(t, s.producers, 2)
+	require.Equal(t, "rtsp://127.0.0.1/new", s.producers[0].url)
+	require.Same(t, companion, s.producers[1], "the companion keeps its producer")
+	require.Equal(t, "ffmpeg:cam#audio=opus", companion.url)
+	require.True(t, companion.requirePrevAudio)
+	require.True(t, cons.stopped.Load(), "consumers reconnect against the new source")
+	require.Empty(t, s.consumers)
+}
+
+// Template producers get the input filled in; the others stay as they are.
+func TestSetSourceFillsOnlyTemplates(t *testing.T) {
+	s := NewStream([]string{"ffmpeg:{input}#video=copy", "ffmpeg:cam#audio=opus#requirePrevAudio"})
+	companion := s.producers[1]
+
+	s.SetSource("rtsp://example.com")
+
+	require.Equal(t, "ffmpeg:rtsp://example.com#video=copy", s.producers[0].url)
+	require.Same(t, companion, s.producers[1])
+	require.Equal(t, "ffmpeg:cam#audio=opus", companion.url)
+
+	// the template survives a second patch
+	s.SetSource("rtsp://example.org")
+	require.Equal(t, "ffmpeg:rtsp://example.org#video=copy", s.producers[0].url)
+}
+
+// A named GetOrPatch repeats the patch on every client connect: the same
+// input must not replace producers or disconnect anyone.
+func TestSetSourceSameInputChangesNothing(t *testing.T) {
+	s := NewStream("rtsp://127.0.0.1/cam")
+	s.SetSource("rtsp://127.0.0.1/cam#gop=1")
+	prod := s.producers[0]
+	cons := &stubConsumer{}
+	s.consumers = append(s.consumers, cons)
+
+	s.SetSource("rtsp://127.0.0.1/cam#gop=1")
+
+	require.Same(t, prod, s.producers[0])
+	require.False(t, cons.stopped.Load())
+	require.Len(t, s.consumers, 1)
+}
+
+// Producer url and flags are read without locks all over the package, so a
+// patch must never rewrite a producer that others can already see.
+// Meaningful under -race.
+func TestSetSourceDoesNotRaceReaders(t *testing.T) {
+	s := NewStream([]string{"rtsp://127.0.0.1/a", "ffmpeg:cam#audio=opus#requirePrevAudio"})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 200 {
+			if i%2 == 0 {
+				s.SetSource("rtsp://127.0.0.1/b#noAudio")
+			} else {
+				s.SetSource("rtsp://127.0.0.1/a")
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		_ = s.Sources()
+		_, _ = s.MarshalJSON()
+		for _, prod := range streamProducers(s) {
+			_ = prod.GetMedias()
+			_ = prod.hasHiddenMedias()
+		}
+	}
+}

@@ -61,17 +61,64 @@ func newStream(source any) *Stream {
 }
 
 func (s *Stream) Sources() []string {
-	sources := make([]string, 0, len(s.producers))
-	for _, prod := range s.producers {
+	s.mu.Lock()
+	producers := s.producers
+	s.mu.Unlock()
+
+	sources := make([]string, 0, len(producers))
+	for _, prod := range producers {
+		prod.mu.RLock()
 		sources = append(sources, prod.url)
+		prod.mu.RUnlock()
 	}
 	return sources
 }
 
-func (s *Stream) SetSource(source string) {
-	for _, prod := range s.producers {
-		prod.SetSource(source)
+// SetSource points the stream at a new input: PATCH /api/streams, a named
+// GetOrPatch, Home Assistant's rtsp_to_webrtc. Template producers
+// ("ffmpeg:{input}#video=copy") get the input filled in. A stream without
+// templates swaps its primary source only — the others, ex. an exec companion
+// reading the primary, keep theirs instead of collapsing into a second copy of
+// the camera.
+//
+// A changed producer is replaced, never rewritten: its url and flags are read
+// without locks across the package. Consumers reconnect against the new set,
+// like on a config change. The same input again changes nothing, which
+// matters because a named GetOrPatch repeats the patch on every client connect.
+func (s *Stream) SetSource(input string) {
+	s.mu.Lock()
+	hasTemplate := false
+	primary := -1
+	for i, prod := range s.producers {
+		if prod.template != "" {
+			hasTemplate = true
+		}
+		if primary < 0 && prod.state != stateExternal && prod.state != stateInternal {
+			primary = i
+		}
 	}
+
+	producers := append([]*Producer(nil), s.producers...)
+	var replaced []*Producer
+	for i, prod := range producers {
+		if hasTemplate && prod.template == "" || !hasTemplate && i != primary {
+			continue
+		}
+		if next := prod.withSource(input); next != nil {
+			producers[i] = next
+			replaced = append(replaced, prod)
+		}
+	}
+
+	if len(replaced) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	s.producers = producers
+	consumers := append([]core.Consumer(nil), s.consumers...)
+	s.mu.Unlock()
+
+	s.reconnectConsumers(consumers, replaced)
 }
 
 // in place, so name lookup and preload keep this stream: unchanged sources keep
@@ -113,16 +160,26 @@ func (s *Stream) setSources(sources []string) bool {
 	consumers := append([]core.Consumer(nil), s.consumers...)
 	s.mu.Unlock()
 
+	stale := make([]*Producer, 0, len(reusable))
+	for _, prod := range reusable {
+		stale = append(stale, prod)
+	}
+	s.reconnectConsumers(consumers, stale)
+	return true
+}
+
+// reconnectConsumers finishes a producer swap: consumers reconnect against
+// the new set, the replaced producers stop, the preload renegotiates.
+func (s *Stream) reconnectConsumers(consumers []core.Consumer, replaced []*Producer) {
 	for _, cons := range consumers {
 		s.RemoveConsumer(cons)
 	}
-	for _, prod := range reusable {
+	for _, prod := range replaced {
 		prod.stop()
 	}
 	if p := preloadOf(s); p != nil {
 		go func() { _ = p.tryAttach() }()
 	}
-	return true
 }
 
 func (s *Stream) RemoveConsumer(cons core.Consumer) {
