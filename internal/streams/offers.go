@@ -90,11 +90,12 @@ func OffersOf(s *Stream) *Offers {
 
 	// the first own source anchors the state: while it never connected, what
 	// another source (ex. a talk-only isapi) knows says nothing about video
+	var anchor *Producer
+	var anchorMedias []*core.Media
 	for _, prod := range producers {
 		if !prod.tiedToPrevious() {
-			if _, state := prod.offerMedias(); state != OffersUnknown {
-				offers.State = state
-			}
+			anchor = prod
+			anchorMedias, offers.State = prod.offerMedias()
 			break
 		}
 	}
@@ -110,7 +111,10 @@ func OffersOf(s *Stream) *Offers {
 			continue
 		}
 
-		medias, state := prod.offerMedias()
+		medias, state := anchorMedias, offers.State
+		if prod != anchor {
+			medias, state = prod.offerMedias()
+		}
 		if state == OffersUnknown {
 			medias = prod.visibleMedias(configMedias(prod.urlSnapshot()))
 		}
