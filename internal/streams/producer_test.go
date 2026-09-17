@@ -729,3 +729,30 @@ func TestStopDuringDialDoesNotClobberNewerDial(t *testing.T) {
 	require.Same(t, fresh, conn)
 	require.False(t, fresh.stopped.Load())
 }
+
+// The API reported "connected" for as long as a camera stayed down, because
+// only the first dial set an error. A failed reconnect has to surface.
+func TestStatusFollowsReconnect(t *testing.T) {
+	registerTestRTSPHandler()
+	speedUpWatchdog(t)
+
+	cam := newFakeCamera(t)
+	cam.noAudio.Store(true)
+
+	stream, err := New("status_reconnect", cam.URL())
+	require.NoError(t, err)
+
+	cons := newProbeConsumer()
+	require.NoError(t, stream.AddConsumer(cons))
+	t.Cleanup(func() { stream.RemoveConsumer(cons) })
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+	require.Equal(t, "connected", stream.Status())
+
+	cam.reject.Store(true)
+	cam.dropConns()
+	require.True(t, waitUntil(10*time.Second, func() bool { return stream.Status() == "error" }), "a camera that refuses the reconnect is an error")
+
+	cam.reject.Store(false)
+	require.True(t, waitUntil(30*time.Second, func() bool { return stream.Status() == "connected" }), "the status recovers with the camera")
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+}

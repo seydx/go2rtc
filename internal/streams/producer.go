@@ -42,6 +42,8 @@ type Producer struct {
 	dialDone           chan struct{} // Closed when dial completes (success or failure)
 	dialErr            error         // Error from dial attempt (if any)
 	dialEpoch          uint64        // Bumped by stop() so a dial returning afterwards can't install its conn
+	reconnecting       bool          // the session ended and no new conn is swapped in yet
+	reconnectErr       error         // last failed reconnect attempt, cleared by a successful swap
 	workerID           int
 	backchannelEnabled bool // Whether this producer supports backchannel (default: true)
 	mixingEnabled      bool // Whether to enable audio mixing for multiple backchannel consumers (default: true)
@@ -553,18 +555,23 @@ func (p *Producer) State() string {
 	switch p.state {
 	case stateDialing, stateMedias, stateTracks:
 		return "connecting"
-	case stateStart, stateExternal, stateInternal:
+	case stateStart:
+		if p.reconnecting {
+			return "connecting"
+		}
+		return "connected"
+	case stateExternal, stateInternal:
 		return "connected"
 	default:
 		return "idle"
 	}
 }
 
-// HasError returns whether the producer has a dial error.
+// HasError returns whether the producer's last dial or reconnect attempt failed.
 func (p *Producer) HasError() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.dialErr != nil
+	return p.dialErr != nil || p.reconnectErr != nil
 }
 
 // internals
@@ -611,6 +618,12 @@ func (p *Producer) worker(conn core.Producer, workerID, retry int) {
 	} else {
 		close(watchdogStop)
 	}
+
+	p.mu.Lock()
+	if p.workerID == workerID {
+		p.reconnecting = true
+	}
+	p.mu.Unlock()
 
 	// Force-close the underlying network socket *before* we enter the
 	// reconnect loop. Otherwise, on a failed reconnect (camera unreachable),
@@ -771,6 +784,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	conn, err := GetProducer(url)
 	if err != nil {
 		log.Debug().Msgf("[streams] producer=%s", err)
+		p.failReconnect(workerID, err)
 		p.scheduleReconnect(workerID, retry)
 		return
 	}
@@ -857,6 +871,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	if len(receivers) > 0 && len(moves) == 0 && !hasStale {
 		conn.Stop()
 		log.Debug().Msgf("[streams] reconnect got no tracks, retry=%d url=%s", retry, url)
+		p.failReconnect(workerID, errReconnectNoTracks)
 		p.scheduleReconnect(workerID, retry)
 		return
 	}
@@ -980,6 +995,8 @@ func (p *Producer) reconnect(workerID, retry int) {
 	}
 	// swap connections
 	p.conn = conn
+	p.reconnecting = false
+	p.reconnectErr = nil
 	p.mu.Unlock()
 
 	go p.worker(conn, workerID, retry)
@@ -1008,6 +1025,18 @@ func reconnectDelay(retry int) time.Duration {
 	default:
 		return time.Minute
 	}
+}
+
+var errReconnectNoTracks = errors.New("streams: reconnect got no tracks")
+
+// failReconnect records a failed attempt unless the producer was stopped or
+// restarted meanwhile.
+func (p *Producer) failReconnect(workerID int, err error) {
+	p.mu.Lock()
+	if p.workerID == workerID {
+		p.reconnectErr = err
+	}
+	p.mu.Unlock()
 }
 
 func (p *Producer) scheduleReconnect(workerID, retry int) {
@@ -1065,6 +1094,8 @@ func (p *Producer) stop() {
 	}
 
 	p.state = stateNone
+	p.reconnecting = false
+	p.reconnectErr = nil
 	p.receivers = nil
 	p.senders = nil
 }
