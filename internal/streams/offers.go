@@ -335,11 +335,15 @@ func addOfferCodecs(list []*OfferCodec, codecs []*core.Codec, source *core.Codec
 			continue
 		}
 
+		// a live codec is a receiver's, which depacketizers update: read the
+		// fmtp once, so the profile below describes the fmtp reported here
+		fmtp := codec.Fmtp()
+
 		offer := &OfferCodec{
 			Codec:       codec.Name,
 			Rate:        codec.ClockRate,
 			Channels:    codec.Channels,
-			Fmtp:        codec.FmtpLine,
+			Fmtp:        fmtp,
 			PayloadType: codec.PayloadType,
 			FFmpeg:      core.FFmpegCodecName(codec.Name),
 			Native:      native,
@@ -353,9 +357,9 @@ func addOfferCodecs(list []*OfferCodec, codecs []*core.Codec, source *core.Codec
 		}
 		switch codec.Name {
 		case core.CodecH264:
-			offer.Profile, offer.Level = h264ProfileLevel(codec.FmtpLine)
+			offer.Profile, offer.Level = h264ProfileLevel(fmtp)
 		case core.CodecH265:
-			offer.Profile, offer.Level = h265ProfileLevel(codec.FmtpLine)
+			offer.Profile, offer.Level = h265ProfileLevel(fmtp)
 		}
 
 		key := offerKey(offer)

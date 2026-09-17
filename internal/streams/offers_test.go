@@ -334,3 +334,46 @@ func TestOffersCarryTheH265ProfileAndLevel(t *testing.T) {
 	require.Empty(t, profile)
 	require.Zero(t, level)
 }
+
+// Offers read the camera's live codecs, which are the receivers' codecs a
+// depacketizer updates with SetFmtp from the first keyframe of every new
+// consumer. Each offer must read the fmtp once: under the lock, and so that
+// its profile describes the same fmtp it reports. Meaningful under -race.
+func TestOffersReadFmtpWhileDepacketizersUpdateIt(t *testing.T) {
+	const (
+		declared = "packetization-mode=1;profile-level-id=640033"                   // High
+		learned  = declared + ";sprop-parameter-sets=Z0LAHpY1QKALdNwEBAQI,aM48gA==" // Baseline in the SPS
+	)
+
+	medias := cameraMedias(true, false)
+	codec := medias[0].Codecs[0]
+	codec.FmtpLine = declared
+	stream := &Stream{producers: []*Producer{connectedProducer("rtsp://camera/stream", medias)}}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 2000 {
+			if i%2 == 0 {
+				codec.SetFmtp(learned)
+			} else {
+				codec.SetFmtp(declared)
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+
+		video := OffersOf(stream).Video[0]
+		want := "High"
+		if strings.Contains(video.Fmtp, "sprop-parameter-sets=") {
+			want = "Baseline"
+		}
+		require.Equal(t, want, video.Profile, "profile and fmtp of an offer come from the same read")
+	}
+}
