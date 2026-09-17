@@ -3,6 +3,7 @@ package cui
 import (
 	"strings"
 
+	"github.com/AlexxIT/go2rtc/internal/api/ws"
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/cui"
@@ -13,6 +14,8 @@ func Init() {
 	log = app.GetLogger("cui")
 
 	streams.RedirectFunc("cui", redirectCui)
+
+	ws.HandleFunc("cui/subscribe", subscribe)
 }
 
 var log zerolog.Logger

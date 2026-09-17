@@ -154,6 +154,11 @@ func (c *Connection) GetTag() string {
 	return c.Tag
 }
 
+// GetConnection exposes the connection info of whatever embeds it.
+func (c *Connection) GetConnection() *Connection {
+	return c
+}
+
 func (c *Connection) IsClosed() bool {
 	return false
 }

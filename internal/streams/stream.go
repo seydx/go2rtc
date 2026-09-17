@@ -118,6 +118,7 @@ func (s *Stream) SetSource(input string) {
 	consumers := append([]core.Consumer(nil), s.consumers...)
 	s.mu.Unlock()
 
+	notify(s)
 	s.reconnectConsumers(consumers, replaced)
 }
 
@@ -160,6 +161,8 @@ func (s *Stream) setSources(sources []string) bool {
 	consumers := append([]core.Consumer(nil), s.consumers...)
 	s.mu.Unlock()
 
+	notify(s)
+
 	stale := make([]*Producer, 0, len(reusable))
 	for _, prod := range reusable {
 		stale = append(stale, prod)
@@ -195,6 +198,7 @@ func (s *Stream) RemoveConsumer(cons core.Consumer) {
 	s.forget(cons)
 	s.mu.Unlock()
 
+	notify(s)
 	s.stopProducers()
 }
 
@@ -242,6 +246,7 @@ func (s *Stream) AddProducer(prod core.Producer) {
 	s.mu.Lock()
 	s.producers = append(s.producers, producer)
 	s.mu.Unlock()
+	notify(s)
 }
 
 func (s *Stream) RemoveProducer(prod core.Producer) {
@@ -253,6 +258,7 @@ func (s *Stream) RemoveProducer(prod core.Producer) {
 		}
 	}
 	s.mu.Unlock()
+	notify(s)
 }
 
 // Status returns the aggregated stream status based on the first producer.

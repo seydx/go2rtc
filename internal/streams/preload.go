@@ -246,6 +246,7 @@ func (p *Preload) attach() error {
 	if err != nil {
 		p.err = err
 		p.mu.Unlock()
+		notify(p.stream)
 		return err
 	}
 	if p.stopped() {
@@ -257,6 +258,7 @@ func (p *Preload) attach() error {
 	p.cons = cons
 	p.err = nil
 	p.mu.Unlock()
+	notify(p.stream)
 
 	if old != nil {
 		p.stream.RemoveConsumer(old)
@@ -335,6 +337,7 @@ func (p *Preload) close() {
 	cons := p.cons
 	p.cons = nil
 	p.mu.Unlock()
+	notify(p.stream)
 
 	if cons != nil {
 		p.stream.RemoveConsumer(cons)

@@ -136,6 +136,7 @@ func New(name string, sources ...string) (*Stream, error) {
 		streams[name] = stream
 	}
 	streamsMu.Unlock()
+	notify(nil)
 
 	if exists {
 		stream.setSources(decodedSources)
@@ -156,6 +157,7 @@ func isAlias(name string, stream *Stream) bool {
 func Patch(name string, source string) (*Stream, error) {
 	streamsMu.Lock()
 	defer streamsMu.Unlock()
+	defer notify(nil)
 
 	// check if source links to some stream name from go2rtc
 	if u, err := url.Parse(source); err == nil && u.Scheme == "rtsp" && len(u.Path) > 1 {
@@ -234,8 +236,9 @@ func Get(name string) *Stream {
 
 func Delete(name string) {
 	streamsMu.Lock()
-	defer streamsMu.Unlock()
 	delete(streams, name)
+	streamsMu.Unlock()
+	notify(nil)
 }
 
 func GetAllNames() []string {

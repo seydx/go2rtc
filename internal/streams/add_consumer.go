@@ -593,6 +593,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	s.consumers = append(s.consumers, cons)
 	s.bind(cons, bound)
 	s.mu.Unlock()
+	notify(s)
 
 	// A reconnect may have dropped a track while cons was attaching to it.
 	// Recorded first, checked second: a drop after this check finds cons in

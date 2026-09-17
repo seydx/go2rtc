@@ -160,6 +160,7 @@ func (p *Producer) Dial() error {
 		p.state = stateDialing
 		p.dialDone = make(chan struct{})
 		p.dialErr = nil
+		p.notify()
 		// Keep our own channel and epoch: if stop() runs while we dial and a
 		// new dial starts, p.dialDone and p.state belong to that newer dial.
 		dialDone := p.dialDone
@@ -189,6 +190,7 @@ func (p *Producer) Dial() error {
 			p.state = stateNone
 			close(dialDone)
 			p.mu.Unlock()
+			p.notify()
 			return err
 		}
 
@@ -196,6 +198,7 @@ func (p *Producer) Dial() error {
 		p.state = stateMedias
 		close(dialDone)
 		p.mu.Unlock()
+		p.notify()
 		return nil
 
 	case stateDialing:
@@ -428,6 +431,7 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 	}
 
 	p.mu.Unlock()
+	p.notify()
 	return track, nil
 }
 
@@ -505,6 +509,7 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 	}
 
 	p.mu.Unlock()
+	p.notify()
 	return nil
 }
 
@@ -567,6 +572,16 @@ func (p *Producer) State() string {
 	}
 }
 
+// Err returns the error of the last failed dial or reconnect attempt.
+func (p *Producer) Err() error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.reconnectErr != nil {
+		return p.reconnectErr
+	}
+	return p.dialErr
+}
+
 // HasError returns whether the producer's last dial or reconnect attempt failed.
 func (p *Producer) HasError() bool {
 	p.mu.RLock()
@@ -588,6 +603,7 @@ func (p *Producer) start() {
 
 	p.state = stateStart
 	p.workerID++
+	p.notify()
 
 	go p.worker(p.conn, p.workerID, 0)
 }
@@ -622,6 +638,7 @@ func (p *Producer) worker(conn core.Producer, workerID, retry int) {
 	p.mu.Lock()
 	if p.workerID == workerID {
 		p.reconnecting = true
+		p.notify()
 	}
 	p.mu.Unlock()
 
@@ -998,6 +1015,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	p.reconnecting = false
 	p.reconnectErr = nil
 	p.mu.Unlock()
+	p.notify()
 
 	go p.worker(conn, workerID, retry)
 
@@ -1035,6 +1053,7 @@ func (p *Producer) failReconnect(workerID int, err error) {
 	p.mu.Lock()
 	if p.workerID == workerID {
 		p.reconnectErr = err
+		p.notify()
 	}
 	p.mu.Unlock()
 }
@@ -1098,6 +1117,7 @@ func (p *Producer) stop() {
 	p.reconnectErr = nil
 	p.receivers = nil
 	p.senders = nil
+	p.notify()
 }
 
 func parseStreamParams(source string) (

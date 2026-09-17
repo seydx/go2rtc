@@ -113,12 +113,14 @@ func (s *Stream) AddInternalProducer(conn core.Producer) {
 	s.mu.Lock()
 	s.producers = append(s.producers, producer)
 	s.mu.Unlock()
+	notify(s)
 }
 
 func (s *Stream) AddInternalConsumer(conn core.Consumer) {
 	s.mu.Lock()
 	s.consumers = append(s.consumers, conn)
 	s.mu.Unlock()
+	notify(s)
 }
 
 func (s *Stream) RemoveInternalConsumer(conn core.Consumer) {
@@ -130,6 +132,7 @@ func (s *Stream) RemoveInternalConsumer(conn core.Consumer) {
 		}
 	}
 	s.mu.Unlock()
+	notify(s)
 }
 
 func matchMedia(prod core.Producer, cons core.Consumer) bool {
