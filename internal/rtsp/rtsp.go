@@ -141,7 +141,32 @@ func rtspHandler(rawURL string) (core.Producer, error) {
 		}
 	}
 
+	// A camera without a talk track gains nothing from a backchannel session,
+	// and some never send a packet on a session opened with that header.
+	if conn.Backchannel && !hasBackchannel(conn.Medias) {
+		log.Trace().Msgf("[rtsp] no backchannel track offered, describe again without it")
+
+		_ = conn.Close()
+		conn.Backchannel = false
+		conn.Medias = nil
+		if err := conn.Dial(); err != nil {
+			return nil, err
+		}
+		if err := conn.Describe(); err != nil {
+			return nil, err
+		}
+	}
+
 	return conn, nil
+}
+
+func hasBackchannel(medias []*core.Media) bool {
+	for _, media := range medias {
+		if media.Direction == core.DirectionSendonly {
+			return true
+		}
+	}
+	return false
 }
 
 func tcpHandler(conn *rtsp.Conn) {
