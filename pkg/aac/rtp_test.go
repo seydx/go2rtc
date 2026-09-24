@@ -1,7 +1,9 @@
 package aac
 
 import (
+	"encoding/binary"
 	"encoding/hex"
+	"math/rand"
 	"testing"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -30,4 +32,134 @@ func TestBuggy_RTSP_AAC(t *testing.T) {
 	})(packet)
 
 	require.Equal(t, len(payload), size+ADTSHeaderSize)
+}
+
+// Based on AlexxIT/go2rtc#2513: the AU sizes come from the camera, a malformed
+// packet must not slice past the payload and take down the whole process.
+func TestRTPToADTSIgnoresMalformedAUHeaders(t *testing.T) {
+	codec := &core.Codec{FmtpLine: "config=1408"}
+
+	tests := []struct {
+		name    string
+		payload []byte
+	}{
+		{
+			name:    "short payload",
+			payload: []byte{0},
+		},
+		{
+			name:    "truncated AU header",
+			payload: []byte{0, 8, 0},
+		},
+		{
+			name:    "AU headers exceed payload",
+			payload: []byte{0, 24, 0, 0},
+		},
+		{
+			name: "AU size exceeds payload",
+			payload: func() []byte {
+				payload := make([]byte, 220)
+				payload[1] = 16 // one 16-bit AU header
+				payload[2] = 0xFF
+				payload[3] = 0xF8 // AU size: 8191 bytes
+				return payload
+			}(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls int
+			handler := RTPToADTS(codec, func(*core.Packet) { calls++ })
+
+			require.NotPanics(t, func() {
+				handler(&rtp.Packet{Payload: tt.payload})
+			})
+			require.Zero(t, calls)
+		})
+	}
+}
+
+// rtpAAC builds an RFC 3640 AAC-hbr payload: AU-headers-length in bits, one
+// 16-bit header per AU (13-bit size), then the AUs. sizes may differ from the
+// real units to build malformed packets.
+func rtpAAC(sizes []int, units ...[]byte) []byte {
+	b := binary.BigEndian.AppendUint16(nil, uint16(16*len(sizes)))
+	for _, size := range sizes {
+		b = binary.BigEndian.AppendUint16(b, uint16(size<<3))
+	}
+	for _, unit := range units {
+		b = append(b, unit...)
+	}
+	return b
+}
+
+func adtsFrames(codec *core.Codec, units ...[]byte) []byte {
+	var b []byte
+	for _, unit := range units {
+		hdr := CodecToADTS(codec)
+		WriteADTSSize(hdr, ADTSHeaderSize+uint16(len(unit)))
+		b = append(append(b, hdr...), unit...)
+	}
+	return b
+}
+
+// Intact packets keep producing exactly the same ADTS stream.
+func TestRTPToADTSIntactPacket(t *testing.T) {
+	codec := &core.Codec{FmtpLine: "config=1408"}
+	au1, au2 := []byte{1, 2, 3, 4, 5}, []byte{6, 7, 8}
+
+	var got []byte
+	RTPToADTS(codec, func(p *core.Packet) { got = p.Payload })(&rtp.Packet{Payload: rtpAAC([]int{5, 3}, au1, au2)})
+	require.Equal(t, adtsFrames(codec, au1, au2), got)
+}
+
+// Only the truncated AU is lost, the complete ones before it still play. An
+// empty AU carries no audio and is skipped instead of becoming an empty frame.
+func TestRTPToADTSKeepsCompleteUnits(t *testing.T) {
+	codec := &core.Codec{FmtpLine: "config=1408"}
+	au1, au2 := []byte{1, 2, 3, 4, 5}, []byte{6, 7, 8}
+
+	var got []byte
+	handler := RTPToADTS(codec, func(p *core.Packet) { got = p.Payload })
+
+	// the second AU announces 100 bytes but only 3 arrived
+	handler(&rtp.Packet{Payload: rtpAAC([]int{5, 100}, au1, au2)})
+	require.Equal(t, adtsFrames(codec, au1), got)
+
+	got = nil
+	handler(&rtp.Packet{Payload: rtpAAC([]int{0, 5}, au1)})
+	require.Equal(t, adtsFrames(codec, au1), got)
+}
+
+// Random packets must never panic, and whatever is forwarded is a sequence of
+// complete ADTS frames.
+func TestRTPToADTSRandomPayloads(t *testing.T) {
+	codec := &core.Codec{FmtpLine: "config=1408"}
+	r := rand.New(rand.NewSource(1))
+
+	var got [][]byte
+	handler := RTPToADTS(codec, func(p *core.Packet) { got = append(got, p.Payload) })
+
+	require.NotPanics(t, func() {
+		for range 20000 {
+			payload := make([]byte, r.Intn(64))
+			r.Read(payload)
+			if len(payload) >= 2 && r.Intn(2) == 0 {
+				// plausible AU-headers-length, so the parser gets past the first check
+				binary.BigEndian.PutUint16(payload, uint16(16*r.Intn(4)))
+			}
+			handler(&rtp.Packet{Payload: payload})
+		}
+	})
+
+	for _, b := range got {
+		for len(b) > 0 {
+			require.True(t, IsADTS(b), "forwarded data must be ADTS frames")
+			size := int(ReadADTSSize(b))
+			require.GreaterOrEqual(t, size, ADTSHeaderSize)
+			require.LessOrEqual(t, size, len(b))
+			b = b[size:]
+		}
+	}
 }

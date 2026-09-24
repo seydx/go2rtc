@@ -119,18 +119,34 @@ func RTPToADTS(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	adts := CodecToADTS(codec)
 
 	return func(packet *rtp.Packet) {
+		// RFC 3640 AAC-hbr: AU-headers-length in bits, then one 16-bit header
+		// (13-bit size) per AU. All sizes come from the camera, a malformed
+		// packet must not slice past the payload and take down the process.
 		src := packet.Payload
-		dst := make([]byte, 0, len(src))
+		if len(src) < 2 {
+			return
+		}
 
 		headersSize := binary.BigEndian.Uint16(src) >> 3
+		if headersSize%2 != 0 || int(headersSize) > len(src)-2 {
+			return
+		}
+
+		dst := make([]byte, 0, len(src))
 		headers := src[2 : 2+headersSize]
 		units := src[2+headersSize:]
 
-		for len(headers) > 0 {
+		for len(headers) >= 2 {
 			unitSize := binary.BigEndian.Uint16(headers) >> 3
 			headers = headers[2:]
+			if int(unitSize) > len(units) {
+				break // truncated, keep the complete units before it
+			}
 			unit := units[:unitSize]
 			units = units[unitSize:]
+			if len(unit) == 0 {
+				continue // no audio, don't emit an empty frame
+			}
 
 			if !IsADTS(unit) {
 				i := len(dst)
@@ -139,6 +155,10 @@ func RTPToADTS(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 			}
 
 			dst = append(dst, unit...)
+		}
+
+		if len(dst) == 0 {
+			return
 		}
 
 		clone := *packet
