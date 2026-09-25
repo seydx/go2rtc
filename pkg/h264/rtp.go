@@ -20,6 +20,19 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	ps := JoinNALU(sps, pps)
 
 	buf := make([]byte, 0, 512*1024) // 512K
+	var seqNum uint16
+	var timestamp uint32
+	var fragmented bool
+
+	// drop discards the access unit being assembled, it is incomplete. The stream
+	// goes on with the next access unit without waiting for a keyframe: go2rtc
+	// feeds NVRs and recorders, decoders conceal missing references, but a gap
+	// of a whole GOP in a recording can't be repaired.
+	drop := func() {
+		depack = &codecs.H264Packet{IsAVC: true} // discard the unfinished FU-A NAL unit
+		buf = buf[:0]
+		fragmented = false
+	}
 
 	fmtpLineUpdated := false
 
@@ -27,6 +40,35 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 		if packet.Version == RTPPacketVersionAVC {
 			handler(packet)
 			return
+		}
+
+		// A sequence gap, or a new timestamp inside a fragmented NAL unit, means
+		// the access unit being assembled lost data. Between access units nothing
+		// is dropped, so seq wraps and cameras restarting RTP numbering go on.
+		// Tracked before any early return, so skipped packets keep continuity.
+		if (len(buf) > 0 || fragmented) && (packet.SequenceNumber-seqNum != 1 || (fragmented && packet.Timestamp != timestamp)) {
+			drop()
+		}
+		seqNum, timestamp = packet.SequenceNumber, packet.Timestamp
+
+		// pion joins FU-A fragments without looking at the start bit, so a tail
+		// whose start was lost became a bogus NAL unit, and a NAL unit whose end
+		// was lost got glued in front of the next one.
+		if b := packet.Payload; len(b) >= 2 && b[0]&0x1F == NALUTypeFUA {
+			if b[1]&0x80 != 0 { // start
+				if fragmented {
+					drop() // the previous fragmented NAL unit never ended
+				}
+				fragmented = true
+			} else if !fragmented {
+				drop() // the start of this NAL unit was lost
+				return
+			}
+			if b[1]&0x40 != 0 { // end
+				fragmented = false
+			}
+		} else if fragmented {
+			drop() // a single NAL unit or STAP-A can't continue a fragmented NAL unit
 		}
 
 		//log.Printf("[RTP] codec: %s, nalu: %2d, size: %6d, ts: %10d, pt: %2d, ssrc: %d, seq: %d, %v", codec.Name, packet.Payload[0]&0x1F, len(packet.Payload), packet.Timestamp, packet.PayloadType, packet.SSRC, packet.SequenceNumber, packet.Marker)

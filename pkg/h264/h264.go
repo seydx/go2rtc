@@ -11,12 +11,13 @@ import (
 )
 
 const (
-	NALUTypePFrame = 1 // Coded slice of a non-IDR picture
-	NALUTypeIFrame = 5 // Coded slice of an IDR picture
-	NALUTypeSEI    = 6 // Supplemental enhancement information (SEI)
-	NALUTypeSPS    = 7 // Sequence parameter set
-	NALUTypePPS    = 8 // Picture parameter set
-	NALUTypeAUD    = 9 // Access unit delimiter
+	NALUTypePFrame = 1  // Coded slice of a non-IDR picture
+	NALUTypeIFrame = 5  // Coded slice of an IDR picture
+	NALUTypeSEI    = 6  // Supplemental enhancement information (SEI)
+	NALUTypeSPS    = 7  // Sequence parameter set
+	NALUTypePPS    = 8  // Picture parameter set
+	NALUTypeAUD    = 9  // Access unit delimiter
+	NALUTypeFUA    = 28 // Fragmentation unit A (RFC 6184)
 )
 
 func NALUType(b []byte) byte {
