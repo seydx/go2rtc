@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/tcp"
@@ -13,7 +14,7 @@ import (
 type Producer struct {
 	core.Connection
 
-	closed bool
+	closed atomic.Bool // set by Stop while Start polls
 	res    *http.Response
 }
 
@@ -59,7 +60,7 @@ func (c *Producer) Start() error {
 
 	req := c.res.Request
 
-	for !c.closed {
+	for !c.closed.Load() {
 		res, err := tcp.Do(req)
 		if err != nil {
 			return err
@@ -87,6 +88,6 @@ func (c *Producer) Start() error {
 }
 
 func (c *Producer) Stop() error {
-	c.closed = true
+	c.closed.Store(true)
 	return c.Connection.Stop()
 }
