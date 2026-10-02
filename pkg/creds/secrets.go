@@ -77,8 +77,13 @@ type secretWriter struct {
 	w io.Writer
 }
 
+// the console log writer decodes one json event per write, so the masked
+// event has to go out in one piece and not split at every secret
 func (s *secretWriter) Write(b []byte) (int, error) {
-	return SecretWrite(s.w, string(b))
+	if _, err := s.w.Write([]byte(SecretString(string(b)))); err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }
 
 func SecretResponse(w http.ResponseWriter) http.ResponseWriter {
