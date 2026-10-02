@@ -730,6 +730,48 @@ func TestStopDuringDialDoesNotClobberNewerDial(t *testing.T) {
 	require.False(t, fresh.stopped.Load())
 }
 
+type pollingProducer struct {
+	stubProducer
+	stopped     chan struct{}
+	interrupted atomic.Int32
+}
+
+func (s *pollingProducer) Start() error {
+	<-s.stopped
+	return nil
+}
+
+func (s *pollingProducer) Stop() error {
+	close(s.stopped)
+	return nil
+}
+
+func (s *pollingProducer) Interrupt() error {
+	s.interrupted.Add(1)
+	return nil
+}
+
+// A snapshot source ends every session with a stop, and the jpeg poller
+// returns nil from Start after it. That is no failed session to retry.
+func TestStoppedWorkerLeavesConnectionAlone(t *testing.T) {
+	conn := &pollingProducer{stopped: make(chan struct{})}
+	p := NewProducer("stubjpeg://cam")
+	p.mu.Lock()
+	p.conn, p.state = conn, stateTracks
+	p.mu.Unlock()
+
+	p.start()
+	p.stop()
+
+	// a stray reconnecting would stick: start() doesn't reset it, so the next
+	// session of this producer would report "connecting" for as long as it runs
+	require.Never(t, func() bool {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		return conn.interrupted.Load() > 0 || p.reconnecting
+	}, 300*time.Millisecond, 10*time.Millisecond, "the worker of a stopped producer must not touch it again")
+}
+
 // The API reported "connected" for as long as a camera stayed down, because
 // only the first dial set an error. A failed reconnect has to surface.
 func TestStatusFollowsReconnect(t *testing.T) {

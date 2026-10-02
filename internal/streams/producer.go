@@ -627,28 +627,26 @@ func (p *Producer) worker(conn core.Producer, workerID, retry int) {
 	watchdogStop := make(chan struct{})
 	go p.watchdog(conn, workerID, watchdogStop)
 
-	if err := conn.Start(); err != nil {
-		close(watchdogStop)
-
-		p.mu.Lock()
-		closed := p.workerID != workerID
-		p.mu.Unlock()
-
-		if closed {
-			return
-		}
-
-		log.Warn().Err(err).Str("url", p.url).Caller().Send()
-	} else {
-		close(watchdogStop)
-	}
+	err := conn.Start()
+	close(watchdogStop)
 
 	p.mu.Lock()
-	if p.workerID == workerID {
+	closed := p.workerID != workerID
+	if !closed {
 		p.reconnecting = true
 		p.notify()
 	}
 	p.mu.Unlock()
+
+	// stopped: stop() already closed the connection, and producers like the
+	// jpeg poller return nil after it, so this is no failed session
+	if closed {
+		return
+	}
+
+	if err != nil {
+		log.Warn().Err(err).Str("url", p.url).Caller().Send()
+	}
 
 	// Force-close the underlying network socket *before* we enter the
 	// reconnect loop. Otherwise, on a failed reconnect (camera unreachable),
