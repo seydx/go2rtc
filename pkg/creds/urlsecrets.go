@@ -66,7 +66,8 @@ func AddURLSecrets(source string) {
 			if s, err := url.QueryUnescape(key); err == nil {
 				key = s
 			}
-			key = strings.ToLower(key)
+			// some cameras take dashed keys (auto.jpg?-usr=admin&-pwd=...)
+			key = strings.TrimLeft(strings.ToLower(key), "-")
 			if !secretQueryKeys[key] && !schemeKeys[key] {
 				continue
 			}

@@ -81,6 +81,12 @@ func TestAddURLSecretsEncodedValue(t *testing.T) {
 	require.Equal(t, "*** ***", SecretString("ENC%2FSECRET%2Bvalue ENC/SECRET+value"))
 }
 
+// Some cameras write their keys with a leading dash, the user name stays.
+func TestAddURLSecretsDashedKeys(t *testing.T) {
+	AddURLSecrets("http://cam/web/auto.jpg?-usr=DASHED-CAM-USER&-pwd=DASHED-CAM-PASSWORD&")
+	require.Equal(t, "-usr=DASHED-CAM-USER&-pwd=***", SecretString("-usr=DASHED-CAM-USER&-pwd=DASHED-CAM-PASSWORD"))
+}
+
 // Single letter keys are credentials for roborock only.
 func TestAddURLSecretsSchemeSpecificKeys(t *testing.T) {
 	AddURLSecrets("roborock://?u=ROBOROCK-USER-ID&s=ROBOROCK-S-SECRET&k=ROBOROCK-K-SECRET")
