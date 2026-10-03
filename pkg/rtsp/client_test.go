@@ -9,8 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// setTimeout changes the package Timeout for one test. Left behind, 1ms
+// deadlines broke every later test of the package that reads a request.
+func setTimeout(t *testing.T, d time.Duration) {
+	old := Timeout
+	t.Cleanup(func() { Timeout = old })
+	Timeout = d
+}
+
 func TestTimeout(t *testing.T) {
-	Timeout = time.Millisecond
+	setTimeout(t, time.Millisecond)
 
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.Nil(t, err)
@@ -43,7 +51,7 @@ func TestHandshakeTimeout(t *testing.T) {
 }
 
 func TestMissedControl(t *testing.T) {
-	Timeout = time.Millisecond
+	setTimeout(t, time.Millisecond)
 
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.Nil(t, err)
