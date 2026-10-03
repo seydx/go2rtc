@@ -74,7 +74,7 @@ func (c *Conn) Dial() (err error) {
 	c.ioMu.Unlock()
 	c.session = ""
 	c.sequence = 0
-	c.state = StateConn
+	c.state.Store(StateConn)
 
 	c.udpConn = nil
 	c.udpAddr = nil

@@ -23,7 +23,7 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 
 	switch c.mode {
 	case core.ModeActiveProducer:
-		if c.state == StatePlay {
+		if c.state.Load() == StatePlay {
 			// Cannot SETUP during PLAY — Handle() and SetupMedia() share the same
 			// reader/writer without a common lock, causing data corruption.
 			// Fall back to Reconnect to cleanly re-establish the session.
@@ -38,7 +38,7 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 			return nil, err
 		}
 
-		c.state = StateSetup
+		c.state.Store(StateSetup)
 	case core.ModePassiveConsumer:
 		// Backchannel
 		channel = byte(len(c.Senders)) * 2
@@ -60,7 +60,7 @@ func (c *Conn) Start() (err error) {
 		ok := false
 
 		c.stateMu.Lock()
-		switch c.state {
+		switch c.state.Load() {
 		case StateNone:
 			err = nil
 		case StateConn:
@@ -76,7 +76,7 @@ func (c *Conn) Start() (err error) {
 			}
 
 			if err == nil {
-				c.state = StatePlay
+				c.state.Store(StatePlay)
 				ok = true
 
 				// Start all senders after Play for ActiveProducer mode
@@ -105,7 +105,7 @@ func (c *Conn) Start() (err error) {
 func (c *Conn) getState() State {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	return c.state
+	return c.state.Load()
 }
 
 func (c *Conn) Stop() (err error) {
@@ -117,8 +117,8 @@ func (c *Conn) Stop() (err error) {
 	}
 
 	c.stateMu.Lock()
-	if c.state != StateNone {
-		c.state = StateNone
+	if c.state.Load() != StateNone {
+		c.state.Store(StateNone)
 		err = c.Close()
 	} else if conn, _ := c.netIO(); c.mode == core.ModePassiveConsumer && conn != nil {
 		// A server-side consumer is attached at DESCRIBE, before SETUP moves
@@ -196,7 +196,7 @@ func (c *Conn) Reconnect() error {
 	// able to PLAY it — otherwise it fails at once and the producer
 	// reconnects in a tight loop.
 	if restored {
-		c.state = StateSetup
+		c.state.Store(StateSetup)
 	}
 
 	return nil

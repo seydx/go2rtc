@@ -22,7 +22,7 @@ func TestServerConsumerStopClosesConnection(t *testing.T) {
 
 			conn := NewServer(server)
 			conn.mode = core.ModePassiveConsumer
-			conn.state = state
+			conn.state.Store(state)
 
 			require.NoError(t, ignoreClosed(conn.Stop()))
 

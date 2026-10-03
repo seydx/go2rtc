@@ -54,8 +54,8 @@ type Conn struct {
 	session   string
 	uri       string
 
-	state   State
-	stateMu sync.Mutex
+	state   atomicState
+	stateMu sync.Mutex // serializes the transitions that depend on state
 
 	udpConn []*net.UDPConn
 	udpAddr []*net.UDPAddr
@@ -105,6 +105,14 @@ const (
 	StateSetup
 	StatePlay
 )
+
+// atomicState holds the connection State. The sender goroutines check it on
+// every packet without stateMu, which Start holds during the PLAY round trip,
+// so every read and write is atomic.
+type atomicState struct{ v atomic.Uint32 }
+
+func (s *atomicState) Load() State   { return State(s.v.Load()) }
+func (s *atomicState) Store(v State) { s.v.Store(uint32(v)) }
 
 func (c *Conn) Handle() (err error) {
 	var timeout time.Duration

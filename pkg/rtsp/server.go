@@ -171,7 +171,7 @@ func (c *Conn) Accept() error {
 			// This allows smart clients who initially requested UDP to fall back on TCP transport
 			if tr := req.Header.Get("Transport"); strings.HasPrefix(tr, "RTP/AVP/TCP") {
 				c.session = core.RandString(8, 10)
-				c.state = StateSetup
+				c.state.Store(StateSetup)
 
 				if c.mode == core.ModePassiveConsumer {
 					if i := reqTrackID(req); i >= 0 && i < len(c.Senders)+len(c.Receivers) {
@@ -221,7 +221,7 @@ func (c *Conn) Accept() error {
 		case MethodTeardown:
 			res := &tcp.Response{Request: req}
 			_ = c.WriteResponse(res)
-			c.state = StateNone
+			c.state.Store(StateNone)
 			conn, _ := c.netIO()
 			return conn.Close()
 

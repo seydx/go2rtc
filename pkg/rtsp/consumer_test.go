@@ -82,7 +82,7 @@ func TestConsumerReportBeforeJump(t *testing.T) {
 			server, client := net.Pipe()
 			c := NewServer(server)
 			c.mode = mode
-			c.state = StatePlay
+			c.state.Store(StatePlay)
 			c.playOK.Store(true)
 			wire := readWire(client)
 

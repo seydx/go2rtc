@@ -25,7 +25,7 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 		c.stateMu.Lock()
 		defer c.stateMu.Unlock()
 
-		if c.state == StatePlay {
+		if c.state.Load() == StatePlay {
 			if err = c.Reconnect(); err != nil {
 				return
 			}
@@ -35,7 +35,7 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 			return
 		}
 
-		c.state = StateSetup
+		c.state.Store(StateSetup)
 
 	case core.ModePassiveConsumer:
 		channel = byte(len(c.Senders)) * 2
@@ -112,7 +112,7 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 	}
 
 	handlerFunc := func(packet *rtp.Packet) {
-		if c.state == StateNone {
+		if c.state.Load() == StateNone {
 			return
 		}
 
