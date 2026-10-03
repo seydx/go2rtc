@@ -19,8 +19,10 @@ const (
 	QOS1      = 0x02
 )
 
-func (m *Message) WriteByte(b byte) {
+// WriteByte implements io.ByteWriter, it never fails
+func (m *Message) WriteByte(b byte) error {
 	m.b = append(m.b, b)
+	return nil
 }
 
 func (m *Message) WriteBytes(b []byte) {

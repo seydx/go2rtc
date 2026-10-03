@@ -264,10 +264,10 @@ func RegisterDefaultCodecs(m *webrtc.MediaEngine) error {
 	}
 
 	videoRTCPFeedback := []webrtc.RTCPFeedback{
-		{"goog-remb", ""},
-		{"ccm", "fir"},
-		{"nack", ""},
-		{"nack", "pli"},
+		{Type: "goog-remb"},
+		{Type: "ccm", Parameter: "fir"},
+		{Type: "nack"},
+		{Type: "nack", Parameter: "pli"},
 	}
 	for _, codec := range []webrtc.RTPCodecParameters{
 		{
