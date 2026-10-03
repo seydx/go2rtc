@@ -100,6 +100,10 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 		sr = &senderReport{clockRate: codec.ClockRate}
 	}
 
+	// consumers get a new mapping as soon as the timeline jumps (producer
+	// swap or reconnect); the backchannel to a camera keeps the plain cadence
+	reanchor := sr != nil && c.mode == core.ModePassiveConsumer
+
 	flushBuf := func() {
 		//log.Printf("[rtsp] channel:%2d write_size:%6d buffer_size:%6d", channel, n, len(buf))
 		_ = c.writeInterleavedData(buf[:n])
@@ -110,6 +114,23 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 	handlerFunc := func(packet *rtp.Packet) {
 		if c.state == StateNone {
 			return
+		}
+
+		if reanchor {
+			now := time.Now()
+			if sr.jump(packet.Timestamp, now) && c.playOK {
+				// receivers map a packet with the last report they got, so
+				// the report for the new timeline has to arrive before its
+				// first packet; whatever is buffered belongs to the old one
+				if n > 0 {
+					flushBuf()
+				}
+				if b := sr.reanchor(channel+1, packet.SSRC, packet.Timestamp, now); b != nil {
+					if err := c.writeInterleavedData(b); err == nil {
+						c.Send += len(b)
+					}
+				}
+			}
 		}
 
 		clone := rtp.Packet{
