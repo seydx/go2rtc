@@ -118,7 +118,7 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 
 		if reanchor {
 			now := time.Now()
-			if sr.jump(packet.Timestamp, now) && c.playOK {
+			if sr.jump(packet.Timestamp, now) && c.playOK.Load() {
 				// receivers map a packet with the last report they got, so
 				// the report for the new timeline has to arrive before its
 				// first packet; whatever is buffered belongs to the old one
@@ -178,10 +178,10 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 			sr.count(packet)
 		}
 
-		if !packet.Marker || !c.playOK {
+		if !packet.Marker || !c.playOK.Load() {
 			// collect continious video packets to buffer
 			// or wait OK for PLAY command for backchannel
-			//log.Printf("[rtsp] collecting buffer ok=%t", c.playOK)
+			//log.Printf("[rtsp] collecting buffer ok=%t", c.playOK.Load())
 			return
 		}
 

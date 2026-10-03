@@ -83,7 +83,7 @@ func TestConsumerReportBeforeJump(t *testing.T) {
 			c := NewServer(server)
 			c.mode = mode
 			c.state = StatePlay
-			c.playOK = true
+			c.playOK.Store(true)
 			wire := readWire(client)
 
 			// RTP video passes through unchanged and is buffered per frame

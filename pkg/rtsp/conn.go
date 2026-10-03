@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -45,7 +46,7 @@ type Conn struct {
 	conn      net.Conn
 	keepalive int
 	mode      core.Mode
-	playOK    bool
+	playOK    atomic.Bool // set by the reading side, read by the sender goroutines
 	playErr   error
 	reader    *bufio.Reader
 	ioMu      sync.RWMutex // guards conn and reader, which Dial swaps on reconnect
@@ -234,7 +235,7 @@ func (c *Conn) handleTCPData(conn net.Conn, reader *bufio.Reader) error {
 			}
 			c.Fire(res)
 			// for playing backchannel only after OK response on play
-			c.playOK = true
+			c.playOK.Store(true)
 			return nil
 
 		case "OPTI", "TEAR", "DESC", "SETU", "PLAY", "PAUS", "RECO", "ANNO", "GET_", "SET_":
