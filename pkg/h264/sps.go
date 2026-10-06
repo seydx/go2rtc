@@ -92,15 +92,15 @@ func DecodeSPS(sps []byte) *SPS {
 	// ffmpeg -i file.h264 -c copy -bsf:v trace_headers -f null -
 	r := bits.NewReader(sps)
 
-	hdr := r.ReadByte()
+	hdr := r.ReadUint8()
 	if hdr&0x1F != NALUTypeSPS {
 		return nil
 	}
 
 	s := &SPS{
-		profile_idc:          r.ReadByte(),
-		profile_iop:          r.ReadByte(),
-		level_idc:            r.ReadByte(),
+		profile_idc:          r.ReadUint8(),
+		profile_iop:          r.ReadUint8(),
+		level_idc:            r.ReadUint8(),
 		seq_parameter_set_id: r.ReadUEGolomb(),
 	}
 
@@ -176,7 +176,7 @@ func DecodeSPS(sps []byte) *SPS {
 	if s.vui_parameters_present_flag != 0 {
 		s.aspect_ratio_info_present_flag = r.ReadBit()
 		if s.aspect_ratio_info_present_flag != 0 {
-			s.aspect_ratio_idc = r.ReadByte()
+			s.aspect_ratio_idc = r.ReadUint8()
 			if s.aspect_ratio_idc == 255 {
 				s.sar_width = r.ReadUint16()
 				s.sar_height = r.ReadUint16()
@@ -279,11 +279,11 @@ func (s *SPS) String() string {
 func FixPixFmt(sps []byte) {
 	r := bits.NewReader(sps)
 
-	_ = r.ReadByte()
+	_ = r.ReadUint8()
 
-	profile := r.ReadByte()
-	_ = r.ReadByte()
-	_ = r.ReadByte()
+	profile := r.ReadUint8()
+	_ = r.ReadUint8()
+	_ = r.ReadUint8()
 	_ = r.ReadUEGolomb()
 
 	switch profile {
@@ -345,7 +345,7 @@ func FixPixFmt(sps []byte) {
 
 	if r.ReadBit() != 0 {
 		if r.ReadBit() != 0 {
-			if r.ReadByte() == 255 {
+			if r.ReadUint8() == 255 {
 				_ = r.ReadUint16()
 				_ = r.ReadUint16()
 			}

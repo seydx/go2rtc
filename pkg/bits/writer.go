@@ -10,8 +10,7 @@ func NewWriter(buf []byte) *Writer {
 	return &Writer{buf: buf}
 }
 
-//goland:noinspection GoStandardMethods
-func (w *Writer) WriteByte(b byte) {
+func (w *Writer) WriteUint8(b byte) {
 	if w.bits != 0 {
 		w.WriteBits8(b, 8)
 	}
@@ -74,7 +73,7 @@ func (w *Writer) WriteUint16(v uint16) {
 func (w *Writer) WriteBytes(bytes ...byte) {
 	if w.bits != 0 {
 		for _, b := range bytes {
-			w.WriteByte(b)
+			w.WriteUint8(b)
 		}
 	}
 
