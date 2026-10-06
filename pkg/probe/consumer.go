@@ -66,13 +66,13 @@ func (p *Probe) AddTrack(media *core.Media, codec *core.Codec, track *core.Recei
 	switch track.Codec.Name {
 	case core.CodecH264:
 		if track.Codec.IsRTP() {
-			handler = h264.RTPDepay(track.Codec, handler)
+			handler = depayUntilParameterSets(track.Codec, h264.RTPDepay, h264.ContainsParameterSets, handler)
 		} else {
 			handler = h264.RepairAVCC(track.Codec, handler)
 		}
 	case core.CodecH265:
 		if track.Codec.IsRTP() {
-			handler = h265.RTPDepay(track.Codec, handler)
+			handler = depayUntilParameterSets(track.Codec, h265.RTPDepay, h265.ContainsParameterSets, handler)
 		} else {
 			handler = h265.RepairAVCC(track.Codec, handler)
 		}
@@ -82,6 +82,24 @@ func (p *Probe) AddTrack(media *core.Media, codec *core.Codec, track *core.Recei
 	sender.HandleRTP(track)
 	p.Senders = append(p.Senders, sender)
 	return nil
+}
+
+// the depayer sets the fmtp from the first access unit with parameter sets and
+// never again, then it is dropped and its buffer freed; only the sender's
+// goroutine runs this
+func depayUntilParameterSets(codec *core.Codec, depay func(*core.Codec, core.HandlerFunc) core.HandlerFunc, hasParameterSets func([]byte) bool, count core.HandlerFunc) core.HandlerFunc {
+	var depayer core.HandlerFunc
+	depayer = depay(codec, func(packet *core.Packet) {
+		if hasParameterSets(packet.Payload) {
+			depayer = nil
+		}
+	})
+	return func(packet *core.Packet) {
+		count(packet)
+		if depayer != nil {
+			depayer(packet)
+		}
+	}
 }
 
 func (p *Probe) Start() error {
