@@ -370,7 +370,7 @@ func (m *RTPMixer) startFFmpeg() error {
 		Bin:           m.ffmpegBinary,
 		Global:        "-hide_banner",
 		Input:         "-protocol_whitelist pipe,rtp,udp,file,crypto -analyzeduration 0 -probesize 32 -fflags nobuffer -flags low_delay -listen_timeout 1 -f sdp -i pipe:0",
-		FilterComplex: fmt.Sprintf("amix=inputs=%d:duration=first:dropout_transition=0", numInputs),
+		FilterComplex: fmt.Sprintf("amix=inputs=%d:duration=first:dropout_transition=0:normalize=0,alimiter", numInputs), // idle inputs carry silence, 1/inputs scaling only cuts the talker
 		Output:        fmt.Sprintf("-flush_packets 1 -f rtp rtp://127.0.0.1:%d", udpServer.Port()),
 	}
 
@@ -748,9 +748,30 @@ func (m *RTPMixer) sendSilence(parentID uint32) error {
 	packet.Version = 2
 	packet.PayloadType = codec.PayloadType
 	packet.SSRC = 0
-	packet.Payload = make([]byte, frameSizeForCodec(codec))
+	packet.Payload = silenceFrame(codec)
 
 	return m.sendToFFmpeg(packet, parentID)
+}
+
+// silenceFrame is 20 ms of silence in codec. Zero bytes are close to full
+// scale negative in G.711 and no valid Opus frame.
+func silenceFrame(codec *Codec) []byte {
+	samples := int(frameSizeForCodec(codec))
+	if codec.Channels > 1 {
+		samples *= int(codec.Channels)
+	}
+
+	switch codec.Name {
+	case CodecPCMU:
+		return bytes.Repeat([]byte{0xFF}, samples)
+	case CodecPCMA:
+		return bytes.Repeat([]byte{0xD5}, samples)
+	case CodecPCM, CodecPCML:
+		return make([]byte, 2*samples)
+	case CodecOpus:
+		return []byte{0xF8, 0xFF, 0xFE} // CELT fullband 20 ms, silence flag
+	}
+	return make([]byte, frameSizeForCodec(codec))
 }
 
 func (m *RTPMixer) frameSize() uint32 {
