@@ -179,14 +179,15 @@ func (m *RTPMixer) MarshalJSON() ([]byte, error) {
 	// to avoid nested lock acquisition
 	parents := make([]*Node, len(m.parents))
 	copy(parents, m.parents)
-	childs := make([]*Node, len(m.childs))
-	copy(childs, m.childs)
 	id := m.id
 	codec := m.Codec
 	bytes := m.Bytes
 	packets := m.Packets
 	parentBytes := maps.Clone(m.parentBytes)
 	m.mu.Unlock()
+
+	// childs belong to the Node and its lock, not to m.mu
+	childs := m.Node.children()
 
 	data := struct {
 		ID          uint32         `json:"id"`
