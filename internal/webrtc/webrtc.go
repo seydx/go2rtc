@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/api/ws"
@@ -116,6 +117,16 @@ var log zerolog.Logger
 
 var PeerConnection func(active bool) (*pion.PeerConnection, error)
 
+// above the 10 s the camera.ui client waits for a connection
+var connectDeadline = 15 * time.Second
+
+type ctxKey string
+
+const (
+	lastConnKey ctxKey = "webrtc/conn" // the peer of the latest offer on a websocket
+	lastSeqKey  ctxKey = "webrtc/seq"
+)
+
 func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 	var stream *streams.Stream
 	var mode core.Mode
@@ -177,7 +188,32 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 
 	tr.OnClose(func() {
 		conn.CloseTransport()
+		// a connected peer outlives its signaling, one still connecting can't
+		if !conn.Connected() {
+			_ = conn.Close()
+		}
 	})
+
+	// a client offering again on the same websocket gave up on its last peer
+	var prev *webrtc.Conn
+	superseded := false
+	tr.WithContext(func(ctx map[any]any) {
+		// handlers run concurrently, an older offer may get here last
+		if last, _ := ctx[lastSeqKey].(uint64); last > msg.Seq {
+			superseded = true
+			return
+		}
+		ctx[lastSeqKey] = msg.Seq
+		prev, _ = ctx[lastConnKey].(*webrtc.Conn)
+		ctx[lastConnKey] = conn
+	})
+	if superseded {
+		_ = conn.Close()
+		return nil
+	}
+	if prev != nil && !prev.Connected() {
+		_ = prev.Close()
+	}
 
 	// Parse query parameters for GOP control
 	if s := query.Get("gop"); s != "" {
@@ -238,6 +274,7 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 	// 3. Exchange SDP without waiting all candidates
 	answer, err := conn.GetAnswer()
 	log.Trace().Msgf("[webrtc] answer\n%s", answer)
+	conn.CloseUnlessConnected(connectDeadline)
 
 	if err != nil {
 		log.Error().Err(err).Caller().Send()
@@ -310,6 +347,8 @@ func ExchangeSDP(stream *streams.Stream, offer, desc, userAgent, tag string) (an
 
 	answer, err = conn.GetCompleteAnswer(GetCandidates(), FilterCandidate)
 	log.Trace().Msgf("[webrtc] answer\n%s", answer)
+
+	conn.CloseUnlessConnected(connectDeadline)
 
 	if err != nil {
 		log.Error().Err(err).Caller().Send()

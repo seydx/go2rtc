@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -30,6 +31,9 @@ type Conn struct {
 	closed          core.Waiter
 	rtcpOnce        sync.Once
 	transportClosed bool
+
+	connected atomic.Bool
+	deadline  atomic.Pointer[time.Timer]
 }
 
 func NewConn(pc *webrtc.PeerConnection) *Conn {
@@ -191,6 +195,9 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 
 		switch state {
 		case webrtc.PeerConnectionStateConnected:
+			c.connected.Store(true)
+			c.stopDeadline()
+
 			// Pion's NACK responder only runs while RTCP is read. Without this,
 			// receivers ask for missing RTP packets and never get them, so the
 			// picture freezes until the next keyframe. Start only once, an ICE
@@ -226,6 +233,8 @@ func (c *Conn) MarshalJSON() ([]byte, error) {
 }
 
 func (c *Conn) Close() error {
+	c.stopDeadline()
+
 	// Close all senders to remove them from parent receivers
 	for _, sender := range c.Senders {
 		sender.Close()
@@ -260,6 +269,34 @@ func (c *Conn) IsClosed() bool {
 
 func (c *Conn) CloseTransport() {
 	c.transportClosed = true
+}
+
+// Connected reports whether the peer connection was ever established.
+func (c *Conn) Connected() bool {
+	return c.connected.Load()
+}
+
+// CloseUnlessConnected closes the connection if it is not established within
+// timeout. pion gives up on a peer that never answers ICE only after about
+// 30 s, and until then a consumer keeps its tracks and fills its queues.
+func (c *Conn) CloseUnlessConnected(timeout time.Duration) {
+	timer := time.AfterFunc(timeout, func() {
+		if !c.connected.Load() {
+			_ = c.Close()
+		}
+	})
+	if old := c.deadline.Swap(timer); old != nil {
+		old.Stop()
+	}
+	if c.connected.Load() {
+		c.stopDeadline()
+	}
+}
+
+func (c *Conn) stopDeadline() {
+	if timer := c.deadline.Swap(nil); timer != nil {
+		timer.Stop()
+	}
 }
 
 func (c *Conn) AddCandidate(candidate string) error {
