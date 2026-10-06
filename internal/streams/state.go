@@ -125,11 +125,18 @@ func consumerState(cons core.Consumer) ConsumerState {
 		return ConsumerState{}
 	}
 	conn := c.GetConnection()
+	// a connection that rewrites them while it runs (WebRTC) guards them
+	var protocol, remoteAddr string
+	if e, ok := cons.(interface{ Endpoint() (string, string) }); ok {
+		protocol, remoteAddr = e.Endpoint()
+	} else {
+		protocol, remoteAddr = conn.Protocol, conn.RemoteAddr
+	}
 	return ConsumerState{
 		ID:         conn.ID,
 		FormatName: conn.FormatName,
-		Protocol:   conn.Protocol,
-		RemoteAddr: conn.RemoteAddr,
+		Protocol:   protocol,
+		RemoteAddr: remoteAddr,
 		UserAgent:  conn.UserAgent,
 		Tag:        conn.Tag,
 	}

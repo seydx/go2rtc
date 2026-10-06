@@ -422,3 +422,43 @@ func TestUnconnectedViewerOnOpenWebsocketIsDroppedAfterDeadline(t *testing.T) {
 
 	require.Eventually(t, func() bool { return consumerCount(t, stream) == 0 }, 3*time.Second, 50*time.Millisecond)
 }
+
+// The selected candidate pair rewrites the viewer's protocol and address while
+// the API reports the stream: the stream JSON and the state camera.ui watches.
+// Meaningful under -race.
+func TestViewerAddressReadWhileConnecting(t *testing.T) {
+	useLoopbackAPI(t, time.Minute)
+	const name = "webrtc_address_read"
+	stream := newStubStream(t, name)
+
+	viewer, offer := connectingViewer(t)
+	answer, err := ExchangeSDP(stream, offer, "webrtc/test", "", "")
+	require.NoError(t, err)
+
+	// the pair is selected once the viewer has the answer
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = stream.MarshalJSON()
+			_ = streams.StateOf(name, stream)
+		}
+	}()
+
+	require.NoError(t, viewer.SetRemoteDescription(pion.SessionDescription{Type: pion.SDPTypeAnswer, SDP: answer}))
+	require.Eventually(t, viewerConnected(viewer), 5*time.Second, 10*time.Millisecond)
+
+	close(stop)
+	<-done
+
+	state := streams.StateOf(name, stream)
+	require.Len(t, state.Consumers, 1)
+	require.Contains(t, state.Consumers[0].Protocol, "+udp", "the protocol of the selected pair")
+	require.NotEmpty(t, state.Consumers[0].RemoteAddr)
+}

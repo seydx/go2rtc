@@ -34,6 +34,9 @@ type Conn struct {
 
 	connected atomic.Bool
 	deadline  atomic.Pointer[time.Timer]
+
+	// the selected candidate pair rewrites Protocol and RemoteAddr while the API marshals them
+	infoMu sync.Mutex
 }
 
 func NewConn(pc *webrtc.PeerConnection) *Conn {
@@ -63,6 +66,9 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 		}
 		pc.SCTP().Transport().ICETransport().OnSelectedCandidatePairChange(
 			func(pair *webrtc.ICECandidatePair) {
+				c.infoMu.Lock()
+				defer c.infoMu.Unlock()
+
 				// fix situation when candidate pair changes multiple times
 				if i := strings.IndexByte(c.Protocol, '+'); i > 0 {
 					c.Protocol = c.Protocol[:i]
@@ -229,7 +235,17 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 }
 
 func (c *Conn) MarshalJSON() ([]byte, error) {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
 	return json.Marshal(c.Connection)
+}
+
+// Endpoint returns Protocol and RemoteAddr, which the selected candidate pair
+// rewrites while the connection runs.
+func (c *Conn) Endpoint() (protocol, remoteAddr string) {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
+	return c.Protocol, c.RemoteAddr
 }
 
 func (c *Conn) Close() error {
