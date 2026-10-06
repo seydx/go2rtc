@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,10 @@ var log zerolog.Logger
 type Message struct {
 	Type  string `json:"type"`
 	Value any    `json:"value,omitempty"`
+
+	// Seq numbers the messages of one websocket in the order the client sent
+	// them. Handlers run concurrently, so one may finish after a later one.
+	Seq uint64 `json:"-"`
 }
 
 func (m *Message) String() (value string) {
@@ -127,6 +132,7 @@ func apiWS(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 
+	var seq uint64
 	for {
 		msgType, data, err := ws.ReadMessage()
 		if err != nil {
@@ -149,12 +155,20 @@ func apiWS(w http.ResponseWriter, r *http.Request) {
 			log.Trace().Err(err).Caller().Send()
 			continue
 		}
+		seq++
+		msg.Seq = seq
 
 		log.Trace().Str("type", msg.Type).Msg("[api] ws msg")
 
 		if handler := wsHandlers[msg.Type]; handler != nil {
 			go func() {
-				if err = handler(tr, msg); err != nil {
+				// net/http recovers only its own goroutine, a panic here would end the process
+				defer func() {
+					if r := recover(); r != nil {
+						log.Error().Msgf("[api] ws %s panic: %v\n%s", msg.Type, r, debug.Stack())
+					}
+				}()
+				if err := handler(tr, msg); err != nil {
 					errMsg := creds.SecretString(err.Error())
 					tr.Write(&Message{Type: "error", Value: msg.Type + ": " + errMsg})
 				}

@@ -63,3 +63,51 @@ func TestCloseHandlersKeepWebsocketOpen(t *testing.T) {
 	require.NoError(t, conn.WriteJSON(&Message{Type: "test/stop"}))
 	require.NoError(t, conn.ReadJSON(&msg))
 }
+
+// A panicking handler must not take go2rtc down, the websocket keeps working.
+func TestPanickingHandlerKeepsServing(t *testing.T) {
+	HandleFunc("test/panic", func(*Transport, *Message) error {
+		var producers []int
+		_ = producers[1]
+		return nil
+	})
+	HandleFunc("test/echo", func(tr *Transport, _ *Message) error {
+		tr.Write(&Message{Type: "echo"})
+		return nil
+	})
+
+	conn := dialTestServer(t)
+	require.NoError(t, conn.WriteJSON(&Message{Type: "test/panic"}))
+	require.NoError(t, conn.WriteJSON(&Message{Type: "test/echo"}))
+
+	var msg Message
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	require.NoError(t, conn.ReadJSON(&msg))
+	require.Equal(t, "echo", msg.Type)
+}
+
+// Handlers run concurrently, Seq keeps the order the client sent its messages
+// in. The client can't set it.
+func TestMessagesNumberedInSendOrder(t *testing.T) {
+	seqs := make(chan uint64, 3)
+	HandleFunc("test/seq", func(_ *Transport, msg *Message) error {
+		seqs <- msg.Seq
+		return nil
+	})
+
+	conn := dialTestServer(t)
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"test/seq","Seq":99}`)))
+	require.NoError(t, conn.WriteJSON(&Message{Type: "test/seq"}))
+	require.NoError(t, conn.WriteJSON(&Message{Type: "test/seq"}))
+
+	got := map[uint64]bool{}
+	for range 3 {
+		select {
+		case seq := <-seqs:
+			got[seq] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("handler not called")
+		}
+	}
+	require.Equal(t, map[uint64]bool{1: true, 2: true, 3: true}, got)
+}
