@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/probe"
 	"github.com/AlexxIT/go2rtc/pkg/rtsp"
+	"github.com/pion/rtp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -277,4 +279,225 @@ func TestTalkCodecFollowsCameraAudio(t *testing.T) {
 			require.Equal(t, tc.rate, codec.ClockRate)
 		})
 	}
+}
+
+// watcherProbe takes video and audio but can't talk, like a recorder or an
+// MSE tile.
+func watcherProbe() *probe.Probe {
+	query, _ := url.ParseQuery("video&audio")
+	return probe.Create("probe", query)
+}
+
+// talkSettled: no producer waits for a first talk packet anymore. Read under
+// the producer lock, so talkWired can look at the conn's senders afterwards.
+func talkSettled(s *Stream) bool {
+	for _, p := range streamProducers(s) {
+		p.mu.RLock()
+		pending := p.talkPending
+		p.mu.RUnlock()
+		if pending {
+			return false
+		}
+	}
+	return true
+}
+
+// talk sends one packet into the microphone of a consumer.
+func talk(cons *probe.Probe) {
+	for _, receiver := range cons.Receivers {
+		if receiver.Codec.IsAudio() || receiver.Codec.Name == core.CodecAny {
+			receiver.Input(&rtp.Packet{Header: rtp.Header{Version: 2}, Payload: make([]byte, 160)})
+		}
+	}
+}
+
+// Without a preload nothing sets talk up before PLAY. A viewer that could talk
+// must not re-dial the session the recording and every other viewer share
+// just by joining: the talk track is set up once somebody talks.
+func TestTalkCapableViewerDoesNotRedialPlayingCamera(t *testing.T) {
+	registerBackchannelRTSPHandler()
+
+	cam := newFakeCamera(t)
+	cam.backchannel.Store(true)
+
+	stream, err := New("talk_on_demand", cam.BackchannelURL())
+	require.NoError(t, err)
+
+	recorder := watcherProbe()
+	require.NoError(t, stream.AddConsumer(recorder))
+	t.Cleanup(func() { stream.RemoveConsumer(recorder) })
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+	dials, plays := cam.dialCount.Load(), cam.plays.Load()
+
+	viewer := micProbe()
+	require.NoError(t, stream.AddConsumer(viewer))
+	t.Cleanup(func() { stream.RemoveConsumer(viewer) })
+	require.Equal(t, dials, cam.dialCount.Load(), "joining must not re-dial the camera")
+	require.Equal(t, plays, cam.plays.Load())
+	require.False(t, talkWired(stream))
+
+	talk(viewer)
+	require.True(t, waitUntil(10*time.Second, func() bool { return talkSettled(stream) }))
+	require.True(t, talkWired(stream), "talking sets up the talk track")
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }), "video goes on")
+	require.False(t, zombieMixer(stream))
+
+	// a second viewer joins a session that already has talk
+	second := micProbe()
+	dials = cam.dialCount.Load()
+	require.NoError(t, stream.AddConsumer(second))
+	t.Cleanup(func() { stream.RemoveConsumer(second) })
+	talk(second)
+	time.Sleep(300 * time.Millisecond)
+	require.Equal(t, dials, cam.dialCount.Load(), "talk is set up once per session")
+}
+
+// The talk slot is taken when the viewer starts talking. No mixer may be left
+// that nothing sends to the camera, and talking on must not re-dial it: the
+// session goes on without talk, like a mic preload that lost the slot.
+func TestTalkOnBusySlotLeavesNoZombieMixer(t *testing.T) {
+	registerBackchannelRTSPHandler()
+
+	cam := newFakeCamera(t)
+	cam.backchannel.Store(true)
+
+	stream, err := New("talk_on_demand_busy", cam.BackchannelURL())
+	require.NoError(t, err)
+
+	recorder := watcherProbe()
+	require.NoError(t, stream.AddConsumer(recorder))
+	t.Cleanup(func() { stream.RemoveConsumer(recorder) })
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+
+	viewer := micProbe()
+	require.NoError(t, stream.AddConsumer(viewer))
+	t.Cleanup(func() { stream.RemoveConsumer(viewer) })
+
+	foreign := holdTalkSlot(t, cam)
+	t.Cleanup(func() { _ = foreign.Close() })
+
+	talk(viewer)
+	require.True(t, waitUntil(10*time.Second, func() bool { return talkSettled(stream) }))
+	require.Positive(t, cam.bcSetupFails.Load())
+	require.False(t, zombieMixer(stream), "no mixer may be left that nothing sends to the camera")
+	require.True(t, waitUntil(15*time.Second, func() bool { return receiverActive(stream) }), "video goes on")
+
+	dials := cam.dialCount.Load()
+	talk(viewer)
+	time.Sleep(500 * time.Millisecond)
+	require.Equal(t, dials, cam.dialCount.Load(), "talking on must not re-dial the camera")
+	require.False(t, zombieMixer(stream))
+}
+
+type slowTalkConn struct {
+	core.Connection
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *slowTalkConn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
+	return core.NewReceiver(media, codec), nil
+}
+
+func (c *slowTalkConn) AddTrack(*core.Media, *core.Codec, *core.Receiver) error {
+	close(c.entered)
+	<-c.release
+	return nil
+}
+
+func (c *slowTalkConn) Start() error { select {} }
+
+// A viewer asks for a track the session hasn't set up while the first talk
+// still re-dials the camera. Waiting for its turn must not hold the producer
+// lock: status, stats and every other attach read it meanwhile.
+func TestTrackRequestDuringTalkSetupDoesNotHang(t *testing.T) {
+	pcmu := &core.Codec{Name: core.CodecPCMU, ClockRate: 8000}
+	talkMedia := &core.Media{Kind: core.KindAudio, Direction: core.DirectionSendonly, Codecs: []*core.Codec{pcmu}}
+	videoMedia := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{{Name: core.CodecH264, ClockRate: 90000}}}
+
+	conn := &slowTalkConn{
+		Connection: core.Connection{Medias: []*core.Media{videoMedia, talkMedia}},
+		entered:    make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	release := sync.OnceFunc(func() { close(conn.release) })
+	t.Cleanup(release)
+	p := &Producer{conn: conn, state: stateStart, mixingEnabled: true, url: "slowtalk://cam"}
+
+	mic := core.NewReceiver(talkMedia, pcmu)
+	require.NoError(t, p.AddTrack(talkMedia, pcmu, mic))
+
+	mic.Input(&rtp.Packet{Header: rtp.Header{Version: 2}, Payload: make([]byte, 160)})
+	select {
+	case <-conn.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("talking must set up the talk track")
+	}
+
+	got := make(chan struct{})
+	go func() {
+		_, _ = p.GetTrack(videoMedia, videoMedia.Codecs[0])
+		close(got)
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	read := make(chan struct{})
+	go func() {
+		_ = p.State()
+		close(read)
+	}()
+	select {
+	case <-read:
+	case <-time.After(time.Second):
+		t.Fatal("the producer lock is held while GetTrack waits for the talk setup")
+	}
+
+	release()
+	select {
+	case <-got:
+	case <-time.After(3 * time.Second):
+		t.Fatal("GetTrack hangs behind the talk setup")
+	}
+	require.True(t, waitUntil(time.Second, func() bool {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		return !p.talkPending && p.mixer != nil
+	}), "talk is set up")
+}
+
+// The camera drops the session while a viewer could talk but hasn't yet. The
+// reconnect re-dials anyway and sets talk up on the way: the first talk packet
+// afterwards must not set it up a second time, that would re-dial again.
+func TestReconnectWhileTalkPendingSetsTalkUpOnce(t *testing.T) {
+	registerBackchannelRTSPHandler()
+
+	cam := newFakeCamera(t)
+	cam.backchannel.Store(true)
+
+	stream, err := New("talk_pending_reconnect", cam.BackchannelURL())
+	require.NoError(t, err)
+
+	recorder := watcherProbe()
+	require.NoError(t, stream.AddConsumer(recorder))
+	t.Cleanup(func() { stream.RemoveConsumer(recorder) })
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+
+	viewer := micProbe()
+	require.NoError(t, stream.AddConsumer(viewer))
+	t.Cleanup(func() { stream.RemoveConsumer(viewer) })
+	require.False(t, talkSettled(stream), "talk waits for the first packet")
+
+	dials := cam.dialCount.Load()
+	cam.dropConns()
+	require.True(t, waitUntil(15*time.Second, func() bool {
+		return cam.dialCount.Load() > dials && talkSettled(stream) && talkWired(stream) && receiverActive(stream)
+	}), "the reconnect sets talk up")
+
+	dials, setups := cam.dialCount.Load(), cam.bcSetups.Load()
+	talk(viewer)
+	time.Sleep(500 * time.Millisecond)
+	require.Equal(t, dials, cam.dialCount.Load(), "talking must not re-dial the camera")
+	require.Equal(t, setups, cam.bcSetups.Load(), "talk is set up once")
+	require.True(t, talkWired(stream))
+	require.False(t, zombieMixer(stream))
 }

@@ -35,6 +35,9 @@ type Producer struct {
 	senders   []*core.Receiver
 
 	mixer *core.RTPMixer
+	// talkPending: the mixer waits for a first talk packet to set up the
+	// camera's talk track
+	talkPending bool
 
 	state              state
 	mu                 sync.RWMutex
@@ -476,6 +479,17 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 		// Add parent with its actual codec (e.g., Opus from browser) - mixer will transcode to output
 		mixer.AddParentWithCodec(&track.Node, track.Codec)
 
+		// a playing session takes the talk track only by re-dialing, which
+		// stalls every consumer: wait until somebody talks
+		if p.state == stateStart {
+			p.talkPending = true
+			p.senders = append(p.senders, track)
+			p.mu.Unlock()
+			mixer.OnNextPacket(func() { p.wireTalk(mixer, media, codec) })
+			p.notify()
+			return nil
+		}
+
 		// Connect mixer to underlying protocol
 		// Get consumer reference and release lock BEFORE calling AddTrack
 		consumer := p.conn.(core.Consumer)
@@ -525,6 +539,42 @@ func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Re
 	p.mu.Unlock()
 	p.notify()
 	return nil
+}
+
+func (p *Producer) wireTalk(mixer *core.RTPMixer, media *core.Media, codec *core.Codec) {
+	p.mu.Lock()
+	conn := p.conn
+	pending := p.mixer == mixer && p.talkPending
+	p.mu.Unlock()
+	consumer, ok := conn.(core.Consumer)
+	if !pending || !ok {
+		return
+	}
+
+	mixerReceiver := core.NewReceiver(media, codec)
+	mixerReceiver.ParentNode = &mixer.Node
+	// serialized with GetTrack, both run protocol requests on the conn. The
+	// lock order is trackMu, then p.mu: never wait for trackMu holding p.mu
+	p.trackMu.Lock()
+	err := consumer.AddTrack(media, codec, mixerReceiver)
+	p.trackMu.Unlock()
+
+	p.mu.Lock()
+	// a reconnect may have swapped the conn and set talk up on the new one
+	current := p.mixer == mixer && p.conn == conn && p.talkPending
+	if current {
+		p.talkPending = false
+		// the talk slot is taken: no talker may join a mixer nothing reads
+		if err != nil {
+			p.mixer = nil
+		}
+	}
+	p.mu.Unlock()
+
+	if err != nil && current {
+		log.Debug().Err(err).Str("url", p.url).Msg("[streams] can't set up talk")
+		mixer.Close()
+	}
 }
 
 func (p *Producer) MarshalJSON() ([]byte, error) {
@@ -999,6 +1049,10 @@ func (p *Producer) reconnect(workerID, retry int) {
 				mixerReceiver.ParentNode = &mixer.Node
 				if err := conn.(core.Consumer).AddTrack(media, codec, mixerReceiver); err != nil {
 					log.Warn().Err(err).Str("url", url).Msg("[streams] reconnect mixer AddTrack failed")
+				} else {
+					p.mu.Lock()
+					p.talkPending = false
+					p.mu.Unlock()
 				}
 			}
 		} else {
@@ -1126,6 +1180,7 @@ func (p *Producer) stop() {
 		p.mixer.Close()
 		p.mixer = nil
 	}
+	p.talkPending = false
 
 	p.state = stateNone
 	p.reconnecting = false

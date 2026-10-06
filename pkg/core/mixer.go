@@ -62,6 +62,8 @@ type RTPMixer struct {
 
 	closing bool
 
+	onPacket func()
+
 	mu sync.Mutex
 }
 
@@ -106,6 +108,14 @@ func (m *RTPMixer) AddParentWithCodec(parent *Node, codec *Codec) {
 	m.handleTopologyChange(oldCount, newCount)
 }
 
+// OnNextPacket runs f once, in its own goroutine, when a parent sends its
+// next packet.
+func (m *RTPMixer) OnNextPacket(f func()) {
+	m.mu.Lock()
+	m.onPacket = f
+	m.mu.Unlock()
+}
+
 func (m *RTPMixer) RemoveParent(parent *Node) {
 	m.mu.Lock()
 	oldCount := len(m.parents)
@@ -148,7 +158,16 @@ func (m *RTPMixer) Close() {
 	}
 
 	m.closing = true
+	// a parent left attached would restart ffmpeg on the closed mixer when it
+	// leaves, and nothing would stop it again
+	parents := m.parents
+	m.parents = nil
+	clear(m.parentCodecs)
 	m.mu.Unlock()
+
+	for _, parent := range parents {
+		parent.RemoveChild(&m.Node)
+	}
 
 	m.stopFFmpeg()
 	m.Node.Close()
@@ -200,7 +219,13 @@ func (m *RTPMixer) handlePacketFromParent(packet *Packet, parentID uint32) {
 	m.mu.Lock()
 	m.lastPacketTime[parentID] = now
 	ffmpegRunning := m.ffmpegCmd != nil
+	onPacket := m.onPacket
+	m.onPacket = nil
 	m.mu.Unlock()
+
+	if onPacket != nil {
+		go onPacket()
+	}
 
 	if ffmpegRunning {
 		m.sendToFFmpeg(packet, parentID)
