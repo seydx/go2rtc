@@ -5,6 +5,11 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -500,4 +505,69 @@ func TestReconnectWhileTalkPendingSetsTalkUpOnce(t *testing.T) {
 	require.Equal(t, setups, cam.bcSetups.Load(), "talk is set up once")
 	require.True(t, talkWired(stream))
 	require.False(t, zombieMixer(stream))
+}
+
+// browserViewer is a WebRTC live view: its offer always carries a microphone.
+func browserViewer() *probe.Probe {
+	query, _ := url.ParseQuery("video=h264&audio=opus,pcmu,pcma&microphone=opus/48000/2,pcmu,pcma")
+	return probe.Create("probe", query)
+}
+
+// countFFmpegStarts points the mixers at an ffmpeg that logs each start.
+func countFFmpegStarts(t *testing.T) func() int {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a shell wrapper")
+	}
+	bin, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not found")
+	}
+
+	dir := t.TempDir()
+	log := filepath.Join(dir, "starts")
+	wrapper := filepath.Join(dir, "ffmpeg")
+	script := fmt.Sprintf("#!/bin/sh\necho >> '%s'\nexec '%s' \"$@\"\n", log, bin)
+	require.NoError(t, os.WriteFile(wrapper, []byte(script), 0o755))
+
+	old := ffmpegBin
+	ffmpegBin = wrapper
+	t.Cleanup(func() { ffmpegBin = old })
+
+	return func() int {
+		b, _ := os.ReadFile(log)
+		return strings.Count(string(b), "\n")
+	}
+}
+
+// Every WebRTC viewer is a talk parent of the mixer. Tiles that only watch
+// must not start or restart its ffmpeg as they come and go: it runs while
+// viewers talk at once.
+func TestWatchingViewersStartNoMixerFFmpeg(t *testing.T) {
+	registerBackchannelRTSPHandler()
+	starts := countFFmpegStarts(t)
+
+	cam := newFakeCamera(t)
+	cam.backchannel.Store(true)
+
+	stream, err := New("mixer_watchers", cam.BackchannelURL())
+	require.NoError(t, err)
+	require.NoError(t, AddPreload("mixer_watchers", "video&audio&microphone"))
+	t.Cleanup(func() { _ = DelPreload("mixer_watchers") })
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) && talkWired(stream) }))
+
+	var viewers []*probe.Probe
+	for range 4 {
+		viewer := browserViewer()
+		require.NoError(t, stream.AddConsumer(viewer))
+		t.Cleanup(func() { stream.RemoveConsumer(viewer) })
+		viewers = append(viewers, viewer)
+		time.Sleep(100 * time.Millisecond)
+	}
+	stream.RemoveConsumer(viewers[3])
+	time.Sleep(300 * time.Millisecond)
+	require.Zero(t, starts(), "watching viewers start no ffmpeg")
+
+	talk(viewers[0])
+	talk(viewers[1])
+	require.True(t, waitUntil(5*time.Second, func() bool { return starts() == 1 }), "two talkers are mixed")
 }

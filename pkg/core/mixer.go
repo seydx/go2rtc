@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +24,10 @@ import (
 const (
 	keepaliveInterval    = 20 * time.Millisecond
 	inactiveThreshold    = 100 * time.Millisecond
+	talkerTimeout        = 3 * time.Second        // a parent is mixed this long after its last packet
 	realPacketTimeout    = 500 * time.Millisecond // time window after last real packet to forward FFmpeg output
+	listenTimeout        = time.Second            // without output by then, ffmpeg gets the held talk anyway
+	holdLimit            = 50                     // held packets per parent, 1 s of 20 ms frames
 	timestampDivisor20ms = 50
 	restartDelay         = 3 * time.Second
 	defaultMTU           = 1472
@@ -53,9 +57,17 @@ type RTPMixer struct {
 
 	ffmpegBinary string
 	ffmpegCmd    *shell.Command
+	ffmpegInputs []uint32 // parent IDs, in SDP order
 	udpServer    *udp.UDPServer
 
-	// Keepalive for inactive parents (prevents FFmpeg from waiting)
+	// talk that came before ffmpeg could take it, sent once ffmpeg listens:
+	// its first output means its inputs are open
+	held      map[uint32][]*Packet
+	listening bool
+	startedAt int64
+
+	// last real packet per parent: the talkers, and keepalive for the inputs
+	// that pause (prevents FFmpeg from waiting)
 	lastPacketTime     map[uint32]int64
 	lastRealPacketTime atomic.Int64 // tracks when last real (non-keepalive) packet arrived
 	keepaliveDone      chan struct{}
@@ -64,7 +76,12 @@ type RTPMixer struct {
 
 	onPacket func()
 
+	syncing   bool
+	syncAgain bool
+
 	mu sync.Mutex
+	// runMu serializes ffmpeg starts and stops, taken before mu
+	runMu sync.Mutex
 }
 
 func NewRTPMixer(ffmpegBinary string, media *Media, codec *Codec) *RTPMixer {
@@ -78,6 +95,7 @@ func NewRTPMixer(ffmpegBinary string, media *Media, codec *Codec) *RTPMixer {
 		parentTimestamp: make(map[uint32]uint32),
 		parentBytes:     make(map[uint32]int),
 		lastPacketTime:  make(map[uint32]int64),
+		held:            make(map[uint32][]*Packet),
 		sequencer:       rtp.NewRandomSequencer(),
 		ffmpegBinary:    ffmpegBinary,
 	}
@@ -88,12 +106,12 @@ func NewRTPMixer(ffmpegBinary string, media *Media, codec *Codec) *RTPMixer {
 	return m
 }
 
+// AddParentWithCodec adds a parent that may talk. It starts nothing: ffmpeg
+// runs once parents talk.
 func (m *RTPMixer) AddParentWithCodec(parent *Node, codec *Codec) {
 	m.mu.Lock()
-	oldCount := len(m.parents)
 	m.parents = append(m.parents, parent)
 	m.parentCodecs[parent.id] = codec
-	newCount := len(m.parents)
 	m.mu.Unlock()
 
 	// Add mixer as child of parent (so it appears in consumer receiver's childs)
@@ -104,8 +122,6 @@ func (m *RTPMixer) AddParentWithCodec(parent *Node, codec *Codec) {
 	parent.Forward = func(packet *Packet) {
 		m.handlePacketFromParent(packet, parentID)
 	}
-
-	m.handleTopologyChange(oldCount, newCount)
 }
 
 // OnNextPacket runs f once, in its own goroutine, when a parent sends its
@@ -118,7 +134,6 @@ func (m *RTPMixer) OnNextPacket(f func()) {
 
 func (m *RTPMixer) RemoveParent(parent *Node) {
 	m.mu.Lock()
-	oldCount := len(m.parents)
 
 	// Remove parent from list
 	for i, p := range m.parents {
@@ -141,12 +156,17 @@ func (m *RTPMixer) RemoveParent(parent *Node) {
 	delete(m.parentTimestamp, parent.id)
 	delete(m.parentBytes, parent.id)
 	delete(m.lastPacketTime, parent.id)
+	delete(m.held, parent.id)
 
-	newCount := len(m.parents)
+	count := len(m.parents)
 	m.mu.Unlock()
 
-	// Handle topology change
-	m.handleTopologyChange(oldCount, newCount)
+	if count == 0 {
+		m.Close()
+	}
+	// a mixer closed this way still takes the next talker, and a second
+	// Close returns early: the sync stops what that talker started
+	m.syncTalkers()
 }
 
 func (m *RTPMixer) Close() {
@@ -163,13 +183,16 @@ func (m *RTPMixer) Close() {
 	parents := m.parents
 	m.parents = nil
 	clear(m.parentCodecs)
+	clear(m.held)
 	m.mu.Unlock()
 
 	for _, parent := range parents {
 		parent.RemoveChild(&m.Node)
 	}
 
+	m.runMu.Lock()
 	m.stopFFmpeg()
+	m.runMu.Unlock()
 	m.Node.Close()
 }
 
@@ -216,10 +239,29 @@ func (m *RTPMixer) handlePacketFromParent(packet *Packet, parentID uint32) {
 	// Track that we received a real packet (not keepalive)
 	m.lastRealPacketTime.Store(now)
 
-	// Update last packet time for keepalive tracking
 	m.mu.Lock()
+	last, seen := m.lastPacketTime[parentID]
 	m.lastPacketTime[parentID] = now
-	ffmpegRunning := m.ffmpegCmd != nil
+	codec, known := m.parentCodecs[parentID]
+	talker := known && !isWildcard(codec)
+	woke := talker && (!seen || now-last >= int64(talkerTimeout))
+	if woke {
+		delete(m.held, parentID)
+	}
+
+	var toFFmpeg []*Packet
+	direct := false
+	switch {
+	case m.takesInput(parentID, now):
+		toFFmpeg = append(m.held[parentID], packet)
+		delete(m.held, parentID)
+	case m.ffmpegCmd == nil && m.passthrough(parentID, now):
+		direct = true
+	case talker:
+		// ffmpeg for this talker is about to start or still starting
+		m.hold(parentID, packet)
+	}
+
 	onPacket := m.onPacket
 	m.onPacket = nil
 	m.mu.Unlock()
@@ -227,11 +269,15 @@ func (m *RTPMixer) handlePacketFromParent(packet *Packet, parentID uint32) {
 	if onPacket != nil {
 		go onPacket()
 	}
+	if woke {
+		m.syncTalkers()
+	}
 
-	if ffmpegRunning {
-		m.sendToFFmpeg(packet, parentID)
-	} else {
+	if direct {
 		m.forwardDirect(packet)
+	}
+	for _, p := range toFFmpeg {
+		m.sendToFFmpeg(p, parentID)
 	}
 
 	m.mu.Lock()
@@ -241,58 +287,115 @@ func (m *RTPMixer) handlePacketFromParent(packet *Packet, parentID uint32) {
 	m.mu.Unlock()
 }
 
-func (m *RTPMixer) handleTopologyChange(oldCount, newCount int) {
-	if newCount == 0 {
-		m.Close()
+// callers may hold a producer lock, so the work runs in its own goroutine; a
+// call during a run makes it run once more
+func (m *RTPMixer) syncTalkers() {
+	m.mu.Lock()
+	if m.syncing {
+		m.syncAgain = true
+		m.mu.Unlock()
 		return
 	}
-
-	needsFFmpegNow := m.needsFFmpeg()
-
-	m.mu.Lock()
-	ffmpegRunning := m.ffmpegCmd != nil
+	m.syncing = true
 	m.mu.Unlock()
 
-	if needsFFmpegNow && !ffmpegRunning {
-		if err := m.startFFmpeg(); err != nil {
-			fmt.Fprintf(os.Stderr, "[mixer id=%d] Error starting FFmpeg: %v\n", m.id, err)
+	go func() {
+		for {
+			m.runMu.Lock()
+			m.applyTalkers()
+			m.runMu.Unlock()
+
+			m.mu.Lock()
+			again := m.syncAgain
+			m.syncAgain = false
+			m.syncing = again
+			m.mu.Unlock()
+			if !again {
+				return
+			}
 		}
-	} else if !needsFFmpegNow && ffmpegRunning {
+	}()
+}
+
+// callers hold runMu
+func (m *RTPMixer) applyTalkers() {
+	m.mu.Lock()
+	inputs := m.talkers(time.Now().UnixNano())
+	need := len(inputs) > 1 || len(inputs) == 1 && m.needsTranscode(m.parentCodecs[inputs[0]])
+	running := m.ffmpegCmd != nil
+	same := slices.Equal(inputs, m.ffmpegInputs)
+	m.mu.Unlock()
+
+	if running && need && same {
+		return
+	}
+	if running {
 		m.stopFFmpeg()
-	} else if needsFFmpegNow && ffmpegRunning && oldCount != newCount {
-		// Topology changed while FFmpeg running - restart to reconfigure
-		if err := m.restartFFmpeg(); err != nil {
-			fmt.Fprintf(os.Stderr, "[mixer id=%d] Error restarting FFmpeg: %v\n", m.id, err)
+	}
+	if need {
+		if err := m.startFFmpeg(inputs); err != nil {
+			fmt.Fprintf(os.Stderr, "[mixer id=%d] Error starting FFmpeg: %v\n", m.id, err)
+			// a talker that keeps talking never wakes the mixer again
+			time.AfterFunc(restartDelay, m.syncTalkers)
 		}
 	}
 }
 
-func (m *RTPMixer) needsFFmpeg() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Count valid parents (excluding wildcard codecs like ANY/ALL)
-	validParents := 0
-	needsTranscode := false
-
-	for _, parentCodec := range m.parentCodecs {
-		// Skip wildcard codecs - they can't be decoded by FFmpeg
-		if parentCodec != nil && (parentCodec.Name == CodecAny || parentCodec.Name == CodecAll) {
-			continue
-		}
-		validParents++
-		if m.needsTranscode(parentCodec) {
-			needsTranscode = true
+// callers hold mu
+func (m *RTPMixer) talkers(now int64) []uint32 {
+	var ids []uint32
+	for _, parent := range m.parents {
+		if m.talking(parent.id, now) {
+			ids = append(ids, parent.id)
 		}
 	}
+	return ids
+}
 
-	// Need FFmpeg for mixing when 2+ valid parents
-	if validParents >= 2 {
+func (m *RTPMixer) talking(id uint32, now int64) bool {
+	if isWildcard(m.parentCodecs[id]) {
+		return false
+	}
+	last, ok := m.lastPacketTime[id]
+	return ok && now-last < int64(talkerTimeout)
+}
+
+// callers hold mu
+func (m *RTPMixer) takesInput(parentID uint32, now int64) bool {
+	if m.ffmpegCmd == nil {
+		return false
+	}
+	if _, ok := m.parentPorts[parentID]; !ok {
+		return false
+	}
+	return m.listening || now-m.startedAt >= int64(listenTimeout)
+}
+
+func (m *RTPMixer) hold(parentID uint32, packet *Packet) {
+	held := m.held[parentID]
+	if len(held) >= holdLimit {
+		held = held[1:]
+	}
+	clone := *packet
+	clone.Payload = slices.Clone(packet.Payload)
+	m.held[parentID] = append(held, &clone)
+}
+
+// callers hold mu
+func (m *RTPMixer) passthrough(parentID uint32, now int64) bool {
+	codec := m.parentCodecs[parentID]
+	if isWildcard(codec) {
 		return true
 	}
-
-	// Need FFmpeg for transcoding when any valid parent codec differs from output
-	return needsTranscode
+	if m.needsTranscode(codec) {
+		return false
+	}
+	for _, parent := range m.parents {
+		if parent.id != parentID && m.talking(parent.id, now) {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *RTPMixer) needsTranscode(inputCodec *Codec) bool {
@@ -305,30 +408,18 @@ func (m *RTPMixer) needsTranscode(inputCodec *Codec) bool {
 func (m *RTPMixer) forwardDirect(packet *Packet) {
 	m.mu.Lock()
 	packet.SequenceNumber = m.sequencer.NextSequenceNumber()
-	children := m.childs
 	m.mu.Unlock()
 
 	packet.Timestamp = atomic.AddUint32(&m.timestamp, m.frameSize())
 	packet.Marker = true
 
-	for _, child := range children {
+	for _, child := range m.Node.children() {
 		child.Input(packet)
 	}
 }
 
-func (m *RTPMixer) restartFFmpeg() error {
-	m.stopFFmpeg()
-
-	// Check if FFmpeg is still needed
-	if !m.needsFFmpeg() {
-		return nil
-	}
-
-	return m.startFFmpeg()
-}
-
-func (m *RTPMixer) startFFmpeg() error {
-	sdpContent, numInputs, err := m.generateSDP()
+func (m *RTPMixer) startFFmpeg(inputs []uint32) error {
+	sdpContent, numInputs, err := m.generateSDP(inputs)
 	if err != nil {
 		return fmt.Errorf("failed to generate SDP: %w", err)
 	}
@@ -426,6 +517,9 @@ func (m *RTPMixer) startFFmpeg() error {
 	m.mu.Lock()
 	m.udpServer = udpServer
 	m.ffmpegCmd = cmd
+	m.ffmpegInputs = inputs
+	m.listening = false
+	m.startedAt = time.Now().UnixNano()
 	m.keepaliveDone = keepaliveDone
 	m.mu.Unlock()
 
@@ -440,66 +534,66 @@ func (m *RTPMixer) monitorFFmpeg(cmd *shell.Command) {
 	_ = cmd.Wait() // blocks until this FFmpeg instance exits
 
 	m.mu.Lock()
-	superseded := m.ffmpegCmd != cmd // stopped (nil) or already replaced (restart)
-	closing := m.closing
+	crashed := m.ffmpegCmd == cmd // not stopped and not replaced
 	m.mu.Unlock()
-
-	if closing || superseded || !m.needsFFmpeg() {
+	if !crashed {
 		return
 	}
 
 	// Unexpected exit (crash) — back off and restart.
 	time.Sleep(restartDelay)
 
-	// Re-check after the backoff: Close() may have run during the sleep, in
-	// which case we must not resurrect FFmpeg.
-	m.mu.Lock()
-	closing = m.closing
-	m.mu.Unlock()
-	if closing {
-		return
-	}
+	m.runMu.Lock()
+	defer m.runMu.Unlock()
 
-	_ = m.restartFFmpeg()
+	// a sync or Close during the backoff took over
+	m.mu.Lock()
+	current := m.ffmpegCmd == cmd
+	m.mu.Unlock()
+	if current {
+		m.stopFFmpeg()
+		m.applyTalkers()
+	}
 }
 
+// kills and waits outside mu, packets keep flowing meanwhile
 func (m *RTPMixer) stopFFmpeg() {
-	// log.Printf("[mixer] id=%d stopFFmpeg called", m.id)
-
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.keepaliveDone != nil {
-		close(m.keepaliveDone)
-		m.keepaliveDone = nil
-	}
-
-	if m.ffmpegCmd != nil {
-		if m.ffmpegCmd.Process != nil {
-			m.ffmpegCmd.Process.Kill()
-		}
-		m.ffmpegCmd.Wait()
-		m.ffmpegCmd = nil
-	}
-
-	if m.udpServer != nil {
-		m.udpServer.Close()
-		m.udpServer = nil
-	}
-
+	keepaliveDone := m.keepaliveDone
+	cmd := m.ffmpegCmd
+	server := m.udpServer
+	m.keepaliveDone = nil
+	m.ffmpegCmd = nil
+	m.ffmpegInputs = nil
+	m.udpServer = nil
 	m.parentPorts = make(map[uint32]int)
 	m.parentSequencer = make(map[uint32]rtp.Sequencer)
-
-	// log.Printf("[mixer] id=%d FFmpeg stopped", m.id)
-}
-
-func (m *RTPMixer) generateSDP() ([]byte, int, error) {
-	m.mu.Lock()
-	parents := m.parents
-	parentCodecs := maps.Clone(m.parentCodecs)
 	m.mu.Unlock()
 
-	if len(parents) == 0 {
+	if keepaliveDone != nil {
+		close(keepaliveDone)
+	}
+
+	if cmd != nil {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	}
+
+	if server != nil {
+		_ = server.Close()
+	}
+}
+
+func (m *RTPMixer) generateSDP(inputs []uint32) ([]byte, int, error) {
+	m.mu.Lock()
+	parentCodecs := maps.Clone(m.parentCodecs)
+	// a failed start leaves ports nothing listens on
+	m.parentPorts = make(map[uint32]int)
+	m.mu.Unlock()
+
+	if len(inputs) == 0 {
 		return nil, 0, fmt.Errorf("no parents")
 	}
 
@@ -517,18 +611,11 @@ func (m *RTPMixer) generateSDP() ([]byte, int, error) {
 	}
 
 	numInputs := 0
-	for _, parent := range parents {
+	for _, id := range inputs {
 		// Get the codec for this specific parent (for transcoding support)
-		codec := parentCodecs[parent.id]
+		codec := parentCodecs[id]
 		if codec == nil {
 			codec = m.Codec // Fallback to output codec
-		}
-
-		// Skip parents with wildcard codecs (ANY/ALL) - FFmpeg can't decode these
-		// These are placeholders that match anything but don't represent real audio
-		if codec.Name == CodecAny || codec.Name == CodecAll {
-			// log.Printf("[mixer] id=%d skipping parent %d with wildcard codec %s", m.id, parent.id, codec.Name)
-			continue
 		}
 
 		port, err := udp.GetFreePort()
@@ -537,7 +624,7 @@ func (m *RTPMixer) generateSDP() ([]byte, int, error) {
 		}
 
 		m.mu.Lock()
-		m.parentPorts[parent.id] = port
+		m.parentPorts[id] = port
 		m.mu.Unlock()
 
 		numInputs++
@@ -581,6 +668,7 @@ func (m *RTPMixer) readFromFFmpeg() {
 
 	// log.Printf("[mixer] id=%d readFromFFmpeg started", m.id)
 
+	var heard *udp.UDPServer
 	for {
 		m.mu.Lock()
 		server := m.udpServer
@@ -593,6 +681,15 @@ func (m *RTPMixer) readFromFFmpeg() {
 		n, _, err := server.ReadFrom(buf)
 		if err != nil {
 			return
+		}
+
+		if heard != server {
+			heard = server
+			m.mu.Lock()
+			if m.udpServer == server {
+				m.listening = true
+			}
+			m.mu.Unlock()
 		}
 
 		packet := &Packet{}
@@ -724,15 +821,25 @@ func (m *RTPMixer) sendKeepalive() {
 	now := time.Now().UnixNano()
 
 	m.mu.Lock()
-	parents := m.parents
+	inputs := m.ffmpegInputs
+	// held talk doesn't reach ffmpeg: silence on every input brings out its
+	// first output
+	probing := !m.listening && now-m.startedAt < int64(listenTimeout)
 	lastTimes := maps.Clone(m.lastPacketTime)
 	m.mu.Unlock()
 
-	for _, parent := range parents {
-		lastTime, exists := lastTimes[parent.id]
-		if !exists || (now-lastTime) > int64(inactiveThreshold) {
-			m.sendSilence(parent.id)
+	quiet := false
+	for _, id := range inputs {
+		lastTime, exists := lastTimes[id]
+		if probing || !exists || (now-lastTime) > int64(inactiveThreshold) {
+			m.sendSilence(id)
 		}
+		if !exists || now-lastTime >= int64(talkerTimeout) {
+			quiet = true
+		}
+	}
+	if quiet {
+		m.syncTalkers()
 	}
 }
 
@@ -800,6 +907,11 @@ func frameSizeForCodec(codec *Codec) uint32 {
 
 	// Fallback to 8kHz default (160 samples)
 	return 160
+}
+
+// ANY and ALL are placeholders, ffmpeg can't decode them
+func isWildcard(codec *Codec) bool {
+	return codec != nil && (codec.Name == CodecAny || codec.Name == CodecAll)
 }
 
 func nodeIDs(nodes []*Node) []uint32 {

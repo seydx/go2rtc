@@ -3,7 +3,9 @@ package core
 import (
 	"os/exec"
 	"testing"
+	"time"
 
+	"github.com/pion/rtp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,6 +28,10 @@ func TestClosedMixerStaysStoppedWhenParentsLeave(t *testing.T) {
 		m.AddParentWithCodec(&r.Node, opus)
 		parents = append(parents, r)
 	}
+	for _, r := range parents {
+		r.Input(&Packet{Header: rtp.Header{Version: 2, PayloadType: opus.PayloadType}, Payload: []byte{0xF8, 0xFF, 0xFE}})
+	}
+	require.Eventually(t, m.ffmpegRunning, 5*time.Second, 10*time.Millisecond)
 
 	m.Close()
 	for _, r := range parents {
@@ -61,10 +67,11 @@ func TestMixerWithoutParentsTakesNewTalker(t *testing.T) {
 
 	next := NewReceiver(media, opus)
 	m.AddParentWithCodec(&next.Node, opus)
+	t.Cleanup(m.stopFFmpeg)
+	next.Input(&Packet{Header: rtp.Header{Version: 2, PayloadType: opus.PayloadType}, Payload: []byte{0xF8, 0xFF, 0xFE}})
+	require.Eventually(t, m.ffmpegRunning, 5*time.Second, 10*time.Millisecond, "the Opus talker needs ffmpeg")
 
-	m.mu.Lock()
-	running := m.ffmpegCmd != nil
-	m.mu.Unlock()
-	m.stopFFmpeg()
-	require.True(t, running, "the Opus talker needs ffmpeg")
+	next.Close()
+	require.Eventually(t, func() bool { return !m.ffmpegRunning() }, 5*time.Second, 10*time.Millisecond,
+		"ffmpeg stops when the last parent leaves a second time")
 }

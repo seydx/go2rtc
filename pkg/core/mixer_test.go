@@ -51,9 +51,23 @@ func pcmuStats(data []byte) (dc, level float64, n int) {
 	return sum / float64(n), 10 * math.Log10(sumSq/float64(n)), n
 }
 
+// quietFrame is 20 ms of silence in codec.
+func quietFrame(codec *core.Codec) []byte {
+	switch codec.Name {
+	case core.CodecPCMU:
+		return bytes.Repeat([]byte{0xFF}, 160)
+	case core.CodecPCMA:
+		return bytes.Repeat([]byte{0xD5}, 160)
+	case core.CodecOpus:
+		return []byte{0xF8, 0xFF, 0xFE}
+	}
+	return make([]byte, 2*codec.ClockRate/50)
+}
+
 // A viewer talks while the other WebRTC viewers only watch. Their microphones
 // send nothing, and the camera must hear the talker as it is: no offset from
-// the filler of the idle inputs, no level drop per extra viewer.
+// the filler of the idle inputs, no level drop per extra viewer. Watchers that
+// spoke a moment ago stay mixed in while they pause.
 func TestMixerTalkerNextToSilentParents(t *testing.T) {
 	bin := lookFFmpeg(t)
 
@@ -73,25 +87,36 @@ func TestMixerTalkerNextToSilentParents(t *testing.T) {
 	cases := []struct {
 		watchers int
 		codec    *core.Codec
+		spoke    bool
 	}{
-		{0, pcmu},
-		{1, pcmu},
-		{3, pcmu},
-		{1, pcma},
-		{1, opus},
-		{1, l16},
+		{0, pcmu, false},
+		{1, pcmu, false},
+		{3, pcmu, false},
+		{1, pcma, false},
+		{1, opus, false},
+		{1, l16, false},
+		{3, pcmu, true},
+		{1, pcma, true},
+		{1, opus, true},
+		{1, l16, true},
 	}
 
 	for _, tc := range cases {
-		t.Run(fmt.Sprintf("%d %s watchers", tc.watchers, tc.codec.Name), func(t *testing.T) {
+		name := fmt.Sprintf("%d %s watchers", tc.watchers, tc.codec.Name)
+		if tc.spoke {
+			name += " that spoke"
+		}
+		t.Run(name, func(t *testing.T) {
 			mixer := core.NewRTPMixer(bin, media, pcmu)
 			t.Cleanup(mixer.Close)
 
 			talker := core.NewReceiver(media, pcmu)
 			mixer.AddParentWithCodec(&talker.Node, pcmu)
+			var watchers []*core.Receiver
 			for range tc.watchers {
 				watcher := core.NewReceiver(media, tc.codec)
 				mixer.AddParentWithCodec(&watcher.Node, tc.codec)
+				watchers = append(watchers, watcher)
 			}
 
 			var mu sync.Mutex
@@ -113,8 +138,15 @@ func TestMixerTalkerNextToSilentParents(t *testing.T) {
 			}
 			ticker := time.NewTicker(20 * time.Millisecond)
 			defer ticker.Stop()
+			var ticks int
 			send := func(payload []byte) {
 				<-ticker.C
+				if tc.spoke && ticks%25 == 0 {
+					for _, watcher := range watchers {
+						watcher.Input(&core.Packet{Header: rtp.Header{Version: 2, PayloadType: tc.codec.PayloadType}, Payload: quietFrame(tc.codec)})
+					}
+				}
+				ticks++
 				talker.Input(&core.Packet{Header: rtp.Header{Version: 2}, Payload: append([]byte(nil), payload...)})
 			}
 
@@ -143,6 +175,75 @@ func TestMixerTalkerNextToSilentParents(t *testing.T) {
 			require.Greater(t, n, len(tone)/2, "the camera must get the talk")
 			require.InDelta(t, 0, dc, 0.01, "DC offset in FS")
 			require.InDelta(t, toneLevel, level, 1, "level in dBFS")
+		})
+	}
+}
+
+// ffmpeg starts only once somebody talks. A talker that needs transcoding must
+// still be heard from the first word on, not after ffmpeg came up.
+func TestMixerTalkBurstStartsComplete(t *testing.T) {
+	bin := lookFFmpeg(t)
+
+	pcmu := &core.Codec{Name: core.CodecPCMU, ClockRate: 8000}
+	pcma := &core.Codec{Name: core.CodecPCMA, ClockRate: 8000, PayloadType: 8}
+	opus := &core.Codec{Name: core.CodecOpus, ClockRate: 48000, Channels: 2, PayloadType: 111}
+	media := &core.Media{Kind: core.KindAudio, Direction: core.DirectionSendonly, Codecs: []*core.Codec{pcmu}}
+
+	for _, watchers := range []int{0, 2} {
+		t.Run(fmt.Sprintf("%d watchers", watchers), func(t *testing.T) {
+			mixer := core.NewRTPMixer(bin, media, pcmu)
+			t.Cleanup(mixer.Close)
+
+			talker := core.NewReceiver(media, pcma)
+			mixer.AddParentWithCodec(&talker.Node, pcma)
+			for range watchers {
+				watcher := core.NewReceiver(media, opus)
+				mixer.AddParentWithCodec(&watcher.Node, opus)
+			}
+
+			var mu sync.Mutex
+			var heard []byte
+			tap := core.NewSender(media, pcmu)
+			tap.Handler = func(packet *core.Packet) {
+				mu.Lock()
+				heard = append(heard, packet.Payload...)
+				mu.Unlock()
+			}
+			tap.Node.WithParent(&mixer.Node)
+			tap.Start()
+			t.Cleanup(tap.Close)
+
+			const frames = 50
+			ticker := time.NewTicker(20 * time.Millisecond)
+			defer ticker.Stop()
+			for i := range frames + 30 {
+				frame := bytes.Repeat([]byte{0xD5}, 160)
+				if i < frames {
+					for j := range frame {
+						n := i*160 + j
+						frame[j] = pcm.PCMtoPCMA(int16(0.25 * 32767 * math.Sin(2*math.Pi*440*float64(n)/8000)))
+					}
+				}
+				<-ticker.C
+				talker.Input(&core.Packet{Header: rtp.Header{Version: 2, PayloadType: pcma.PayloadType}, Payload: frame})
+			}
+
+			mu.Lock()
+			out := append([]byte(nil), heard...)
+			mu.Unlock()
+
+			var loud int
+			for off := 0; off+160 <= len(out); off += 160 {
+				var sumSq float64
+				for _, b := range out[off : off+160] {
+					s := float64(pcm.PCMUtoPCM(b)) / 32768
+					sumSq += s * s
+				}
+				if math.Sqrt(sumSq/160) > 0.05 {
+					loud++
+				}
+			}
+			require.GreaterOrEqual(t, loud, frames-2, "20 ms frames of the talk burst the camera got")
 		})
 	}
 }
