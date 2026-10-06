@@ -101,6 +101,81 @@ func TestGopCacheRTP(t *testing.T) {
 	require.Empty(t, pending)
 }
 
+// The cache reuses its buffers, a sender may still be replaying a snapshot
+func TestGopCacheSnapshotOutlivesReuse(t *testing.T) {
+	cache := NewGopCache(&Codec{Name: CodecH264, PayloadType: 96})
+	cache.Input(rtpFragment("K", 100, 1, false))
+	cache.Input(rtpFragment("1", 100, 2, true))
+	cache.Input(rtpFragment("P", 200, 3, false))
+	frames, pending := cache.Snapshot()
+
+	cache.Input(rtpFragment("2", 200, 4, true))
+	cache.Input(rtpFragment("Z", 300, 5, false))
+	cache.Input(rtpFragment("9", 300, 6, true))
+	cache.Input(rtpFragment("K", 400, 7, false))
+	cache.Input(rtpFragment("8", 400, 8, true))
+	cache.Input(rtpFragment("Y", 500, 9, false))
+
+	require.Equal(t, []string{"K1"}, payloads(frames))
+	require.Equal(t, []string{"P"}, payloads(pending))
+
+	frames, pending = cache.Snapshot()
+	require.Equal(t, []string{"K8"}, payloads(frames))
+	require.Equal(t, []string{"Y"}, payloads(pending))
+	require.Equal(t, uint32(400), frames[0].Timestamp)
+	require.Equal(t, uint16(9), pending[0].SequenceNumber)
+}
+
+// nothing before the first keyframe is replayed, a stream without IDR frames
+// must not pile up fragments
+func TestGopCachePendingHoldsOneFrame(t *testing.T) {
+	cache := NewGopCache(&Codec{Name: CodecH264, PayloadType: 96})
+	fragment := string(make([]byte, 1000))
+	for i := range 200 {
+		cache.Input(rtpFragment("P"+fragment, uint32(i), uint16(2*i), false))
+		cache.Input(rtpFragment(fragment, uint32(i), uint16(2*i+1), true))
+	}
+	require.Less(t, cap(cache.pending.data), 8*1024)
+
+	cache.Input(rtpFragment("K", 1000, 400, false))
+	cache.Input(rtpFragment("1", 1000, 401, true))
+	cache.Input(rtpFragment("P", 2000, 402, false))
+	frames, pending := cache.Snapshot()
+	require.Equal(t, []string{"K1"}, payloads(frames))
+	require.Equal(t, []string{"P"}, payloads(pending))
+}
+
+// one GOP far bigger than the usual, lost keyframes for example, must not
+// keep its memory for the life of the stream
+func TestGopCacheShrinksAfterOutlierGop(t *testing.T) {
+	cache := NewGopCache(&Codec{Name: CodecH264, PayloadType: PayloadTypeRAW})
+	var ts uint32
+	gop := func(frames int) {
+		for i := range frames {
+			frame := avcFrame(string(make([]byte, 1000)), ts)
+			frame.Payload[0] = 'P'
+			if i == 0 {
+				frame.Payload[0] = 'K'
+			}
+			cache.Input(frame)
+			ts += 3600
+		}
+	}
+
+	gop(50)
+	gop(500)
+	require.Greater(t, cap(cache.frames.data), 400*1000)
+
+	gop(50)
+	gop(50)
+	require.LessOrEqual(t, cap(cache.frames.data), 2*50*1000)
+
+	frames, _ := cache.Snapshot()
+	require.Len(t, frames, 50)
+	require.Equal(t, byte('K'), frames[0].Payload[0])
+	require.Len(t, frames[49].Payload, 1000)
+}
+
 func TestGopCacheClonesPayload(t *testing.T) {
 	cache := NewGopCache(&Codec{Name: CodecH264, PayloadType: PayloadTypeRAW})
 	packet := avcFrame("K1", 100)

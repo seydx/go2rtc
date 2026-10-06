@@ -3,6 +3,8 @@ package core
 import (
 	"sync"
 	"time"
+
+	"github.com/pion/rtp"
 )
 
 // RTPPacketVersionAVC marks a packet whose payload is a complete AVCC frame
@@ -67,8 +69,8 @@ func keyframeStart(codec *Codec) func(packet *Packet) bool {
 type GopCache struct {
 	mu      sync.Mutex
 	input   HandlerFunc
-	frames  []*Packet // complete AVCC frames since the last keyframe
-	pending []*Packet // RTP fragments received after the last complete frame
+	frames  gopBuffer // complete AVCC frames since the last keyframe
+	pending gopBuffer // RTP fragments received after the last complete frame
 }
 
 // NewGopCache returns nil for codecs without a registered gopCodec.
@@ -84,13 +86,13 @@ func NewGopCache(codec *Codec) *GopCache {
 
 	// runs under c.mu, from within c.Input
 	onFrame := func(frame *Packet) {
+		c.pending.reset(false)
 		if gc.isKeyframe(frame.Payload) {
-			c.frames = c.frames[:0]
-		} else if len(c.frames) == 0 {
+			c.frames.reset(true)
+		} else if len(c.frames.ends) == 0 {
 			return // nothing is decodable before the first keyframe
 		}
-		c.frames = append(c.frames, clonePacket(frame))
-		c.pending = c.pending[:0]
+		c.frames.add(frame)
 	}
 
 	if codec.IsRTP() {
@@ -108,38 +110,77 @@ func (c *GopCache) Input(packet *Packet) {
 	defer c.mu.Unlock()
 
 	if packet.Version != RTPPacketVersionAVC {
-		c.pending = append(c.pending, clonePacket(packet))
+		c.pending.add(packet)
 	}
 	c.input(packet)
 }
 
-// Snapshot returns copies of the cached frames and pending fragments.
-// frames is nil while no keyframe has been seen.
+// Snapshot returns the cached frames and pending fragments. The cache never
+// writes to them again. frames is nil while no keyframe has been seen.
 func (c *GopCache) Snapshot() (frames, pending []*Packet) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if len(c.frames) == 0 {
+	if len(c.frames.ends) == 0 {
 		return nil, nil
 	}
-	frames = append([]*Packet(nil), c.frames...)
-	pending = append([]*Packet(nil), c.pending...)
-	return
+	return c.frames.packets(), c.pending.packets()
 }
 
 func (c *GopCache) Clear() {
 	c.mu.Lock()
-	c.frames = nil
-	c.pending = nil
+	c.frames = gopBuffer{}
+	c.pending = gopBuffer{}
 	c.mu.Unlock()
 }
 
-// clonePacket copies header and payload, because producers reuse their
-// read buffers after the packet has been handled.
-func clonePacket(packet *Packet) *Packet {
-	clone := &Packet{Header: packet.Header, Payload: make([]byte, len(packet.Payload))}
-	copy(clone.Payload, packet.Payload)
-	return clone
+// a reset reuses data, unless a snapshot still points into it or, with trim,
+// an outlier GOP grew it past twice the bytes it held
+type gopBuffer struct {
+	headers []rtp.Header
+	ends    []int // the payload of packet i ends at data[ends[i]]
+	data    []byte
+	shared  bool
+}
+
+// producers reuse their read buffers after the packet has been handled
+func (b *gopBuffer) add(packet *Packet) {
+	b.headers = append(b.headers, packet.Header)
+	b.data = append(b.data, packet.Payload...)
+	b.ends = append(b.ends, len(b.data))
+}
+
+func (b *gopBuffer) reset(trim bool) {
+	b.headers = b.headers[:0]
+	b.ends = b.ends[:0]
+	size, used := cap(b.data), len(b.data)
+	if trim && size > 2*used {
+		size = used + used/2
+	}
+	if b.shared || size < cap(b.data) {
+		b.data = make([]byte, 0, size)
+		b.shared = false
+	} else {
+		b.data = b.data[:0]
+	}
+}
+
+// no copy: data is not reused after this
+func (b *gopBuffer) packets() []*Packet {
+	if len(b.ends) == 0 {
+		return nil
+	}
+	b.shared = true
+
+	packets := make([]Packet, len(b.ends))
+	out := make([]*Packet, len(b.ends))
+	var start int
+	for i, end := range b.ends {
+		packets[i] = Packet{Header: b.headers[i], Payload: b.data[start:end:end]}
+		out[i] = &packets[i]
+		start = end
+	}
+	return out
 }
 
 // replayGOP writes a cache snapshot to write, stopping early once closed
