@@ -411,6 +411,46 @@ func TestRTPDepayIntactStream(t *testing.T) {
 	require.Equal(t, want, *got)
 }
 
+// damage loses, duplicates, reorders and renumbers packets. Unless visible,
+// it also loses packets without a sequence gap and cuts payloads short.
+func damage(r *rand.Rand, packets []*rtp.Packet, visible bool) []*rtp.Packet {
+	var damaged []*rtp.Packet
+	var offset uint16
+	for i := 0; i < len(packets); i++ {
+		c := *packets[i]
+		c.SequenceNumber += offset
+		switch r.Intn(50) {
+		case 0: // lost
+			continue
+		case 1: // duplicated
+			dup := c
+			damaged = append(damaged, &dup)
+		case 2: // camera restarts its numbering from here on
+			offset += uint16(r.Intn(60000))
+			c.SequenceNumber = packets[i].SequenceNumber + offset
+		case 3: // swapped with the next packet
+			if i+1 < len(packets) {
+				next := *packets[i+1]
+				next.SequenceNumber += offset
+				damaged = append(damaged, &next, &c)
+				i++
+				continue
+			}
+		case 4: // lost at the camera, the sequence stays continuous
+			if !visible {
+				offset--
+				continue
+			}
+		case 5: // too short to carry data
+			if !visible {
+				c.Payload = c.Payload[:r.Intn(3)]
+			}
+		}
+		damaged = append(damaged, &c)
+	}
+	return damaged
+}
+
 // Random damage must never panic or emit malformed AVCC. Damage that is visible
 // in the sequence numbers (loss, duplicates, reordering, renumbering) must
 // also never emit a NAL unit that isn't one of the originals, ex. an IDR with
@@ -419,41 +459,7 @@ func TestRTPDepayRandomDamageEmitsWellFormedAVCC(t *testing.T) {
 	for _, visible := range []bool{true, false} {
 		r := rand.New(rand.NewSource(1))
 		packets, _, nals := rtpStream(r, 3000)
-
-		var damaged []*rtp.Packet
-		var offset uint16
-		for i := 0; i < len(packets); i++ {
-			c := *packets[i]
-			c.SequenceNumber += offset
-			switch r.Intn(50) {
-			case 0: // lost
-				continue
-			case 1: // duplicated
-				dup := c
-				damaged = append(damaged, &dup)
-			case 2: // camera restarts its numbering from here on
-				offset += uint16(r.Intn(60000))
-				c.SequenceNumber = packets[i].SequenceNumber + offset
-			case 3: // swapped with the next packet
-				if i+1 < len(packets) {
-					next := *packets[i+1]
-					next.SequenceNumber += offset
-					damaged = append(damaged, &next, &c)
-					i++
-					continue
-				}
-			case 4: // lost at the camera, the sequence stays continuous
-				if !visible {
-					offset--
-					continue
-				}
-			case 5: // too short to carry data
-				if !visible {
-					c.Payload = c.Payload[:r.Intn(3)]
-				}
-			}
-			damaged = append(damaged, &c)
-		}
+		damaged := damage(r, packets, visible)
 
 		var frames int
 		handler := RTPDepay(&core.Codec{Name: core.CodecH264}, func(p *rtp.Packet) {
@@ -476,6 +482,18 @@ func TestRTPDepayRandomDamageEmitsWellFormedAVCC(t *testing.T) {
 		})
 		require.Greater(t, frames, 2000, "damage must cost single frames, not whole GOPs")
 	}
+}
+
+// A zero size aggregation entry carries no NAL unit, it is left out instead of
+// crashing the depay or becoming an empty NAL unit.
+func TestRTPDepayEmptyAggregatedNAL(t *testing.T) {
+	handler, got := depay(t)
+	require.NotPanics(t, func() {
+		handler(lossPacket(1, 100, true, []byte{NALUTypeSTAPA, 0, 0}))
+		handler(lossPacket(2, 200, false, []byte{NALUTypeSTAPA, 0, 0}))
+		handler(lossPacket(3, 300, true, []byte{NALUTypeSTAPA, 0, 0, 0, 2, 0x41, 1}))
+	})
+	require.Equal(t, [][]byte{lossNALs([]byte{0x41, 1})}, *got)
 }
 
 func TestIsKeyframeRTP(t *testing.T) {

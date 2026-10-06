@@ -6,7 +6,6 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264/annexb"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 )
 
 const RTPPacketVersionAVC = core.RTPPacketVersionAVC
@@ -42,12 +41,12 @@ func IsKeyframeRTP(payload []byte) bool {
 }
 
 func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
-	depack := &codecs.H264Packet{IsAVC: true}
-
 	sps, pps := GetParameterSet(codec.Fmtp())
 	ps := JoinNALU(sps, pps)
 
+	// the access unit, a fragmented NAL unit is assembled at its end
 	buf := make([]byte, 0, 512*1024) // 512K
+	var nalStart int
 	var seqNum uint16
 	var timestamp uint32
 	var fragmented bool
@@ -57,7 +56,6 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	// feeds NVRs and recorders, decoders conceal missing references, but a gap
 	// of a whole GOP in a recording can't be repaired.
 	drop := func() {
-		depack = &codecs.H264Packet{IsAVC: true} // discard the unfinished FU-A NAL unit
 		buf = buf[:0]
 		fragmented = false
 	}
@@ -79,9 +77,9 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 		}
 		seqNum, timestamp = packet.SequenceNumber, packet.Timestamp
 
-		// pion joins FU-A fragments without looking at the start bit, so a tail
-		// whose start was lost became a bogus NAL unit, and a NAL unit whose end
-		// was lost got glued in front of the next one.
+		// FU-A fragments are joined only from a start bit on: a tail whose start
+		// was lost would become a bogus NAL unit, and a NAL unit whose end was
+		// lost would get glued in front of the next one.
 		if b := packet.Payload; len(b) >= 2 && b[0]&0x1F == NALUTypeFUA {
 			if b[1]&0x80 != 0 { // start
 				if fragmented {
@@ -101,52 +99,98 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 
 		//log.Printf("[RTP] codec: %s, nalu: %2d, size: %6d, ts: %10d, pt: %2d, ssrc: %d, seq: %d, %v", codec.Name, packet.Payload[0]&0x1F, len(packet.Payload), packet.Timestamp, packet.PayloadType, packet.SSRC, packet.SequenceNumber, packet.Marker)
 
-		payload, err := depack.Unmarshal(packet.Payload)
-		if len(payload) == 0 || err != nil {
+		// the NAL units of this packet go to buf[start:] as AVCC
+		start := len(buf)
+
+		switch b := packet.Payload; {
+		case len(b) == 0:
 			return
+		case b[0]&0x1F == NALUTypeFUA:
+			if len(b) < 2 {
+				return
+			}
+			if b[1]&0x80 != 0 {
+				nalStart = start
+				buf = append(buf, 0, 0, 0, 0, 0) // size and NAL header, set from the end fragment
+			}
+			buf = append(buf, b[2:]...)
+			if b[1]&0x40 == 0 {
+				return
+			}
+			binary.BigEndian.PutUint32(buf[nalStart:], uint32(len(buf)-nalStart-4))
+			buf[nalStart+4] = b[0]&0x60 | b[1]&0x1F
+			start = nalStart
+		case b[0]&0x1F == NALUTypeSTAPA:
+			for i := 1; len(b)-i >= 2; {
+				size := int(binary.BigEndian.Uint16(b[i:]))
+				i += 2
+				if size > len(b)-i {
+					buf = buf[:start]
+					return // corrupted STAP-A
+				}
+				if size > 0 {
+					buf = binary.BigEndian.AppendUint32(buf, uint32(size))
+					buf = append(buf, b[i:i+size]...)
+				}
+				i += size
+			}
+			if len(buf) == start {
+				return
+			}
+		case b[0]&0x1F < NALUTypeSTAPA && b[0]&0x1F > 0:
+			buf = binary.BigEndian.AppendUint32(buf, uint32(len(b)))
+			buf = append(buf, b...)
+		default:
+			return // reserved types, STAP-B, MTAP and FU-B
 		}
 
 		// Memory overflow protection. Can happen if we miss a lot of packets with the marker.
 		// https://github.com/AlexxIT/go2rtc/issues/675
-		if len(buf) > 5*1024*1024 {
-			buf = buf[: 0 : 512*1024]
+		if start > 5*1024*1024 {
+			buf = append(make([]byte, 0, 512*1024), buf[start:]...)
+			start = 0
 		}
 
 		// Fix TP-Link Tapo TC70: sends SPS and PPS with packet.Marker = true
 		// Reolink Duo 2: sends SPS with Marker and PPS without
-		if packet.Marker && len(payload) < PSMaxSize {
-			switch NALUType(payload) {
+		if packet.Marker && len(buf)-start < PSMaxSize {
+			switch NALUType(buf[start:]) {
 			case NALUTypeSPS, NALUTypePPS:
-				buf = append(buf, payload...)
 				return
 			case NALUTypeSEI:
 				// RtspServer https://github.com/AlexxIT/go2rtc/issues/244
 				// sends, marked SPS, marked PPS, marked SEI, marked IFrame
+				buf = buf[:start]
 				return
 			}
 		}
 
-		if len(buf) == 0 {
+		if start == 0 {
 			for {
 				// Amcrest IP4M-1051: 9, 7, 8, 6, 28...
 				// Amcrest IP4M-1051: 9, 6, 1
-				switch NALUType(payload) {
+				switch NALUType(buf) {
 				case NALUTypeIFrame:
 					// fix IFrame without SPS,PPS
+					n := len(buf)
 					buf = append(buf, ps...)
+					copy(buf[len(ps):], buf[:n])
+					copy(buf, ps)
 				case NALUTypeSEI, NALUTypeAUD:
 					// fix ffmpeg with transcoding first frame
-					i := int(4 + binary.BigEndian.Uint32(payload))
+					i := int(4 + binary.BigEndian.Uint32(buf))
 
 					// check if only one NAL (fix ffmpeg transcoding for Reolink RLC-510A)
-					if i == len(payload) {
+					if i == len(buf) {
+						buf = buf[:0]
 						return
 					}
 
-					payload = payload[i:]
+					buf = buf[:copy(buf, buf[i:])]
 					continue
 				case NALUTypePFrame, NALUTypeSPS, NALUTypePPS: // pass
 				default:
+					buf = buf[:0]
 					return // skip any unknown NAL unit type
 				}
 				break
@@ -155,14 +199,11 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 
 		// collect all NALs for Access Unit
 		if !packet.Marker {
-			buf = append(buf, payload...)
 			return
 		}
 
-		if len(buf) > 0 {
-			payload = append(buf, payload...)
-			buf = buf[:0]
-		}
+		payload := buf
+		buf = buf[:0]
 
 		// should not be that huge SPS
 		if NALUType(payload) == NALUTypeSPS && binary.BigEndian.Uint32(payload) >= PSMaxSize {
