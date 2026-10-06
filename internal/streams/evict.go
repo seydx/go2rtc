@@ -20,8 +20,9 @@ var errSourcesChanged = errors.New("streams: sources changed while attaching")
 // OnEvict registers fn to run when the stream evicts cons, so the handler can
 // end the client connection its transport does not end by itself (a
 // websocket survives the consumer being stopped). Register before
-// AddConsumer: eviction can happen as soon as the consumer is attached. fn is
-// not called when the consumer is removed any other way.
+// AddConsumer: eviction can happen as soon as the consumer is attached. A
+// codec change and DELETE /api/consumer evict, fn is not called when the
+// consumer is removed any other way.
 func (s *Stream) OnEvict(cons core.Consumer, fn func()) {
 	s.mu.Lock()
 	if s.evictHooks == nil {
@@ -71,6 +72,7 @@ func (s *Stream) evictStaleConsumers() {
 	s.mu.Unlock()
 
 	for _, cons := range victims {
+		log.Debug().Msgf("[streams] evict consumer, its track was dropped by a codec change")
 		s.evict(cons)
 	}
 
@@ -89,8 +91,6 @@ func (s *Stream) evict(cons core.Consumer) {
 	s.mu.Lock()
 	hook := s.evictHooks[cons]
 	s.mu.Unlock()
-
-	log.Debug().Msgf("[streams] evict consumer, its track was dropped by a codec change")
 
 	s.RemoveConsumer(cons)
 

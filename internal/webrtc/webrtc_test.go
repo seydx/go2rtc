@@ -2,6 +2,7 @@ package webrtc
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/webrtc"
+	"github.com/gorilla/websocket"
 	pion "github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -377,6 +379,50 @@ func TestTaggedViewerGoesWithItsWebsocket(t *testing.T) {
 
 	tr.Close()
 	require.Eventually(t, func() bool { return consumerCount(t, stream) == 0 }, 3*time.Second, 50*time.Millisecond)
+}
+
+var wsRoutes sync.Once
+
+// wsServer serves api/ws the way go2rtc does, with the webrtc handlers.
+func wsServer(t *testing.T) *httptest.Server {
+	wsRoutes.Do(func() {
+		ws.Init()
+		ws.HandleFunc("webrtc/offer", asyncHandler)
+	})
+	srv := httptest.NewServer(http.DefaultServeMux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A revoked share deletes its viewer through the API. The websocket must go
+// with it, or the client offers again on it and is back with the same tag.
+func TestDeletedTaggedViewerLosesItsWebsocket(t *testing.T) {
+	usePionAPI(t, time.Minute)
+	const name = "webrtc_tagged_deleted"
+	const tag = "share_deleted"
+	stream := newStubStream(t, name)
+
+	srv := wsServer(t)
+	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/api/ws?src="+name+"&tag="+tag, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	require.NoError(t, client.WriteJSON(&ws.Message{Type: "webrtc/offer", Value: viewerOffer(t)}))
+	require.Eventually(t, func() bool { return consumerCount(t, stream) == 1 }, 3*time.Second, 50*time.Millisecond)
+
+	require.Equal(t, 1, streams.KillConsumersByTag(tag))
+
+	// read the close before offering again: data sent to a closed socket
+	// gets a reset, which may discard the close frame
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for err == nil {
+		_, _, err = client.ReadMessage()
+	}
+
+	_ = client.WriteJSON(&ws.Message{Type: "webrtc/offer", Value: viewerOffer(t)})
+	require.Never(t, func() bool { return consumerCount(t, stream) != 0 }, time.Second, 50*time.Millisecond,
+		"an offer on the same websocket must not attach again (read: %v)", err)
+	require.True(t, websocket.IsCloseError(err, websocket.CloseServiceRestart), "the client sees a 1012 close, got %v", err)
 }
 
 func TestNewOfferReplacesConnectedTaggedViewer(t *testing.T) {

@@ -206,6 +206,8 @@ func (s *Stream) RemoveConsumer(cons core.Consumer) {
 	s.stopProducers()
 }
 
+// RemoveConsumerByID evicts the consumer, unlike RemoveConsumer its handler
+// ends the client connection too.
 func (s *Stream) RemoveConsumerByID(id uint32) bool {
 	s.mu.Lock()
 	var target core.Consumer
@@ -221,10 +223,11 @@ func (s *Stream) RemoveConsumerByID(id uint32) bool {
 		return false
 	}
 
-	s.RemoveConsumer(target)
+	s.evict(target)
 	return true
 }
 
+// RemoveConsumersByTag evicts the consumers, like RemoveConsumerByID.
 func (s *Stream) RemoveConsumersByTag(tag string) int {
 	if tag == "" {
 		return 0
@@ -240,7 +243,7 @@ func (s *Stream) RemoveConsumersByTag(tag string) int {
 	s.mu.Unlock()
 
 	for _, t := range targets {
-		s.RemoveConsumer(t)
+		s.evict(t)
 	}
 	return len(targets)
 }
