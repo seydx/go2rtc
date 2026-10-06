@@ -29,6 +29,8 @@ type Producer struct {
 
 	url      string
 	template string
+	// url as last dialed, ffmpeg names it as the source of its input
+	dialed string
 
 	conn      core.Producer
 	receivers []*core.Receiver
@@ -179,7 +181,7 @@ func (p *Producer) Dial() error {
 		p.mu.Unlock()
 
 		// Do the actual dial without holding the lock
-		conn, err := GetProducer(url)
+		conn, err := GetProducer(p.dialURL(url))
 
 		// Reacquire lock to update state
 		p.mu.Lock()
@@ -233,6 +235,42 @@ func (p *Producer) Dial() error {
 		p.mu.Unlock()
 		return nil
 	}
+}
+
+// callers hold no stream or producer lock
+func (p *Producer) dialURL(url string) string {
+	p.mu.RLock()
+	tied, stream := p.requirePrevAudio, p.stream
+	p.mu.RUnlock()
+
+	dialed := url
+	if tied && stream != nil {
+		scheme, _, _ := strings.Cut(url, ":")
+		if trim := getTrim(scheme); trim != nil {
+			if have := stream.audioBefore(p); len(have) > 0 {
+				dialed = trim(url, have)
+			}
+		}
+	}
+
+	p.mu.Lock()
+	p.dialed = dialed
+	p.mu.Unlock()
+	return dialed
+}
+
+// isOwnInput: cons reads the stream for this producer, like ffmpeg reading
+// the stream it feeds
+func (p *Producer) isOwnInput(cons core.Consumer) bool {
+	info, ok := cons.(core.Info)
+	if !ok {
+		return false
+	}
+	source := info.GetSource()
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return source == p.url || p.dialed != "" && source == p.dialed
 }
 
 func (p *Producer) GetMedias() []*core.Media {
@@ -867,7 +905,7 @@ func (p *Producer) reconnect(workerID, retry int) {
 	log.Debug().Msgf("[streams] retry=%d to url=%s", retry, url)
 
 	// Slow operation WITHOUT holding lock
-	conn, err := GetProducer(url)
+	conn, err := GetProducer(p.dialURL(url))
 	if err != nil {
 		log.Debug().Msgf("[streams] producer=%s", err)
 		p.failReconnect(workerID, err)

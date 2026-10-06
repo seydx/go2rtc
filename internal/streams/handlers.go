@@ -24,6 +24,27 @@ func HandleFunc(scheme string, handler Handler) {
 	redirectsMu.Unlock()
 }
 
+// Trim returns url without the outputs that would only repeat a codec in
+// have, the audio the stream's earlier sources send.
+type Trim func(url string, have []*core.Codec) string
+
+var trims = map[string]Trim{}
+
+// HandleTrim registers how a source of scheme leaves out such outputs. Only
+// sources tied to earlier ones (#requirePrevAudio) are trimmed: consumers take
+// the earlier sources first and would never read them.
+func HandleTrim(scheme string, trim Trim) {
+	redirectsMu.Lock()
+	trims[scheme] = trim
+	redirectsMu.Unlock()
+}
+
+func getTrim(scheme string) Trim {
+	redirectsMu.RLock()
+	defer redirectsMu.RUnlock()
+	return trims[scheme]
+}
+
 func getHandler(scheme string) (Handler, bool) {
 	redirectsMu.RLock()
 	defer redirectsMu.RUnlock()

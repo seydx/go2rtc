@@ -93,3 +93,42 @@ func offerAudioCodec(value string) *core.Codec {
 
 	return codec
 }
+
+// two outputs at least stay: with a single one ffmpeg writes a pipe format
+// instead of RTSP
+func trimOutputs(url string, have []*core.Codec) string {
+	base, options, ok := strings.Cut(url, "#")
+	if !ok {
+		return url
+	}
+
+	var kept []string
+	var outputs, dropped int
+	for _, option := range strings.Split(options, "#") {
+		if value, ok := strings.CutPrefix(option, "audio="); ok || option == "audio" {
+			if codec := offerAudioCodec(value); codec != nil && sendsCodec(have, codec) {
+				dropped++
+				continue
+			}
+			outputs++
+		}
+		kept = append(kept, option)
+	}
+
+	if dropped == 0 || outputs < 2 {
+		return url
+	}
+	return base + "#" + strings.Join(kept, "#")
+}
+
+// an output without a rate keeps the input's, mono is 0 or 1 channels
+func sendsCodec(have []*core.Codec, codec *core.Codec) bool {
+	for _, c := range have {
+		if c.Name == codec.Name &&
+			(codec.ClockRate == 0 || c.ClockRate == codec.ClockRate) &&
+			(codec.Channels == 0 || max(c.Channels, 1) == max(codec.Channels, 1)) {
+			return true
+		}
+	}
+	return false
+}

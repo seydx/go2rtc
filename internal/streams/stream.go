@@ -323,6 +323,28 @@ func (s *Stream) offeredKinds() map[string]bool {
 	return kinds
 }
 
+func (s *Stream) audioBefore(p *Producer) []*core.Codec {
+	s.mu.Lock()
+	producers := append([]*Producer(nil), s.producers...)
+	s.mu.Unlock()
+
+	var codecs []*core.Codec
+	for _, prod := range producers {
+		if prod == p {
+			break
+		}
+		if prod.tiedToPrevious() {
+			continue
+		}
+		for _, media := range prod.GetMedias() {
+			if media.Kind == core.KindAudio && media.Direction == core.DirectionRecvonly {
+				codecs = append(codecs, media.Codecs...)
+			}
+		}
+	}
+	return codecs
+}
+
 // isAudioStale returns true if all audio receivers across the started producers
 // exist but have not received any packets recently. This detects cameras that
 // advertise audio but stopped sending it (e.g. hardware issue).

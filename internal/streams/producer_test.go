@@ -655,6 +655,103 @@ func TestCompanionNotDialedWhenCameraCoversTheRequest(t *testing.T) {
 	stream.RemoveConsumer(cons)
 }
 
+// A companion only converts the camera's audio. It is dialed without the
+// outputs that would repeat what the camera sends: the camera comes first for
+// every consumer, nobody would read them.
+func TestCompanionDialLeavesOutTheCameraAudio(t *testing.T) {
+	registerTestRTSPHandler()
+	dialed := make(chan string, 4)
+	HandleFunc("stubtrim", func(url string) (core.Producer, error) {
+		dialed <- url
+		return nil, errors.New("stub companion")
+	})
+	var have []*core.Codec
+	HandleTrim("stubtrim", func(url string, codecs []*core.Codec) string {
+		have = codecs
+		return strings.Replace(url, "#audio=aac", "", 1)
+	})
+
+	cam := newFakeCamera(t)
+	cam.aac.Store(true)
+	stream, err := New("companion_trim", cam.URL(), "stubtrim://x#noVideo#noBackchannel#audio=opus#audio=aac#requirePrevAudio")
+	require.NoError(t, err)
+
+	query, _ := url.ParseQuery("video&audio=opus")
+	cons := probe.Create("test", query)
+	_ = stream.AddConsumer(cons)
+	t.Cleanup(func() { stream.RemoveConsumer(cons) })
+
+	select {
+	case got := <-dialed:
+		require.Equal(t, "stubtrim://x#audio=opus", got)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the companion was never dialed")
+	}
+	require.Len(t, have, 1)
+	require.Equal(t, core.CodecAAC, have[0].Name)
+	require.Equal(t, uint32(16000), have[0].ClockRate)
+
+	stream.mu.Lock()
+	companion := stream.producers[1]
+	stream.mu.Unlock()
+	companion.mu.Lock()
+	companion.workerID++
+	workerID := companion.workerID
+	companion.mu.Unlock()
+	t.Cleanup(func() {
+		companion.mu.Lock()
+		companion.workerID++
+		companion.mu.Unlock()
+	})
+
+	go companion.reconnect(workerID, 0)
+	select {
+	case got := <-dialed:
+		require.Equal(t, "stubtrim://x#audio=opus", got, "a reconnect leaves them out too")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the companion never reconnected")
+	}
+}
+
+// ffmpeg reads the stream it feeds and names the URL it was dialed with as
+// its source. A companion dialed with fewer outputs must still never serve
+// that input, or it would read its own output.
+func TestTrimmedCompanionSkipsItsOwnInput(t *testing.T) {
+	registerTestRTSPHandler()
+	dialed := make(chan string, 4)
+	HandleFunc("trimself", func(url string) (core.Producer, error) {
+		dialed <- url
+		return newFakeCompanionConn(), nil
+	})
+	HandleTrim("trimself", func(url string, _ []*core.Codec) string {
+		return strings.Replace(url, "#audio=aac", "", 1)
+	})
+
+	cam := newFakeCamera(t)
+	cam.aac.Store(true)
+	stream, err := New("companion_trim_self", cam.URL(), "trimself://x#noVideo#noBackchannel#audio=opus#audio=aac#requirePrevAudio")
+	require.NoError(t, err)
+
+	viewer := queryProbe(t, "audio=opus")
+	require.NoError(t, stream.AddConsumer(viewer))
+	t.Cleanup(func() { stream.RemoveConsumer(viewer) })
+
+	var source string
+	select {
+	case source = <-dialed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the companion was never dialed")
+	}
+	require.Equal(t, "trimself://x#audio=opus", source)
+	require.True(t, waitUntil(10*time.Second, func() bool { return viewer.Bytes() > 0 }), "the viewer gets the companion's audio")
+
+	input := queryProbe(t, "audio=opus")
+	input.Source = source
+	_ = stream.AddConsumer(input)
+	t.Cleanup(func() { stream.RemoveConsumer(input) })
+	require.False(t, registered(stream, input), "the companion must not serve its own input")
+}
+
 // stopTrackingProducer records whether its connection was closed.
 type stopTrackingProducer struct {
 	stubProducer

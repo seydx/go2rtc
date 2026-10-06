@@ -87,7 +87,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 	for prodN, prod := range producers {
 		// Skip-checks
-		if info, ok := cons.(core.Info); ok && prod.url == info.GetSource() {
+		if prod.isOwnInput(cons) {
 			log.Trace().Msgf("[streams] bestfit skip cons=%d prod=%d (loop)", consN, prodN)
 			continue
 		}
@@ -232,7 +232,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 
 		for prodN, prod := range producers {
 			// check for loop request
-			if info, ok := cons.(core.Info); ok && prod.url == info.GetSource() {
+			if prod.isOwnInput(cons) {
 				log.Trace().Msgf("[streams] skip prod=%d (loop)", prodN)
 				continue
 			}
