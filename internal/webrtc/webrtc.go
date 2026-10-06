@@ -185,11 +185,13 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 	conn.Protocol = "ws"
 	conn.UserAgent = tr.Request.UserAgent()
 	conn.Tag = query.Get("tag")
+	// tagged viewers come from share links: one peer per websocket, so the relay's socket count is the viewer count
+	tied := conn.Tag != ""
 
 	tr.OnClose(func() {
 		conn.CloseTransport()
 		// a connected peer outlives its signaling, one still connecting can't
-		if !conn.Connected() {
+		if !conn.Connected() || tied {
 			_ = conn.Close()
 		}
 	})
@@ -211,7 +213,7 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 		_ = conn.Close()
 		return nil
 	}
-	if prev != nil && !prev.Connected() {
+	if prev != nil && (!prev.Connected() || tied) {
 		_ = prev.Close()
 	}
 

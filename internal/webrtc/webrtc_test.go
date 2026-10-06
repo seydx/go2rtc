@@ -326,6 +326,88 @@ func TestConnectedViewerOutlivesItsWebsocket(t *testing.T) {
 	require.Equal(t, pion.PeerConnectionStateConnected, viewer.ConnectionState())
 }
 
+// connectOverWebsocket runs one offer through asyncHandler and completes ICE
+// until the viewer is connected. It returns go2rtc's side of the peer.
+func connectOverWebsocket(t *testing.T, tr *ws.Transport, answers, candidates chan string, seq uint64) *webrtc.Conn {
+	viewer, offer := connectingViewer(t)
+	require.NoError(t, asyncHandler(tr, &ws.Message{Type: "webrtc/offer", Value: offer, Seq: seq}))
+	var conn *webrtc.Conn
+	tr.WithContext(func(ctx map[any]any) { conn, _ = ctx[lastConnKey].(*webrtc.Conn) })
+	require.NotNil(t, conn)
+	require.NoError(t, viewer.SetRemoteDescription(pion.SessionDescription{Type: pion.SDPTypeAnswer, SDP: <-answers}))
+	require.Eventually(t, func() bool {
+		select {
+		case candidate := <-candidates:
+			_ = viewer.AddICECandidate(pion.ICECandidateInit{Candidate: candidate})
+		default:
+		}
+		return viewerConnected(viewer)()
+	}, 5*time.Second, 10*time.Millisecond)
+	return conn
+}
+
+func signalingTransport(target string) (*ws.Transport, chan string, chan string) {
+	answers := make(chan string, 4)
+	candidates := make(chan string, 64)
+	tr := &ws.Transport{Request: httptest.NewRequest("GET", target, nil)}
+	tr.OnWrite(func(msg any) error {
+		if m, ok := msg.(*ws.Message); ok {
+			switch m.Type {
+			case "webrtc/answer":
+				answers <- m.Value.(string)
+			case "webrtc/candidate":
+				candidates <- m.Value.(string)
+			}
+		}
+		return nil
+	})
+	return tr, answers, candidates
+}
+
+// A share viewer must not keep watching after the relay closed its websocket,
+// or reopen sockets to collect more peers than the share allows.
+func TestTaggedViewerGoesWithItsWebsocket(t *testing.T) {
+	useLoopbackAPI(t, time.Minute)
+	const name = "webrtc_tagged_ws_close"
+	stream := newStubStream(t, name)
+
+	tr, answers, candidates := signalingTransport("/api/ws?src=" + name + "&tag=share_x")
+	connectOverWebsocket(t, tr, answers, candidates, 1)
+	require.Equal(t, 1, consumerCount(t, stream))
+
+	tr.Close()
+	require.Eventually(t, func() bool { return consumerCount(t, stream) == 0 }, 3*time.Second, 50*time.Millisecond)
+}
+
+func TestNewOfferReplacesConnectedTaggedViewer(t *testing.T) {
+	useLoopbackAPI(t, time.Minute)
+	const name = "webrtc_tagged_reoffer"
+	newStubStream(t, name)
+
+	tr, answers, candidates := signalingTransport("/api/ws?src=" + name + "&tag=share_x")
+	t.Cleanup(tr.Close)
+	first := connectOverWebsocket(t, tr, answers, candidates, 1)
+	second := connectOverWebsocket(t, tr, answers, candidates, 2)
+
+	require.Eventually(t, first.IsClosed, 3*time.Second, 50*time.Millisecond)
+	require.False(t, second.IsClosed(), "the newer peer stays")
+}
+
+// Untagged clients keep a connected peer when they offer again, the camera.ui
+// player negotiates its talk peer on the same websocket.
+func TestNewOfferKeepsConnectedUntaggedViewer(t *testing.T) {
+	useLoopbackAPI(t, time.Minute)
+	const name = "webrtc_untagged_reoffer"
+	newStubStream(t, name)
+
+	tr, answers, candidates := signalingTransport("/api/ws?src=" + name)
+	t.Cleanup(tr.Close)
+	first := connectOverWebsocket(t, tr, answers, candidates, 1)
+	second := connectOverWebsocket(t, tr, answers, candidates, 2)
+
+	require.Never(t, func() bool { return first.IsClosed() || second.IsClosed() }, 300*time.Millisecond, 50*time.Millisecond)
+}
+
 // The websocket stays open, the peer never connects: the deadline applies on
 // the websocket path just as on HTTP.
 func TestUnconnectedViewerOnOpenWebsocketIsDroppedAfterDeadline(t *testing.T) {
