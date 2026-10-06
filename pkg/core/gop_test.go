@@ -9,8 +9,8 @@ import (
 )
 
 // pkg/h264 registers the real codec but core can't import it, so the tests
-// use a stub: a frame is a keyframe when its payload starts with 'K', and an
-// RTP frame ends with the marker bit.
+// use a stub: a frame or the RTP packet starting it is a keyframe when its
+// payload starts with 'K', and an RTP frame ends with the marker bit.
 func init() {
 	RegisterGopCodec(CodecH264, func(payload []byte) bool {
 		return len(payload) > 0 && payload[0] == 'K'
@@ -27,6 +27,8 @@ func init() {
 				buf = nil
 			}
 		}
+	}, func(payload []byte) bool {
+		return len(payload) > 0 && payload[0] == 'K'
 	})
 }
 

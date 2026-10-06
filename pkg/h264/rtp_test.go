@@ -477,3 +477,33 @@ func TestRTPDepayRandomDamageEmitsWellFormedAVCC(t *testing.T) {
 		require.Greater(t, frames, 2000, "damage must cost single frames, not whole GOPs")
 	}
 }
+
+func TestIsKeyframeRTP(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload []byte
+		want    bool
+	}{
+		{"idr slice", []byte{0x65, 0x88}, true},
+		{"p slice", []byte{0x41, 0x9A}, false},
+		{"sps alone", []byte{0x67, 0x42}, false},
+		{"stap-a with idr", []byte{0x78, 0x00, 0x02, 0x67, 0x42, 0x00, 0x01, 0x68, 0x00, 0x02, 0x65, 0x88}, true},
+		{"stap-a with parameter sets only", []byte{0x78, 0x00, 0x02, 0x67, 0x42, 0x00, 0x01, 0x68}, false},
+		{"stap-a cut short", []byte{0x78, 0x00, 0x09, 0x65}, false},
+		{"fu-a idr start", []byte{0x7C, 0x85, 0x88}, true},
+		{"fu-a idr middle", []byte{0x7C, 0x05, 0x88}, false},
+		{"fu-a p start", []byte{0x7C, 0x81, 0x9A}, false},
+		{"fu-a without header", []byte{0x7C}, false},
+		{"empty", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, IsKeyframeRTP(tc.payload))
+		})
+	}
+}
+
+func TestIsKeyframeShortFrame(t *testing.T) {
+	require.False(t, IsKeyframe(nil))
+	require.False(t, IsKeyframe([]byte{0, 0, 0, 1}))
+}

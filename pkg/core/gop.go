@@ -23,8 +23,9 @@ const (
 
 // gopCodec knows how to turn a video track's packets into complete frames.
 type gopCodec struct {
-	isKeyframe func(payload []byte) bool
-	rtpDepay   func(codec *Codec, handler HandlerFunc) HandlerFunc
+	isKeyframe    func(payload []byte) bool
+	rtpDepay      func(codec *Codec, handler HandlerFunc) HandlerFunc
+	isKeyframeRTP func(payload []byte) bool
 }
 
 var (
@@ -34,11 +35,29 @@ var (
 
 // RegisterGopCodec makes a video codec eligible for the GOP cache.
 // isKeyframe inspects a complete AVCC frame, rtpDepay reassembles RTP
-// fragments into such frames (marked with RTPPacketVersionAVC).
-func RegisterGopCodec(name string, isKeyframe func([]byte) bool, rtpDepay func(*Codec, HandlerFunc) HandlerFunc) {
+// fragments into such frames (marked with RTPPacketVersionAVC), and
+// isKeyframeRTP tells the RTP packet a keyframe starts with.
+func RegisterGopCodec(name string, isKeyframe func([]byte) bool, rtpDepay func(*Codec, HandlerFunc) HandlerFunc, isKeyframeRTP func([]byte) bool) {
 	gopCodecsMu.Lock()
-	gopCodecs[name] = gopCodec{isKeyframe: isKeyframe, rtpDepay: rtpDepay}
+	gopCodecs[name] = gopCodec{isKeyframe: isKeyframe, rtpDepay: rtpDepay, isKeyframeRTP: isKeyframeRTP}
 	gopCodecsMu.Unlock()
+}
+
+// nil for codecs without a gopCodec
+func keyframeStart(codec *Codec) func(packet *Packet) bool {
+	gopCodecsMu.RLock()
+	gc, ok := gopCodecs[codec.Name]
+	gopCodecsMu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	return func(packet *Packet) bool {
+		if packet.Version == RTPPacketVersionAVC {
+			return gc.isKeyframe(packet.Payload)
+		}
+		return gc.isKeyframeRTP != nil && gc.isKeyframeRTP(packet.Payload)
+	}
 }
 
 // GopCache keeps the current group of pictures of a video track: every

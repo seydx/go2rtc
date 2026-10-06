@@ -203,6 +203,8 @@ type Sender struct {
 
 	buf  chan *Packet
 	done chan struct{}
+
+	keyframeStart func(packet *Packet) bool
 }
 
 func NewSender(media *Media, codec *Codec) *Sender {
@@ -229,10 +231,18 @@ func NewSender(media *Media, codec *Codec) *Sender {
 		buf:    buf,
 	}
 
+	if GetKind(codec.Name) == KindVideo {
+		s.keyframeStart = keyframeStart(codec)
+	}
+
 	s.SetOwner(s)
 
 	s.Input = func(packet *Packet) {
 		s.mu.Lock()
+		// not started yet (WebRTC before ICE): a decoder starts at the latest keyframe anyway
+		if s.done == nil && s.keyframeStart != nil && s.keyframeStart(packet) {
+			s.trimTo(packet.Timestamp)
+		}
 		select {
 		case s.buf <- packet:
 			s.Bytes += len(packet.Payload)
@@ -322,6 +332,28 @@ func (s *Sender) discard() {
 			s.Bytes -= len(packet.Payload)
 			s.Packets--
 		default:
+			return
+		}
+	}
+}
+
+// trimTo drops the buffered packets of frames other than the one at
+// timestamp. Callers hold s.mu.
+func (s *Sender) trimTo(timestamp uint32) {
+	var keep []*Packet
+	for {
+		select {
+		case packet := <-s.buf:
+			if packet.Timestamp == timestamp {
+				keep = append(keep, packet)
+				continue
+			}
+			s.Bytes -= len(packet.Payload)
+			s.Packets--
+		default:
+			for _, packet := range keep {
+				s.buf <- packet
+			}
 			return
 		}
 	}

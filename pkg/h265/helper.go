@@ -26,7 +26,7 @@ func NALUType(b []byte) byte {
 }
 
 func IsKeyframe(b []byte) bool {
-	for {
+	for len(b) > 4 {
 		switch NALUType(b) {
 		case NALUTypePFrame:
 			return false
@@ -42,6 +42,39 @@ func IsKeyframe(b []byte) bool {
 			return false
 		}
 	}
+	return false
+}
+
+// IsKeyframeRTP reports whether an RTP payload starts an IRAP picture: the
+// slice itself, an aggregation packet carrying it or its first fragment.
+func IsKeyframeRTP(payload []byte) bool {
+	if len(payload) < 3 {
+		return false
+	}
+
+	switch nuType := (payload[0] >> 1) & 0x3F; nuType {
+	case NALUTypeAP:
+		for b := payload[2:]; len(b) > 2; {
+			size := int(binary.BigEndian.Uint16(b))
+			b = b[2:]
+			if size == 0 || size > len(b) {
+				return false
+			}
+			if isIRAP((b[0] >> 1) & 0x3F) {
+				return true
+			}
+			b = b[size:]
+		}
+		return false
+	case NALUTypeFU:
+		return payload[2]&0x80 != 0 && isIRAP(payload[2]&0x3F)
+	default:
+		return isIRAP(nuType)
+	}
+}
+
+func isIRAP(nuType byte) bool {
+	return nuType == NALUTypeIFrame || nuType == NALUTypeIFrame2 || nuType == NALUTypeIFrame3
 }
 
 func Types(data []byte) []byte {

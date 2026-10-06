@@ -13,6 +13,34 @@ const RTPPacketVersionAVC = core.RTPPacketVersionAVC
 
 const PSMaxSize = 128 // the biggest SPS I've seen is 48 (EZVIZ CS-CV210)
 
+// IsKeyframeRTP reports whether an RTP payload starts an IDR picture: the IDR
+// slice itself, a STAP-A carrying it or its first FU-A fragment.
+func IsKeyframeRTP(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+
+	switch payload[0] & 0x1F {
+	case NALUTypeIFrame:
+		return true
+	case NALUTypeSTAPA:
+		for b := payload[1:]; len(b) > 2; {
+			size := int(binary.BigEndian.Uint16(b))
+			b = b[2:]
+			if size == 0 || size > len(b) {
+				return false
+			}
+			if b[0]&0x1F == NALUTypeIFrame {
+				return true
+			}
+			b = b[size:]
+		}
+	case NALUTypeFUA:
+		return len(payload) > 1 && payload[1]&0x80 != 0 && payload[1]&0x1F == NALUTypeIFrame
+	}
+	return false
+}
+
 func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	depack := &codecs.H264Packet{IsAVC: true}
 

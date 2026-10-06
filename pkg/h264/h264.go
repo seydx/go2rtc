@@ -17,6 +17,7 @@ const (
 	NALUTypeSPS    = 7  // Sequence parameter set
 	NALUTypePPS    = 8  // Picture parameter set
 	NALUTypeAUD    = 9  // Access unit delimiter
+	NALUTypeSTAPA  = 24 // Single-time aggregation packet A (RFC 6184)
 	NALUTypeFUA    = 28 // Fragmentation unit A (RFC 6184)
 )
 
@@ -26,7 +27,7 @@ func NALUType(b []byte) byte {
 
 // IsKeyframe - check if any NALU in one AU is Keyframe
 func IsKeyframe(b []byte) bool {
-	for {
+	for len(b) > 4 {
 		switch NALUType(b) {
 		case NALUTypePFrame:
 			return false
@@ -42,6 +43,7 @@ func IsKeyframe(b []byte) bool {
 			return false
 		}
 	}
+	return false
 }
 
 func Join(ps, iframe []byte) []byte {
