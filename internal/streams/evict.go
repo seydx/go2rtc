@@ -15,6 +15,8 @@ import (
 
 var errTrackGone = errors.New("streams: track was dropped while attaching")
 
+var errSourcesChanged = errors.New("streams: sources changed while attaching")
+
 // OnEvict registers fn to run when the stream evicts cons, so the handler can
 // end the client connection its transport does not end by itself (a
 // websocket survives the consumer being stopped). Register before

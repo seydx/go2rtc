@@ -14,6 +14,9 @@ type Stream struct {
 	mu        sync.Mutex
 	pending   atomic.Int32
 
+	// sourcesGen counts source swaps, an attach that straddles one is refused
+	sourcesGen uint64
+
 	// bound: the producer receivers each consumer was attached to.
 	// evictHooks: how to end a consumer's connection when it gets evicted.
 	bound      map[core.Consumer][]*core.Receiver
@@ -93,7 +96,7 @@ func (s *Stream) SetSource(input string) {
 		if prod.template != "" {
 			hasTemplate = true
 		}
-		if primary < 0 && prod.state != stateExternal && prod.state != stateInternal {
+		if primary < 0 && !prod.attached() {
 			primary = i
 		}
 	}
@@ -115,6 +118,7 @@ func (s *Stream) SetSource(input string) {
 		return
 	}
 	s.producers = producers
+	s.sourcesGen++
 	consumers := append([]core.Consumer(nil), s.consumers...)
 	s.mu.Unlock()
 
@@ -129,10 +133,9 @@ func (s *Stream) setSources(sources []string) bool {
 	reusable := make(map[string]*Producer, len(s.producers))
 	var attached []*Producer
 	for _, prod := range s.producers {
-		switch prod.state {
-		case stateExternal, stateInternal:
+		if prod.attached() {
 			attached = append(attached, prod)
-		default:
+		} else {
 			reusable[prod.source] = prod
 		}
 	}
@@ -158,6 +161,7 @@ func (s *Stream) setSources(sources []string) bool {
 		return false
 	}
 	s.producers = append(producers, attached...)
+	s.sourcesGen++
 	consumers := append([]core.Consumer(nil), s.consumers...)
 	s.mu.Unlock()
 
@@ -319,16 +323,20 @@ func (s *Stream) offeredKinds() map[string]bool {
 	return kinds
 }
 
-// isAudioStale returns true if all audio receivers across all started producers
+// isAudioStale returns true if all audio receivers across the started producers
 // exist but have not received any packets recently. This detects cameras that
 // advertise audio but stopped sending it (e.g. hardware issue).
-func (s *Stream) isAudioStale() bool {
+func isAudioStale(producers []*Producer) bool {
 	hasAudioReceiver := false
-	for _, prod := range s.producers {
-		if prod.state < stateStart {
+	for _, prod := range producers {
+		prod.mu.RLock()
+		started := prod.state >= stateStart
+		receivers := prod.receivers
+		prod.mu.RUnlock()
+		if !started {
 			continue
 		}
-		for _, recv := range prod.receivers {
+		for _, recv := range receivers {
 			if recv.Codec != nil && recv.Codec.IsAudio() {
 				hasAudioReceiver = true
 				if recv.IsActive(audioStaleThreshold) {

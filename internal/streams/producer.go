@@ -655,6 +655,13 @@ func (p *Producer) HasError() bool {
 
 // internals
 
+// attached: handed in as a live connection, not dialed from a source
+func (p *Producer) attached() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.state == stateExternal || p.state == stateInternal
+}
+
 func (p *Producer) start() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

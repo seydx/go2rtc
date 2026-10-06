@@ -36,10 +36,29 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	// the producer receivers cons gets attached to
 	var bound []*core.Receiver
 
+	// a source swap may replace the list while this attach dials
+	s.mu.Lock()
+	producers := append([]*Producer(nil), s.producers...)
+	sourcesGen := s.sourcesGen
+	s.mu.Unlock()
+
 	// support for multiple simultaneous pending from different consumers
 	consN := s.pending.Add(1) - 1
+	released := false
+	release := func() {
+		released = true
+		if s.pending.Add(-1) == 0 {
+			s.stopProducers()
+		}
+	}
+	// a stream left pending after a panic would never stop its producers
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
 
-	var prodErrors = make([]error, len(s.producers))
+	var prodErrors = make([]error, len(producers))
 	var prodMedias []*core.Media
 	var prodStarts []*Producer
 
@@ -66,7 +85,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	var bestFitProd *Producer
 	var bestFitProdN int = -1
 
-	for prodN, prod := range s.producers {
+	for prodN, prod := range producers {
 		// Skip-checks
 		if info, ok := cons.(core.Info); ok && prod.url == info.GetSource() {
 			log.Trace().Msgf("[streams] bestfit skip cons=%d prod=%d (loop)", consN, prodN)
@@ -211,7 +230,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 		// Track which consMedias have been pre-negotiated (by index)
 		preNegotiatedConsMedias := make(map[int]bool)
 
-		for prodN, prod := range s.producers {
+		for prodN, prod := range producers {
 			// check for loop request
 			if info, ok := cons.(core.Info); ok && prod.url == info.GetSource() {
 				log.Trace().Msgf("[streams] skip prod=%d (loop)", prodN)
@@ -230,7 +249,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 					log.Trace().Msgf("[streams] skip prod=%d (requires previous audio but none available)", prodN)
 					continue
 				}
-				if s.isAudioStale() {
+				if isAudioStale(producers) {
 					log.Trace().Msgf("[streams] skip prod=%d (requires previous audio but audio is stale)", prodN)
 					continue
 				}
@@ -576,9 +595,7 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	}
 
 	// stop producers if they don't have readers
-	if s.pending.Add(-1) == 0 {
-		s.stopProducers()
-	}
+	release()
 
 	// Check if consumer was closed during dial
 	if cons.IsClosed() {
@@ -590,6 +607,14 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	}
 
 	s.mu.Lock()
+	// the consumers attached before were sent to reconnect against the new
+	// sources, this one is bound to the old ones
+	if s.sourcesGen != sourcesGen {
+		s.mu.Unlock()
+		_ = cons.Stop()
+		s.stopProducers()
+		return errSourcesChanged
+	}
 	s.consumers = append(s.consumers, cons)
 	s.bind(cons, bound)
 	s.mu.Unlock()
