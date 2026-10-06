@@ -798,3 +798,46 @@ func TestStatusFollowsReconnect(t *testing.T) {
 	require.True(t, waitUntil(30*time.Second, func() bool { return stream.Status() == "connected" }), "the status recovers with the camera")
 	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
 }
+
+// countingTrackConn sets tracks up slowly and counts it, like a camera
+// answering SETUP.
+type countingTrackConn struct {
+	core.Connection
+	setups atomic.Int32
+}
+
+func (c *countingTrackConn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
+	c.setups.Add(1)
+	time.Sleep(5 * time.Millisecond)
+	return core.NewReceiver(media, codec), nil
+}
+
+func (c *countingTrackConn) Start() error { select {} }
+
+// Viewers attaching at once ask for the same new track. The camera sets it
+// up once and the producer keeps one receiver for it: the next in line must
+// find the track before the first one lets it go.
+func TestConcurrentTrackRequestsSetUpOnce(t *testing.T) {
+	videoMedia := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{{Name: core.CodecH264, ClockRate: 90000}}}
+	conn := &countingTrackConn{Connection: core.Connection{Medias: []*core.Media{videoMedia}}}
+	p := &Producer{conn: conn, state: stateTracks, gopEnabled: true, url: "counting://cam"}
+
+	var wg sync.WaitGroup
+	tracks := make([]*core.Receiver, 8)
+	for i := range tracks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tracks[i], _ = p.GetTrack(videoMedia, videoMedia.Codecs[0])
+		}()
+	}
+	wg.Wait()
+
+	require.Equal(t, int32(1), conn.setups.Load(), "one SETUP per track")
+	p.mu.RLock()
+	require.Len(t, p.receivers, 1)
+	p.mu.RUnlock()
+	for _, track := range tracks {
+		require.Same(t, tracks[0], track)
+	}
+}

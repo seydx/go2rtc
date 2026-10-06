@@ -385,42 +385,30 @@ func (p *Producer) stripHiddenMedias(data []byte) []byte {
 }
 
 func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
-	p.mu.Lock()
-
-	if p.state == stateNone {
-		p.mu.Unlock()
-		return nil, errors.New("get track from none state")
+	if track, err := p.knownTrack(codec); track != nil || err != nil {
+		return track, err
 	}
-
-	for _, track := range p.receivers {
-		if track.Codec.Match(codec) {
-			p.mu.Unlock()
-			return track, nil
-		}
-	}
-
-	// Get conn reference while holding lock
-	conn := p.conn
-	gopEnabled := p.gopEnabled
 
 	// Serialize conn.GetTrack calls using trackMu to prevent concurrent
 	// protocol operations (e.g. two SETUP requests or two Tapo SetupStream
-	// calls on the same connection simultaneously).
+	// calls on the same connection simultaneously). Wait for it without p.mu:
+	// a talk setup holds trackMu for a whole re-dial, and status, stats and
+	// every other attach read the producer meanwhile.
 	p.trackMu.Lock()
-	p.mu.Unlock()
+	defer p.trackMu.Unlock()
 
-	// Double-check: another thread may have added the track while we waited for trackMu
-	for _, track := range p.receivers {
-		if track.Codec.Match(codec) {
-			p.trackMu.Unlock()
-			return track, nil
-		}
+	// another thread may have added the track while we waited for trackMu
+	if track, err := p.knownTrack(codec); track != nil || err != nil {
+		return track, err
 	}
+
+	p.mu.RLock()
+	conn := p.conn
+	gopEnabled := p.gopEnabled
+	p.mu.RUnlock()
 
 	// Call underlying protocol's GetTrack — serialized by trackMu
 	track, err := conn.GetTrack(media, codec)
-	p.trackMu.Unlock()
-
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +417,7 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 		track.SetupGOP()
 	}
 
-	// Reacquire lock to update state
+	// still under trackMu, so the next caller finds the track
 	p.mu.Lock()
 
 	p.receivers = append(p.receivers, track)
@@ -441,6 +429,24 @@ func (p *Producer) GetTrack(media *core.Media, codec *core.Codec) (*core.Receive
 	p.mu.Unlock()
 	p.notify()
 	return track, nil
+}
+
+// knownTrack returns the receiver already set up for codec, or the error of
+// a stopped producer.
+func (p *Producer) knownTrack(codec *core.Codec) (*core.Receiver, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.state == stateNone {
+		return nil, errors.New("get track from none state")
+	}
+
+	for _, track := range p.receivers {
+		if track.Codec.Match(codec) {
+			return track, nil
+		}
+	}
+	return nil, nil
 }
 
 func (p *Producer) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
