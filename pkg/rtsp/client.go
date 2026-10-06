@@ -52,13 +52,13 @@ func (c *Conn) Dial() (err error) {
 		conn, err = tcp.Dial(c.URL, timeout)
 
 		if c.Transport != "udp" {
-			c.Protocol = "rtsp+tcp"
+			c.setProtocol("rtsp+tcp")
 		} else {
-			c.Protocol = "rtsp+udp"
+			c.setProtocol("rtsp+udp")
 		}
 	default:
 		conn, err = websocket.Dial(c.Transport)
-		c.Protocol = "ws"
+		c.setProtocol("ws")
 	}
 	if err != nil {
 		return
@@ -79,9 +79,11 @@ func (c *Conn) Dial() (err error) {
 	c.udpConn = nil
 	c.udpAddr = nil
 
+	c.infoMu.Lock()
 	c.Connection.RemoteAddr = conn.RemoteAddr().String()
 	c.Connection.Transport = conn
 	c.Connection.URL = c.uri
+	c.infoMu.Unlock()
 
 	return nil
 }
@@ -199,7 +201,9 @@ func (c *Conn) Describe() error {
 		}
 	}
 
+	c.infoMu.Lock()
 	c.SDP = string(res.Body) // for info
+	c.infoMu.Unlock()
 
 	medias, err := UnmarshalSDP(res.Body)
 	if err != nil {
@@ -217,11 +221,13 @@ func (c *Conn) Describe() error {
 	}
 
 	// TODO: rewrite more smart
+	c.infoMu.Lock()
 	if c.Medias == nil {
 		c.Medias = medias
 	} else if len(c.Medias) > len(medias) {
 		c.Medias = c.Medias[:len(medias)]
 	}
+	c.infoMu.Unlock()
 
 	c.mode = core.ModeActiveProducer
 
@@ -469,4 +475,10 @@ func ListenUDPPair() (*net.UDPConn, *net.UDPConn, error) {
 	}
 
 	return nil, nil, fmt.Errorf("can't open two UDP ports")
+}
+
+func (c *Conn) setProtocol(protocol string) {
+	c.infoMu.Lock()
+	c.Protocol = protocol
+	c.infoMu.Unlock()
 }

@@ -57,6 +57,11 @@ type Conn struct {
 	state   atomicState
 	stateMu sync.Mutex // serializes the transitions that depend on state
 
+	// infoMu guards the Connection fields the API marshals: a reconnect sets
+	// them up again while the session is visible, and the counters run with
+	// the traffic. Never held across I/O, stateMu is.
+	infoMu sync.Mutex
+
 	udpConn []*net.UDPConn
 	udpAddr []*net.UDPAddr
 
@@ -135,7 +140,7 @@ func (c *Conn) Handle() (err error) {
 			// polling frames from remote RTSP Server (ex Camera)
 			timeout = time.Second * 5
 
-			if len(c.Receivers) == 0 || c.Transport == "udp" {
+			if receivers, _ := c.tracks(); len(receivers) == 0 || c.Transport == "udp" {
 				// if we only send audio to camera
 				// https://github.com/AlexxIT/go2rtc/issues/659
 				timeout += keepaliveDT
@@ -314,7 +319,7 @@ func (c *Conn) handleTCPData(conn net.Conn, reader *bufio.Reader) error {
 		return err
 	}
 
-	c.Recv += int(size)
+	c.addRecv(int(size))
 
 	return c.handleRawPacket(channel, buf)
 }
@@ -326,6 +331,8 @@ func (c *Conn) handleRawPacket(channel byte, buf []byte) error {
 			return err
 		}
 
+		receivers, _ := c.tracks()
+
 		// Detect and fix timestamp resets after reconnect
 		// Some cameras (e.g., Tapo) reset RTP timestamp to 0 after reconnect,
 		// which causes "non monotonically increasing dts" in clients
@@ -336,7 +343,7 @@ func (c *Conn) handleRawPacket(channel byte, buf []byte) error {
 			if lastTS := c.lastTimestamp[channel]; lastTS > 0 {
 				var offsetTs uint32 = 0
 
-				for _, r := range c.Receivers {
+				for _, r := range receivers {
 					if r.ID == channel {
 						offsetTs = r.Codec.ClockRate / 10 // 100ms
 						break
@@ -360,7 +367,7 @@ func (c *Conn) handleRawPacket(channel byte, buf []byte) error {
 
 		c.trackMu.Unlock()
 
-		for _, receiver := range c.Receivers {
+		for _, receiver := range receivers {
 			if receiver.ID == channel {
 				receiver.WriteRTP(packet)
 				break
@@ -504,4 +511,25 @@ func (c *Conn) netIO() (net.Conn, *bufio.Reader) {
 	c.ioMu.RLock()
 	defer c.ioMu.RUnlock()
 	return c.conn, c.reader
+}
+
+// tracks returns Receivers and Senders: GetTrack and AddTrack append to them
+// while the session reads packets and Stop runs elsewhere. append never
+// touches what an earlier slice header covers, so the caller can range freely.
+func (c *Conn) tracks() ([]*core.Receiver, []*core.Sender) {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
+	return c.Receivers, c.Senders
+}
+
+func (c *Conn) addRecv(n int) {
+	c.infoMu.Lock()
+	c.Recv += n
+	c.infoMu.Unlock()
+}
+
+func (c *Conn) addSend(n int) {
+	c.infoMu.Lock()
+	c.Send += n
+	c.infoMu.Unlock()
 }

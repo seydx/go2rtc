@@ -87,19 +87,21 @@ func (c *Conn) Accept() error {
 				return errors.New("wrong content type")
 			}
 
-			c.SDP = string(req.Body) // for info
-
-			c.Medias, err = UnmarshalSDP(req.Body)
+			medias, err := UnmarshalSDP(req.Body)
 			if err != nil {
 				return err
 			}
 
+			c.infoMu.Lock()
+			c.SDP = string(req.Body) // for info
+			c.Medias = medias
 			// TODO: fix someday...
 			for i, media := range c.Medias {
 				track := core.NewReceiver(media, media.Codecs[0])
 				track.ID = byte(i * 2)
 				c.Receivers = append(c.Receivers, track)
 			}
+			c.infoMu.Unlock()
 
 			c.mode = core.ModePassiveProducer
 			c.Fire(MethodAnnounce)
@@ -155,7 +157,9 @@ func (c *Conn) Accept() error {
 				return err
 			}
 
+			c.infoMu.Lock()
 			c.SDP = string(res.Body) // for info
+			c.infoMu.Unlock()
 
 			if err = c.WriteResponse(res); err != nil {
 				return err

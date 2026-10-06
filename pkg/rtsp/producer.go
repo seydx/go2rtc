@@ -48,7 +48,9 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 
 	track := core.NewReceiver(media, codec)
 	track.ID = channel
+	c.infoMu.Lock()
 	c.Receivers = append(c.Receivers, track)
+	c.infoMu.Unlock()
 
 	return track, nil
 }
@@ -109,10 +111,11 @@ func (c *Conn) getState() State {
 }
 
 func (c *Conn) Stop() (err error) {
-	for _, receiver := range c.Receivers {
+	receivers, senders := c.tracks()
+	for _, receiver := range receivers {
 		receiver.Close()
 	}
-	for _, sender := range c.Senders {
+	for _, sender := range senders {
 		sender.Close()
 	}
 
@@ -155,6 +158,8 @@ func (c *Conn) Interrupt() error {
 }
 
 func (c *Conn) MarshalJSON() ([]byte, error) {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
 	return json.Marshal(c.Connection)
 }
 

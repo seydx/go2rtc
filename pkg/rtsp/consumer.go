@@ -14,6 +14,8 @@ import (
 
 func (c *Conn) GetMedias() []*core.Media {
 	//core.Assert(c.Medias != nil)
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
 	return c.Medias
 }
 
@@ -72,7 +74,9 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 	// Bind here, start sender after Play
 	sender.Bind(track)
 
+	c.infoMu.Lock()
 	c.Senders = append(c.Senders, sender)
+	c.infoMu.Unlock()
 	return nil
 }
 
@@ -107,7 +111,7 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 	flushBuf := func() {
 		//log.Printf("[rtsp] channel:%2d write_size:%6d buffer_size:%6d", channel, n, len(buf))
 		_ = c.writeInterleavedData(buf[:n])
-		c.Send += n
+		c.addSend(n)
 		n = 0
 	}
 
@@ -127,7 +131,7 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 				}
 				if b := sr.reanchor(channel+1, packet.SSRC, packet.Timestamp, now); b != nil {
 					if err := c.writeInterleavedData(b); err == nil {
-						c.Send += len(b)
+						c.addSend(len(b))
 					}
 				}
 			}
@@ -193,7 +197,7 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 			// writeInterleavedData routes it to the RTCP socket pair)
 			if b := sr.marshal(channel+1, clone.SSRC, clone.Timestamp, time.Now()); b != nil {
 				if err := c.writeInterleavedData(b); err == nil {
-					c.Send += len(b)
+					c.addSend(len(b))
 				}
 			}
 		}
