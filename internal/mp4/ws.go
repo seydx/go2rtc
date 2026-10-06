@@ -13,7 +13,10 @@ import (
 
 type ctxKey string
 
-const mseStopKey ctxKey = "mse/stop"
+const (
+	mseStopKey ctxKey = "mse/stop"
+	mseSeqKey  ctxKey = "mse/seq" // Seq of the last mse or mse/stop that took effect
+)
 
 func handlerWSMSE(tr *ws.Transport, msg *ws.Message) error {
 	stream, _ := streams.GetOrPatch(tr.Request.URL.Query())
@@ -49,18 +52,30 @@ func handlerWSMSE(tr *ws.Transport, msg *ws.Message) error {
 		return err
 	}
 
-	tr.Write(&ws.Message{Type: "mse", Value: mp4.ContentType(cons.Codecs())})
-
-	go cons.WriteTo(tr.Writer())
-
 	// one fMP4 consumer per transport: a client that switched away (auto mode
 	// settled on WebRTC) sends mse/stop, a client that re-sends mse replaces it
 	stop := sync.OnceFunc(func() { stream.RemoveConsumer(cons) })
 	var prev func()
+	superseded := false
 	tr.WithContext(func(ctx map[any]any) {
+		// a slow attach finishes after a later mse or mse/stop of the client
+		if last, _ := ctx[mseSeqKey].(uint64); last > msg.Seq {
+			superseded = true
+			return
+		}
+		ctx[mseSeqKey] = msg.Seq
 		prev, _ = ctx[mseStopKey].(func())
 		ctx[mseStopKey] = stop
 	})
+	if superseded {
+		stop()
+		return nil
+	}
+
+	tr.Write(&ws.Message{Type: "mse", Value: mp4.ContentType(cons.Codecs())})
+
+	go cons.WriteTo(tr.Writer())
+
 	if prev != nil {
 		prev()
 	}
@@ -69,9 +84,14 @@ func handlerWSMSE(tr *ws.Transport, msg *ws.Message) error {
 	return nil
 }
 
-func handlerWSMSEStop(tr *ws.Transport, _ *ws.Message) error {
+func handlerWSMSEStop(tr *ws.Transport, msg *ws.Message) error {
 	var stop func()
 	tr.WithContext(func(ctx map[any]any) {
+		// an mse the client sent after this stop already attached
+		if last, _ := ctx[mseSeqKey].(uint64); last > msg.Seq {
+			return
+		}
+		ctx[mseSeqKey] = msg.Seq
 		stop, _ = ctx[mseStopKey].(func())
 		delete(ctx, mseStopKey)
 	})
