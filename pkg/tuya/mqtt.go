@@ -187,16 +187,15 @@ func (c *TuyaMqttClient) WakeUp(localKey string) error {
 
 	// Publish to wake-up topic: m/w/{deviceId}
 	wakeUpTopic := fmt.Sprintf("m/w/%s", c.deviceId)
-	token := c.client.Publish(wakeUpTopic, 1, false, payload)
-	if token.Wait() && token.Error() != nil {
-		return fmt.Errorf("failed to publish wake-up message: %w", token.Error())
+	if err := waitAck(c.client.Publish(wakeUpTopic, 1, false, payload)); err != nil {
+		return fmt.Errorf("failed to publish wake-up message: %w", err)
 	}
 
 	// Subscribe to lowPower topic to receive dps[149] status updates
 	// (we don't wait for this signal - camera responds immediately)
 	lowPowerTopic := fmt.Sprintf("smart/decrypt/in/%s", c.deviceId)
-	if token := c.client.Subscribe(lowPowerTopic, 1, c.onLowPowerMessage); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("failed to subscribe to lowPower topic: %w", token.Error())
+	if err := waitAck(c.client.Subscribe(lowPowerTopic, 1, c.onLowPowerMessage)); err != nil {
+		return fmt.Errorf("failed to subscribe to lowPower topic: %w", err)
 	}
 
 	return nil
@@ -273,8 +272,8 @@ func (c *TuyaMqttClient) SendDisconnect() error {
 }
 
 func (c *TuyaMqttClient) onConnect(client mqtt.Client) {
-	if token := client.Subscribe(c.subscribeTopic, 1, c.onMessage); token.Wait() && token.Error() != nil {
-		c.waiter.Done(token.Error())
+	if err := waitAck(client.Subscribe(c.subscribeTopic, 1, c.onMessage)); err != nil {
+		c.waiter.Done(err)
 		return
 	}
 
@@ -427,10 +426,18 @@ func (c *TuyaMqttClient) sendMqttMessage(messageType string, protocol int, trans
 		return err
 	}
 
-	token := c.client.Publish(c.publishTopic, 1, false, payload)
-	if token.Wait() && token.Error() != nil {
-		return token.Error()
-	}
+	return waitAck(c.client.Publish(c.publishTopic, 1, false, payload))
+}
 
-	return nil
+// mqttAckTimeout bounds the wait for the broker's acknowledgement. While the
+// connection is lost, paho holds QoS 1 messages back for the reconnect, and
+// the wait would last as long as the broker stays away: Stop, which says
+// goodbye to the camera, would never return.
+var mqttAckTimeout = 10 * time.Second
+
+func waitAck(token mqtt.Token) error {
+	if !token.WaitTimeout(mqttAckTimeout) {
+		return errors.New("mqtt: no acknowledgement from the broker")
+	}
+	return token.Error()
 }
