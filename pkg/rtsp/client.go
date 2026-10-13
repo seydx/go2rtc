@@ -88,8 +88,18 @@ func (c *Conn) Dial() (err error) {
 	return nil
 }
 
+// maxRedirects bounds a chain of redirects: a camera that redirects every
+// request to itself would be dialed again and again forever
+const maxRedirects = 5
+
 // Do send WriteRequest and receive and process WriteResponse
 func (c *Conn) Do(req *tcp.Request) (*tcp.Response, error) {
+	return c.do(req, 0)
+}
+
+// do counts the redirects of one request, not of the connection: a reconnect
+// dials the same Conn again, and a camera may redirect every single dial
+func (c *Conn) do(req *tcp.Request, redirects int) (*tcp.Response, error) {
 	if err := c.WriteRequest(req); err != nil {
 		return nil, err
 	}
@@ -106,6 +116,10 @@ func (c *Conn) Do(req *tcp.Request) (*tcp.Response, error) {
 		return res, nil
 
 	case http.StatusMovedPermanently, http.StatusFound:
+		if redirects >= maxRedirects {
+			return nil, errors.New("rtsp: too many redirects")
+		}
+
 		rawURL := res.Header.Get("Location")
 
 		var u *url.URL
@@ -113,8 +127,13 @@ func (c *Conn) Do(req *tcp.Request) (*tcp.Response, error) {
 			return nil, err
 		}
 
-		if u.User == nil {
-			u.User = c.auth.UserInfo() // restore auth if we don't have it in the new URL
+		// a relative Location keeps the host of the request
+		u = req.URL.ResolveReference(u)
+
+		// restore auth if we don't have it in the new URL, but only for the
+		// same host, like net/http does with the Authorization header
+		if u.User == nil && sameHost(u, req.URL) {
+			u.User = c.auth.UserInfo()
 		}
 
 		c.uri = u.String() // so auth will be saved on reconnect
@@ -129,18 +148,23 @@ func (c *Conn) Do(req *tcp.Request) (*tcp.Response, error) {
 
 		req.URL = c.URL // because path was changed
 
-		return c.Do(req)
+		// the request goes out on the new connection: what the old one
+		// negotiated stays behind, above all the credentials for its host
+		req.Header.Del("Authorization")
+		req.Header.Del("Session")
+
+		return c.do(req, redirects+1)
 
 	case http.StatusUnauthorized:
 		switch c.auth.Method {
 		case tcp.AuthNone:
 			if c.auth.ReadNone(res) {
-				return c.Do(req)
+				return c.do(req, redirects)
 			}
 			return nil, errors.New("user/pass not provided")
 		case tcp.AuthUnknown:
 			if c.auth.Read(res) {
-				return c.Do(req)
+				return c.do(req, redirects)
 			}
 		default:
 			return nil, errors.New("wrong user/pass")
@@ -148,6 +172,12 @@ func (c *Conn) Do(req *tcp.Request) (*tcp.Response, error) {
 	}
 
 	return res, fmt.Errorf("wrong response on %s", req.Method)
+}
+
+// sameHost compares the host names only: another port of the same camera
+// may serve the stream, another host gets no credentials
+func sameHost(u1, u2 *url.URL) bool {
+	return strings.EqualFold(u1.Hostname(), u2.Hostname())
 }
 
 func (c *Conn) Options() error {
