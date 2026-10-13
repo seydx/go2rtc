@@ -395,7 +395,7 @@ func (c *DTLSConn) WriteAndWait(req []byte, ok func(res []byte) bool) ([]byte, e
 		if err != nil {
 			return nil, err
 		}
-		if string(addr.IP) != string(c.addr.IP) || n < 16 {
+		if !addr.IP.Equal(c.addr.IP) || n < 16 {
 			continue
 		}
 

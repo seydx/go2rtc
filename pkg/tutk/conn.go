@@ -73,7 +73,7 @@ func (c *Conn) Read(buf []byte) (n int, err error) {
 			return 0, err
 		}
 
-		if string(c.addr.IP) != string(addr.IP) || n < 16 {
+		if !c.addr.IP.Equal(addr.IP) || n < 16 {
 			continue // skip messages from another IP
 		}
 
