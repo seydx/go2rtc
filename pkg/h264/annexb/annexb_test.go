@@ -95,3 +95,36 @@ func TestUSB(t *testing.T) {
 	n = naluTypes(b)
 	require.Equal(t, []byte{0x41}, n)
 }
+
+func TestDecodeAVCC(t *testing.T) {
+	avcc := decode("00000002 6764 00000001 68 00000003 650102")
+	annexb := decode("00000001 6764 00000001 68 00000001 650102")
+	require.Equal(t, annexb, DecodeAVCC(avcc, true))
+	require.Equal(t, append(decode("00000001 09F0"), annexb...), DecodeAVCCWithAUD(avcc))
+}
+
+// A damaged length prefix ends the conversion instead of the process: muxers
+// get whatever the camera sent, cut short or with a few bytes too many.
+func TestDecodeAVCCMalformed(t *testing.T) {
+	for _, avcc := range []string{
+		"",
+		"00",
+		"000000",
+		"00000003 6501",                 // longer than the rest
+		"FFFFFFFF 6501",                 // longer than any payload
+		"80000000 6501",                 // negative as a 32 bit int
+		"00000002 6501 00",              // 1 to 3 bytes after the last unit
+		"00000002 6501 000000",          //
+		"00000002 6501 00000009 410203", // the last unit too long
+	} {
+		t.Run(strings.ReplaceAll(avcc, " ", ""), func(t *testing.T) {
+			b := decode(avcc)
+			require.NotPanics(t, func() { DecodeAVCC(b, true) })
+			require.NotPanics(t, func() { DecodeAVCCWithAUD(b) })
+		})
+	}
+
+	// the units before the damage are converted
+	b := DecodeAVCC(decode("00000002 6501 00000009 410203"), true)
+	require.Equal(t, decode("00000001 6501 00000001 410203"), b)
+}

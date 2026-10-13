@@ -71,13 +71,14 @@ func DecodeAVCC(b []byte, safeClone bool) []byte {
 	if safeClone {
 		b = bytes.Clone(b)
 	}
-	for i := 0; i < len(b); {
-		size := int(binary.BigEndian.Uint32(b[i:]))
+	// int64: a damaged length prefix can't overflow i on 32 bit platforms
+	for i := int64(0); i+4 <= int64(len(b)); {
+		size := binary.BigEndian.Uint32(b[i:])
 		b[i] = 0
 		b[i+1] = 0
 		b[i+2] = 0
 		b[i+3] = 1
-		i += 4 + size
+		i += 4 + int64(size)
 	}
 	return b
 }
