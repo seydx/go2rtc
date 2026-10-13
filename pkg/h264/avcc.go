@@ -17,6 +17,12 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	fmtpLineUpdated := false
 
 	return func(packet *rtp.Packet) {
+		// without length prefixes that add up there is no telling where a NAL
+		// unit ends: a damaged unit, everything below would read past it
+		if !validAVCC(packet.Payload) {
+			return
+		}
+
 		// Update FmtpLine from first keyframe with parameter sets
 		// This fixes MSE aspect ratio issues when RTSP cameras don't send SPS/PPS in DESCRIBE
 		if !fmtpLineUpdated && ContainsParameterSets(packet.Payload) {
@@ -30,16 +36,49 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 			fmtpLineUpdated = true
 		}
 
+		payload := packet.Payload
+		repaired := false
+
 		// this can happen for FLV from FFmpeg
-		if NALUType(packet.Payload) == NALUTypeSEI {
-			size := int(binary.BigEndian.Uint32(packet.Payload)) + 4
-			packet.Payload = packet.Payload[size:]
+		if NALUType(payload) == NALUTypeSEI {
+			if payload = payload[4+binary.BigEndian.Uint32(payload):]; len(payload) == 0 {
+				return // SEI only, no picture
+			}
+			repaired = true
 		}
-		if NALUType(packet.Payload) == NALUTypeIFrame && !ContainsParameterSets(packet.Payload) {
-			packet.Payload = Join(ps, packet.Payload)
+		if NALUType(payload) == NALUTypeIFrame && !ContainsParameterSets(payload) {
+			payload = Join(ps, payload)
+			repaired = true
+		}
+
+		if repaired {
+			// the packet is shared with the other consumers of the track and
+			// with the GOP cache
+			clone := *packet
+			clone.Payload = payload
+			packet = &clone
 		}
 		handler(packet)
 	}
+}
+
+// validAVCC reports whether avcc consists of NAL units whose length prefixes
+// add up to its size, each one with at least the NAL header
+func validAVCC(avcc []byte) bool {
+	if len(avcc) == 0 {
+		return false
+	}
+	for len(avcc) > 0 {
+		if len(avcc) < 5 {
+			return false
+		}
+		size := binary.BigEndian.Uint32(avcc)
+		if size == 0 || uint64(size) > uint64(len(avcc)-4) {
+			return false
+		}
+		avcc = avcc[4+size:]
+	}
+	return true
 }
 
 func JoinNALU(nalus ...[]byte) (avcc []byte) {

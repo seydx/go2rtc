@@ -149,9 +149,9 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 			Payload: packet.Payload,
 		}
 
-		if !video {
-			packet.Marker = true // better to have marker on all audio packets
-		}
+		// better to have marker on all audio packets, the packet itself is
+		// shared with the other consumers of the track
+		marker := packet.Marker || !video
 
 		size := rtpHdr + len(packet.Payload)
 
@@ -182,7 +182,7 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 			sr.count(packet)
 		}
 
-		if !packet.Marker || !c.playOK.Load() {
+		if !marker || !c.playOK.Load() {
 			// collect continious video packets to buffer
 			// or wait OK for PLAY command for backchannel
 			//log.Printf("[rtsp] collecting buffer ok=%t", c.playOK.Load())

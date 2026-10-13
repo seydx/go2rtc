@@ -170,3 +170,38 @@ func TestConsumerReportBeforeJump(t *testing.T) {
 		})
 	}
 }
+
+// Every consumer of a track gets the same packet. An audio packet goes out
+// right away, marker or not, without the writer touching the packet: other
+// consumers read it at the same time.
+func TestConsumerSendsAudioWithoutTouchingPacket(t *testing.T) {
+	server, client := net.Pipe()
+	c := NewServer(server)
+	c.mode = core.ModePassiveConsumer
+	c.state.Store(StatePlay)
+	c.playOK.Store(true)
+	wire := readWire(client)
+
+	codec := &core.Codec{Name: core.CodecPCMA, ClockRate: 8000, PayloadType: 8}
+	handler := c.packetWriter(codec, 2, 8)
+
+	var packets []*rtp.Packet
+	for i := range 3 {
+		packet := &rtp.Packet{
+			Header:  rtp.Header{Version: 2, SequenceNumber: uint16(i), Timestamp: uint32(i * 160), SSRC: 0x1234},
+			Payload: make([]byte, 160),
+		}
+		handler(packet)
+		require.False(t, packet.Marker, "the shared packet is untouched")
+		packets = append(packets, packet)
+	}
+
+	var sent int
+	for _, f := range wire() {
+		if f.rtp != nil {
+			require.Equal(t, packets[sent].SequenceNumber, f.rtp.SequenceNumber)
+			sent++
+		}
+	}
+	require.Equal(t, len(packets), sent, "every audio packet went out without waiting for a marker")
+}
