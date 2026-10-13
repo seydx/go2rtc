@@ -811,7 +811,8 @@ func watchdogSettings() (stale, grace, check time.Duration) {
 }
 
 // watchdog detects when a producer's underlying connection looks alive
-// (Start() hasn't returned) but no packets are flowing on any receiver.
+// (Start() hasn't returned) but no packets are flowing on any receiver, or
+// the video stopped while the audio keeps the connection busy.
 // It calls conn.Interrupt() to break the read loop, which forces Start()
 // to return so worker() triggers reconnect().
 //
@@ -856,7 +857,7 @@ func (p *Producer) watchdog(myConn core.Producer, workerID int, stop chan struct
 				continue
 			}
 
-			if !receiversAllStale(receivers, staleThreshold) {
+			if !receiversStale(receivers, staleThreshold) {
 				continue
 			}
 
@@ -867,23 +868,27 @@ func (p *Producer) watchdog(myConn core.Producer, workerID int, stop chan struct
 	}
 }
 
-// receiversAllStale returns true if there are receivers and none of them
-// has received a packet within maxAge. A receiver that never received any
-// packet (LastPacketTime zero) is also considered stale once we're past
-// the grace period — covers "connected but no data" scenarios.
-func receiversAllStale(receivers []*core.Receiver, maxAge time.Duration) bool {
-	if len(receivers) == 0 {
-		return false
-	}
+// receiversStale returns true if there are receivers and none of them has
+// received a packet within maxAge, or if there are video receivers and none
+// of those has: some cameras (ex. Aqara G100) stop the video of a running
+// session and keep sending audio, so the connection never looks idle.
+// Audio alone may pause (muted microphone) and never counts. A receiver that
+// never received any packet (LastPacketTime zero) is also considered stale
+// once we're past the grace period — covers "connected but no data" scenarios.
+func receiversStale(receivers []*core.Receiver, maxAge time.Duration) bool {
+	var active, video, activeVideo bool
 	for _, recv := range receivers {
 		if recv == nil {
 			continue
 		}
-		if recv.IsActive(maxAge) {
-			return false
+		isActive := recv.IsActive(maxAge)
+		active = active || isActive
+		if recv.Codec.IsVideo() {
+			video = true
+			activeVideo = activeVideo || isActive
 		}
 	}
-	return true
+	return len(receivers) > 0 && !active || video && !activeVideo
 }
 
 func (p *Producer) reconnect(workerID, retry int) {

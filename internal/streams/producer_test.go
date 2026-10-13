@@ -24,12 +24,14 @@ import (
 type fakeCamera struct {
 	ln net.Listener
 
-	stallSetup atomic.Bool // SETUP requests get no answer
-	silentRTP  atomic.Bool // PLAY succeeds but no RTP is sent
-	noAudio    atomic.Bool // DESCRIBE omits the audio media
-	reject     atomic.Bool // connections are accepted and closed at once (camera booting)
-	h265       atomic.Bool // DESCRIBE offers H265 video instead of H264 (codec reconfigured)
-	aac        atomic.Bool // DESCRIBE offers AAC audio instead of PCMU (codec reconfigured)
+	stallSetup  atomic.Bool // SETUP requests get no answer
+	silentRTP   atomic.Bool // PLAY succeeds but no RTP is sent
+	silentVideo atomic.Bool // the video stops, the audio keeps flowing (ex. Aqara G100)
+	silentAudio atomic.Bool // the audio stops, the video keeps flowing (muted microphone)
+	noAudio     atomic.Bool // DESCRIBE omits the audio media
+	reject      atomic.Bool // connections are accepted and closed at once (camera booting)
+	h265        atomic.Bool // DESCRIBE offers H265 video instead of H264 (codec reconfigured)
+	aac         atomic.Bool // DESCRIBE offers AAC audio instead of PCMU (codec reconfigured)
 
 	// ONVIF backchannel like Dahua/Amcrest: offered only when DESCRIBE carries
 	// the Require header, and the camera has a single talk slot. A second
@@ -226,33 +228,35 @@ func (c *fakeCamera) sendRTP(conn net.Conn, stop chan struct{}) {
 				continue
 			}
 
-			// single-NAL keyframe payload, marker set
-			payload := []byte{0x65, 0x88, 0x84, 0x00, 0x01, 0x02, 0x03}
-			if c.h265.Load() {
-				payload = []byte{0x26, 0x01, 0x88, 0x84, 0x00, 0x01, 0x02, 0x03} // IDR_W_RADL
+			if !c.silentVideo.Load() {
+				// single-NAL keyframe payload, marker set
+				payload := []byte{0x65, 0x88, 0x84, 0x00, 0x01, 0x02, 0x03}
+				if c.h265.Load() {
+					payload = []byte{0x26, 0x01, 0x88, 0x84, 0x00, 0x01, 0x02, 0x03} // IDR_W_RADL
+				}
+				pkt := make([]byte, 12+len(payload))
+				pkt[0] = 0x80
+				pkt[1] = 0x60 | 0x80
+				binary.BigEndian.PutUint16(pkt[2:], seq)
+				binary.BigEndian.PutUint32(pkt[4:], ts)
+				binary.BigEndian.PutUint32(pkt[8:], 0x11223344)
+				copy(pkt[12:], payload)
+
+				frame := make([]byte, 4+len(pkt))
+				frame[0] = '$'
+				frame[1] = 0 // RTP channel from interleaved=0-1
+				binary.BigEndian.PutUint16(frame[2:], uint16(len(pkt)))
+				copy(frame[4:], pkt)
+
+				if _, err := conn.Write(frame); err != nil {
+					return
+				}
+
+				seq++
+				ts += 3000
 			}
-			pkt := make([]byte, 12+len(payload))
-			pkt[0] = 0x80
-			pkt[1] = 0x60 | 0x80
-			binary.BigEndian.PutUint16(pkt[2:], seq)
-			binary.BigEndian.PutUint32(pkt[4:], ts)
-			binary.BigEndian.PutUint32(pkt[8:], 0x11223344)
-			copy(pkt[12:], payload)
 
-			frame := make([]byte, 4+len(pkt))
-			frame[0] = '$'
-			frame[1] = 0 // RTP channel from interleaved=0-1
-			binary.BigEndian.PutUint16(frame[2:], uint16(len(pkt)))
-			copy(frame[4:], pkt)
-
-			if _, err := conn.Write(frame); err != nil {
-				return
-			}
-
-			seq++
-			ts += 3000
-
-			if c.noAudio.Load() {
+			if c.noAudio.Load() || c.silentAudio.Load() {
 				continue
 			}
 
@@ -437,6 +441,112 @@ func receiverActive(s *Stream) bool {
 		}
 	}
 	return false
+}
+
+// kindActive reports whether a receiver of the given kind got a packet lately
+func kindActive(s *Stream, kind string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, prod := range s.producers {
+		prod.mu.RLock()
+		receivers := append([]*core.Receiver(nil), prod.receivers...)
+		prod.mu.RUnlock()
+		for _, recv := range receivers {
+			if recv != nil && recv.Codec.Kind() == kind && recv.IsActive(time.Second) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestReceiversStale(t *testing.T) {
+	newTrack := func(kind string, active bool) *core.Receiver {
+		codec := &core.Codec{Name: core.CodecH264}
+		if kind == core.KindAudio {
+			codec = &core.Codec{Name: core.CodecPCMU}
+		}
+		recv := core.NewReceiver(&core.Media{Kind: kind}, codec)
+		if active {
+			recv.Input(&core.Packet{})
+		}
+		return recv
+	}
+	video := func(active bool) *core.Receiver { return newTrack(core.KindVideo, active) }
+	audio := func(active bool) *core.Receiver { return newTrack(core.KindAudio, active) }
+
+	for _, test := range []struct {
+		name      string
+		receivers []*core.Receiver
+		stale     bool
+	}{
+		{"no receivers", nil, false},
+		{"everything flows", []*core.Receiver{video(true), audio(true)}, false},
+		{"nothing flows", []*core.Receiver{video(false), audio(false)}, true},
+		{"video stopped, audio flows", []*core.Receiver{video(false), audio(true)}, true},
+		{"audio stopped, video flows", []*core.Receiver{video(true), audio(false)}, false},
+		{"audio only source, flowing", []*core.Receiver{audio(true)}, false},
+		{"audio only source, stopped", []*core.Receiver{audio(false)}, true},
+		{"video only source, stopped", []*core.Receiver{video(false)}, true},
+		{"one of two videos flows", []*core.Receiver{video(false), video(true), audio(true)}, false},
+		{"the other one of two videos flows", []*core.Receiver{video(true), video(false), audio(true)}, false},
+		{"nil entries", []*core.Receiver{nil, video(true), nil}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.stale, receiversStale(test.receivers, time.Minute))
+		})
+	}
+}
+
+// The camera stops the video of a running session but keeps the audio going:
+// the connection never looks idle. The watchdog reconnects, otherwise the
+// recording goes on without a picture until somebody restarts the stream.
+func TestStalledVideoReconnectsDespiteAudio(t *testing.T) {
+	registerTestRTSPHandler()
+	speedUpWatchdog(t)
+
+	cam := newFakeCamera(t)
+
+	stream, err := New("stalled_video", cam.URL())
+	require.NoError(t, err)
+
+	query, _ := url.ParseQuery("video&audio")
+	cons := probe.Create("test", query)
+	require.NoError(t, stream.AddConsumer(cons))
+	t.Cleanup(func() { stream.RemoveConsumer(cons) })
+	require.True(t, waitUntil(10*time.Second, func() bool { return kindActive(stream, core.KindVideo) }), "healthy camera must deliver video")
+
+	dialsBefore := cam.dialCount.Load()
+	cam.silentVideo.Store(true)
+	require.True(t, waitUntil(15*time.Second, func() bool { return cam.dialCount.Load() > dialsBefore }), "stalled video must reconnect")
+
+	cam.silentVideo.Store(false)
+	require.True(t, waitUntil(15*time.Second, func() bool { return kindActive(stream, core.KindVideo) }), "video must come back")
+}
+
+// A muted microphone is no reason to reconnect: the video keeps flowing.
+func TestStalledAudioKeepsTheSession(t *testing.T) {
+	registerTestRTSPHandler()
+	speedUpWatchdog(t)
+
+	cam := newFakeCamera(t)
+
+	stream, err := New("stalled_audio", cam.URL())
+	require.NoError(t, err)
+
+	query, _ := url.ParseQuery("video&audio")
+	cons := probe.Create("test", query)
+	require.NoError(t, stream.AddConsumer(cons))
+	t.Cleanup(func() { stream.RemoveConsumer(cons) })
+	require.True(t, waitUntil(10*time.Second, func() bool { return kindActive(stream, core.KindAudio) }), "healthy camera must deliver audio")
+
+	dialsBefore := cam.dialCount.Load()
+	cam.silentAudio.Store(true)
+
+	// grace and stale threshold are 2s each: give the watchdog twice that
+	time.Sleep(8 * time.Second)
+	require.Equal(t, dialsBefore, cam.dialCount.Load(), "the session stays")
+	require.True(t, kindActive(stream, core.KindVideo), "the video still flows")
 }
 
 func TestWedgedSetupFailsBoundedAndRecovers(t *testing.T) {
