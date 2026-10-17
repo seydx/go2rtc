@@ -19,8 +19,12 @@ type Demuxer struct {
 	pos  byte // current pos in buf
 	end  byte // end position
 
-	pmtID uint16 // Program Map Table (PMT) PID
-	pes   map[uint16]*PES
+	// a length field pointed past the packet: what was read is garbage
+	broken bool
+
+	pmtID  uint16          // Program Map Table (PMT) PID of the program the streams come from
+	pmtIDs map[uint16]bool // PMT PIDs of every program in the PAT
+	pes    map[uint16]*PES
 }
 
 func NewDemuxer() *Demuxer {
@@ -37,26 +41,56 @@ func (d *Demuxer) ReadPacket(rd io.Reader) (*rtp.Packet, error) {
 			}
 		}
 
-		pid, start, err := d.readPacketHeader()
+		pid, start, payload, err := d.readPacketHeader()
 		if err != nil {
 			return nil, err
 		}
+		if !payload {
+			continue
+		}
 
-		if d.pes == nil {
-			switch pid {
-			case 0: // PAT ID
+		// PSI sections are read from a section start in one packet, a section
+		// spanning several packets is not supported
+		switch {
+		case pid == 0: // PAT ID
+			if start && d.readPSIHeader(tableIDPAT) {
 				d.readPAT() // PAT: Program Association Table
-			case d.pmtID:
-				d.readPMT() // PMT : Program Map Table
-
-				pkt := &rtp.Packet{
-					Payload: make([]byte, 0, len(d.pes)),
-				}
-				for _, pes := range d.pes {
-					pkt.Payload = append(pkt.Payload, pes.StreamType)
-				}
-				return pkt, nil
 			}
+			continue
+
+		case d.pmtIDs[pid]:
+			// the streams come from the program they did before: the last one
+			// in the PAT
+			if !start || d.pes == nil && pid != d.pmtID || !d.readPSIHeader(tableIDPMT) {
+				continue
+			}
+
+			streams, ok := d.readPMT() // PMT : Program Map Table
+			if !ok {
+				continue // wait for the next one, they repeat
+			}
+
+			if d.pes != nil {
+				// a later PMT can announce a stream (Tapo announces its audio
+				// after the video), or one from another program
+				d.mergePMT(streams)
+				continue
+			}
+
+			d.pes = map[uint16]*PES{}
+			for _, s := range streams {
+				d.pes[s.pid] = &PES{StreamType: s.streamType}
+			}
+
+			pkt := &rtp.Packet{
+				Payload: make([]byte, 0, len(d.pes)),
+			}
+			for _, pes := range d.pes {
+				pkt.Payload = append(pkt.Payload, pes.StreamType)
+			}
+			return pkt, nil
+
+		case d.pes == nil:
 			continue
 		}
 
@@ -66,12 +100,12 @@ func (d *Demuxer) ReadPacket(rd io.Reader) (*rtp.Packet, error) {
 	}
 }
 
-func (d *Demuxer) readPacketHeader() (pid uint16, start bool, err error) {
+func (d *Demuxer) readPacketHeader() (pid uint16, start, payload bool, err error) {
 	d.reset()
 
 	sb := d.readByte() // Sync byte
 	if sb != SyncByte {
-		return 0, false, errors.New("mpegts: wrong sync byte")
+		return 0, false, false, errors.New("mpegts: wrong sync byte")
 	}
 
 	_ = d.readBit()        // Transport error indicator (TEI)
@@ -81,21 +115,31 @@ func (d *Demuxer) readPacketHeader() (pid uint16, start bool, err error) {
 
 	_ = d.readBits(2) // Transport scrambling control (TSC)
 	af := d.readBit() // Adaptation field
-	_ = d.readBit()   // Payload
+	pl := d.readBit() // Payload
 	_ = d.readBits(4) // Continuity counter
 
 	if af != 0 {
+		if pl == 0 {
+			// adaptation field only, ex. a PCR: 183 bytes of it are fine
+			return pid, false, false, nil
+		}
+
 		adSize := d.readByte() // Adaptation field length
 		if adSize > PacketSize-6 {
-			return 0, false, errors.New("mpegts: wrong adaptation size")
+			return 0, false, false, errors.New("mpegts: wrong adaptation size")
 		}
 		d.skip(adSize)
 	}
 
-	return pid, pusi != 0, nil
+	return pid, pusi != 0, true, nil
 }
 
 func (d *Demuxer) skip(i byte) {
+	if int(d.pos)+int(i) > PacketSize {
+		d.pos = PacketSize
+		d.broken = true
+		return
+	}
 	d.pos += i
 }
 
@@ -104,17 +148,31 @@ func (d *Demuxer) readBytes(i byte) []byte {
 	return d.buf[d.pos-i : d.pos]
 }
 
-func (d *Demuxer) readPSIHeader() {
+const (
+	tableIDPAT = 0x00
+	tableIDPMT = 0x02
+)
+
+// readPSIHeader reports whether a section of the table starts here and fits
+// into the packet
+func (d *Demuxer) readPSIHeader(tableID byte) bool {
 	// https://en.wikipedia.org/wiki/Program-specific_information#Table_Sections
 	pointer := d.readByte() // Pointer field
 	d.skip(pointer)         // Pointer filler bytes
 
-	_ = d.readByte()       // Table ID
+	if d.readByte() != tableID { // Table ID
+		return false
+	}
 	_ = d.readBit()        // Section syntax indicator
 	_ = d.readBit()        // Private bit
 	_ = d.readBits(2)      // Reserved bits
 	_ = d.readBits(2)      // Section length unused bits
 	size := d.readBits(10) // Section length
+
+	// the 5 bytes below and the CRC32
+	if size < 5+4 || int(d.pos)+int(size) > PacketSize {
+		return false
+	}
 	d.setSize(byte(size))
 
 	_ = d.readBits(16) // Table ID extension
@@ -123,19 +181,22 @@ func (d *Demuxer) readPSIHeader() {
 	_ = d.readBit()    // Current/next indicator
 	_ = d.readByte()   // Section number
 	_ = d.readByte()   // Last section number
+	return true
 }
 
 // ReadPAT (Program Association Table)
 func (d *Demuxer) readPAT() {
 	// https://en.wikipedia.org/wiki/Program-specific_information#PAT_(Program_Association_Table)
-	d.readPSIHeader()
-
 	const CRCSize = 4
 	for d.left() > CRCSize {
 		num := d.readBits(16)   // Program num
 		_ = d.readBits(3)       // Reserved bits
 		pid := d.readBits16(13) // Program map PID
 		if num != 0 {
+			if d.pmtIDs == nil {
+				d.pmtIDs = map[uint16]bool{}
+			}
+			d.pmtIDs[pid] = true
 			d.pmtID = pid
 		}
 	}
@@ -143,19 +204,26 @@ func (d *Demuxer) readPAT() {
 	d.skip(4) // CRC32
 }
 
-// ReadPMT (Program map specific data)
-func (d *Demuxer) readPMT() {
-	// https://en.wikipedia.org/wiki/Program-specific_information#PMT_(Program_map_specific_data)
-	d.readPSIHeader()
+type stream struct {
+	pid        uint16
+	streamType byte
+}
 
+// ReadPMT (Program map specific data), false for a section whose lengths don't
+// add up
+func (d *Demuxer) readPMT() ([]stream, bool) {
+	// https://en.wikipedia.org/wiki/Program-specific_information#PMT_(Program_map_specific_data)
 	_ = d.readBits(3)      // Reserved bits
 	_ = d.readBits(13)     // PCR PID
 	_ = d.readBits(4)      // Reserved bits
 	_ = d.readBits(2)      // Program info length unused bits
 	size := d.readBits(10) // Program info length
+	if size > uint32(d.left()) {
+		return nil, false
+	}
 	d.skip(byte(size))
 
-	d.pes = map[uint16]*PES{}
+	var streams []stream
 
 	const CRCSize = 4
 	for d.left() > CRCSize {
@@ -165,16 +233,46 @@ func (d *Demuxer) readPMT() {
 		_ = d.readBits(4)          // Reserved bits
 		_ = d.readBits(2)          // ES Info length unused bits
 		size = d.readBits(10)      // ES Info length
+		if size > uint32(d.left()) {
+			return nil, false
+		}
 		info := d.readBytes(byte(size))
 
 		if streamType == StreamTypePrivate && bytes.HasPrefix(info, opusInfo) {
 			streamType = StreamTypePrivateOPUS
 		}
 
-		d.pes[pid] = &PES{StreamType: streamType}
+		streams = append(streams, stream{pid: pid, streamType: streamType})
 	}
 
 	d.skip(4) // CRC32
+
+	return streams, true
+}
+
+// mergePMT adds the streams of a later PMT. Consumers take the packets of a
+// stream by its type, so a type that is there already isn't added a second
+// time: the packets of both would interleave. A stream whose type changed
+// starts over.
+func (d *Demuxer) mergePMT(streams []stream) {
+	for _, s := range streams {
+		if pes := d.pes[s.pid]; pes != nil {
+			if pes.StreamType != s.streamType {
+				d.pes[s.pid] = &PES{StreamType: s.streamType}
+			}
+		} else if !d.hasStreamType(s.streamType) {
+			d.pes[s.pid] = &PES{StreamType: s.streamType}
+		}
+	}
+}
+
+func (d *Demuxer) hasStreamType(streamType byte) bool {
+	for _, pes := range d.pes {
+		if pes.StreamType == streamType {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Demuxer) readPES(pid uint16, start bool) *rtp.Packet {
@@ -189,6 +287,10 @@ func (d *Demuxer) readPES(pid uint16, start bool) *rtp.Packet {
 			d.pos = skipRead
 			return pes.GetPacket() // finish previous packet
 		}
+
+		// a unit whose header doesn't add up is dropped up to the next one: its
+		// payload can't be told apart from garbage
+		pes.damaged = true
 
 		// https://en.wikipedia.org/wiki/Packetized_elementary_stream
 		// Packet start code prefix
@@ -218,9 +320,14 @@ func (d *Demuxer) readPES(pid uint16, start bool) *rtp.Packet {
 		headerSize := d.readByte() // PES header length
 
 		if packetSize != 0 {
-			packetSize -= uint16(3 + headerSize)
+			if int(packetSize) < 3+int(headerSize) {
+				return nil
+			}
+			packetSize -= 3 + uint16(headerSize)
 		}
 
+		// a header too short for its PTS and DTS wraps around below and
+		// points past the packet
 		if ptsi != 0 {
 			pes.PTS = d.readTime()
 			headerSize -= 5
@@ -237,8 +344,13 @@ func (d *Demuxer) readPES(pid uint16, start bool) *rtp.Packet {
 
 		d.skip(headerSize)
 
+		if d.broken {
+			return nil
+		}
+
+		pes.damaged = false
 		pes.SetBuffer(packetSize, d.bytes())
-	} else {
+	} else if !pes.damaged {
 		pes.AppendBuffer(d.bytes())
 	}
 
@@ -253,12 +365,18 @@ func (d *Demuxer) reset() {
 	d.pos = 0
 	d.end = PacketSize
 	d.bits = 0
+	d.broken = false
 }
 
 //goland:noinspection GoStandardMethods
 func (d *Demuxer) readByte() byte {
 	if d.bits != 0 {
 		return byte(d.readBits(8))
+	}
+
+	if d.pos >= PacketSize {
+		d.broken = true
+		return 0
 	}
 
 	b := d.buf[d.pos]
@@ -344,6 +462,8 @@ type PES struct {
 	DTS        uint32
 	Payload    []byte // from PES body
 	Size       int    // from PES header, can be 0
+
+	damaged bool // the header of the unit didn't add up, its payload is dropped
 
 	wr *bits.Writer
 }
