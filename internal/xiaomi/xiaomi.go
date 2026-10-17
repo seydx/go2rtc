@@ -76,9 +76,36 @@ func getCloud(userID string) (*xiaomi.Cloud, error) {
 	return cloud, nil
 }
 
+// resetCloud drops the session, the next getCloud logs in again. Only the one
+// the caller used: another caller may have replaced it with a fresh one by now.
+func resetCloud(userID string, cloud *xiaomi.Cloud) {
+	cloudsMu.Lock()
+	defer cloudsMu.Unlock()
+
+	if clouds[userID] == cloud {
+		delete(clouds, userID)
+	}
+}
+
 func cloudRequest(userID, region, apiURL, params string) ([]byte, error) {
 	cloud, err := getCloud(userID)
 	if err != nil {
+		return nil, err
+	}
+
+	res, err := cloud.Request(GetBaseURL(region), apiURL, params, nil)
+	if !errors.Is(err, xiaomi.ErrUnauthorized) {
+		return res, err
+	}
+
+	// The serviceToken of the session expired, after about ten hours. Every
+	// dial asks the cloud first: without a new login the cameras would stay
+	// offline until a restart.
+	log.Debug().Msg("xiaomi: session expired, login again")
+
+	resetCloud(userID, cloud)
+
+	if cloud, err = getCloud(userID); err != nil {
 		return nil, err
 	}
 	return cloud.Request(GetBaseURL(region), apiURL, params, nil)
