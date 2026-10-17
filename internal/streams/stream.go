@@ -249,7 +249,12 @@ func (s *Stream) RemoveConsumersByTag(tag string) int {
 }
 
 func (s *Stream) AddProducer(prod core.Producer) {
-	producer := &Producer{conn: prod, state: stateExternal, url: "external", stream: s}
+	// a pushed producer has no source with #flags: it offers all its medias,
+	// like a source without any
+	producer := &Producer{
+		conn: prod, state: stateExternal, url: "external", stream: s,
+		backchannelEnabled: true, mixingEnabled: true, videoEnabled: true, audioEnabled: true,
+	}
 	s.mu.Lock()
 	s.producers = append(s.producers, producer)
 	s.mu.Unlock()

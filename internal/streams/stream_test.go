@@ -1,12 +1,14 @@
 package streams
 
 import (
+	"encoding/json"
 	"errors"
 	"net/url"
 	"sync/atomic"
 	"testing"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/probe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -193,4 +195,76 @@ func TestSetSourceDoesNotRaceReaders(t *testing.T) {
 			_ = prod.hasHiddenMedias()
 		}
 	}
+}
+
+// pushedConn is a pushed peer that takes talk too, like a WebRTC ingest
+type pushedConn struct {
+	gatedConn
+	talks atomic.Int32
+}
+
+func (c *pushedConn) AddTrack(*core.Media, *core.Codec, *core.Receiver) error {
+	c.talks.Add(1)
+	return nil
+}
+
+func pushStream(t *testing.T, name string) (*Stream, *pushedConn) {
+	t.Cleanup(func() { Delete(name) })
+	stream, err := New(name)
+	require.NoError(t, err)
+
+	conn := &pushedConn{gatedConn: gatedConn{
+		Connection: core.Connection{Medias: []*core.Media{
+			{Kind: core.KindVideo, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{{Name: core.CodecH264, ClockRate: 90000}}},
+			{Kind: core.KindAudio, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{{Name: core.CodecPCMU, ClockRate: 8000}}},
+			{Kind: core.KindAudio, Direction: core.DirectionSendonly, Codecs: []*core.Codec{{Name: core.CodecPCMU, ClockRate: 8000}}},
+		}},
+		stopped: make(chan struct{}),
+	}}
+	stream.AddProducer(conn)
+	t.Cleanup(func() {
+		stream.RemoveProducer(conn)
+		_ = conn.Stop()
+	})
+	return stream, conn
+}
+
+// A pushed source (RTSP or RTMP publish, WebRTC ingest, HTTP POST) has no
+// source with #flags. Its producer came without their defaults: video, audio
+// and talk were hidden, the API listed no medias, and every consumer of the
+// stream got "streams: unknown error".
+func TestAddProducerOffersAllMedias(t *testing.T) {
+	stream, conn := pushStream(t, "add_producer_offers_all_medias")
+
+	prod := streamProducers(stream)[0]
+	require.Equal(t, conn.Medias, prod.GetMedias())
+
+	b, err := json.Marshal(prod)
+	require.NoError(t, err)
+	var info struct {
+		Medias []string `json:"medias"`
+	}
+	require.NoError(t, json.Unmarshal(b, &info))
+	require.Len(t, info.Medias, len(conn.Medias))
+
+	query, _ := url.ParseQuery("video&audio")
+	cons := probe.Create("viewer", query)
+	require.NoError(t, stream.AddConsumer(cons))
+	t.Cleanup(func() { stream.RemoveConsumer(cons) })
+	require.Len(t, cons.Senders, 2)
+}
+
+// Talk to a pushed peer goes through the mixer, as with any source: the
+// talkers share its one talk track.
+func TestAddProducerMixesTalk(t *testing.T) {
+	stream, conn := pushStream(t, "add_producer_mixes_talk")
+
+	for range 2 {
+		cons := micProbe()
+		require.NoError(t, stream.AddConsumer(cons))
+		t.Cleanup(func() { stream.RemoveConsumer(cons) })
+		require.Len(t, cons.Senders, 2)
+		require.Len(t, cons.Receivers, 1)
+	}
+	require.Equal(t, int32(1), conn.talks.Load())
 }
