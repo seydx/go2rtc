@@ -209,13 +209,23 @@ func probe(client *Client, quality byte) ([]*core.Media, error) {
 	}
 
 	if client.verbose {
-		fmt.Printf("[Wyze] Probed codecs: video=%s audio=%s\n", vcodec.Name, acodec.Name)
-		if client.SupportsIntercom() {
-			fmt.Printf("[Wyze] Intercom supported, audio send codec=%s\n", acodec.Name)
-		}
+		printProbed(vcodec, acodec, client.SupportsIntercom())
 	}
 
 	return medias, nil
+}
+
+// printProbed prints the codecs of the probe. A camera without audio has no
+// audio codec, and so no intercom either.
+func printProbed(vcodec, acodec *core.Codec, intercom bool) {
+	if acodec == nil {
+		fmt.Printf("[Wyze] Probed codecs: video=%s audio=none\n", vcodec.Name)
+		return
+	}
+	fmt.Printf("[Wyze] Probed codecs: video=%s audio=%s\n", vcodec.Name, acodec.Name)
+	if intercom {
+		fmt.Printf("[Wyze] Intercom supported, audio send codec=%s\n", acodec.Name)
+	}
 }
 
 // probeCodecs reads the codecs from the packets of the camera. Until skipSD an

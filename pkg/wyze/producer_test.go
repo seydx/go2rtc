@@ -204,3 +204,13 @@ func TestProbeFailsWithTheCamera(t *testing.T) {
 	require.ErrorIs(t, err, io.EOF)
 	require.True(t, bytes.HasPrefix([]byte(err.Error()), []byte("wyze: probe: ")))
 }
+
+// With ?verbose=true the probe printed the name of the audio codec, also of a
+// camera without audio: a nil pointer took the process down.
+func TestPrintProbedWithoutAudio(t *testing.T) {
+	video := &core.Codec{Name: core.CodecH264}
+	for _, intercom := range []bool{false, true} {
+		require.NotPanics(t, func() { printProbed(video, nil, intercom) })
+		require.NotPanics(t, func() { printProbed(video, &core.Codec{Name: core.CodecPCMU}, intercom) })
+	}
+}
