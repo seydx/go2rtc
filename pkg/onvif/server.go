@@ -2,6 +2,7 @@ package onvif
 
 import (
 	"bytes"
+	"html"
 	"regexp"
 	"time"
 )
@@ -153,8 +154,9 @@ func GetProfileResponse(name string) []byte {
 
 func appendProfile(e *Envelope, tag, name string) {
 	// go2rtc name = ONVIF Profile Name = ONVIF Profile token
-	e.Appendf(`<trt:%s token="%s" fixed="true">`, tag, name)
-	e.Appendf(`<tt:Name>%s</tt:Name>`, name)
+	// a name is any text: one with & or < made the whole response invalid XML
+	e.Appendf(`<trt:%s token="%s" fixed="true">`, tag, html.EscapeString(name))
+	e.Appendf(`<tt:Name>%s</tt:Name>`, html.EscapeString(name))
 	appendVideoSourceConfiguration(e, "VideoSourceConfiguration", name)
 	appendVideoEncoderConfiguration(e, "VideoEncoderConfiguration")
 	e.Appendf(`</trt:%s>`, tag)
@@ -168,7 +170,7 @@ func GetVideoSourcesResponse(names []string) []byte {
 		e.Appendf(`<trt:VideoSources token="%s">
 	<tt:Framerate>30.000000</tt:Framerate>
 	<tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution>
-</trt:VideoSources>`, name)
+</trt:VideoSources>`, html.EscapeString(name))
 	}
 	e.Append(`</trt:GetVideoSourcesResponse>`)
 	return e.Bytes()
@@ -194,6 +196,7 @@ func GetVideoSourceConfigurationResponse(name string) []byte {
 
 func appendVideoSourceConfiguration(e *Envelope, tag, name string) {
 	// go2rtc name = ONVIF VideoSourceConfiguration token
+	name = html.EscapeString(name)
 	e.Appendf(`<tt:%s token="%s" fixed="true">
 	<tt:Name>VSC</tt:Name>
 	<tt:SourceToken>%s</tt:SourceToken>
@@ -233,13 +236,13 @@ func appendVideoEncoderConfiguration(e *Envelope, tag string) {
 
 func GetStreamUriResponse(uri string) []byte {
 	e := NewEnvelope()
-	e.Appendf(`<trt:GetStreamUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri></trt:MediaUri></trt:GetStreamUriResponse>`, uri)
+	e.Appendf(`<trt:GetStreamUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri></trt:MediaUri></trt:GetStreamUriResponse>`, html.EscapeString(uri))
 	return e.Bytes()
 }
 
 func GetSnapshotUriResponse(uri string) []byte {
 	e := NewEnvelope()
-	e.Appendf(`<trt:GetSnapshotUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri></trt:MediaUri></trt:GetSnapshotUriResponse>`, uri)
+	e.Appendf(`<trt:GetSnapshotUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri></trt:MediaUri></trt:GetSnapshotUriResponse>`, html.EscapeString(uri))
 	return e.Bytes()
 }
 

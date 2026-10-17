@@ -1,6 +1,7 @@
 package onvif
 
 import (
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -142,16 +143,14 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetProfilesResponse(streams.GetAllNames())
 
 	case onvif.MediaGetProfile:
-		token := onvif.FindTagValue(b, "ProfileToken")
-		b = onvif.GetProfileResponse(token)
+		b = onvif.GetProfileResponse(findToken(b, "ProfileToken"))
 
 	case onvif.MediaGetVideoSourceConfigurations:
 		// important for Happytime Onvif Client
 		b = onvif.GetVideoSourceConfigurationsResponse(streams.GetAllNames())
 
 	case onvif.MediaGetVideoSourceConfiguration:
-		token := onvif.FindTagValue(b, "ConfigurationToken")
-		b = onvif.GetVideoSourceConfigurationResponse(token)
+		b = onvif.GetVideoSourceConfigurationResponse(findToken(b, "ConfigurationToken"))
 
 	case onvif.MediaGetStreamUri:
 		host, _, err := net.SplitHostPort(r.Host)
@@ -159,11 +158,12 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 			host = r.Host // in case of Host without port
 		}
 
-		uri := "rtsp://" + host + ":" + rtsp.Port + "/" + onvif.FindTagValue(b, "ProfileToken")
+		// the RTSP server finds the stream by the decoded path
+		uri := "rtsp://" + host + ":" + rtsp.Port + "/" + url.PathEscape(findToken(b, "ProfileToken"))
 		b = onvif.GetStreamUriResponse(uri)
 
 	case onvif.MediaGetSnapshotUri:
-		uri := protocol + "://" + r.Host + "/api/frame.jpeg?src=" + onvif.FindTagValue(b, "ProfileToken")
+		uri := protocol + "://" + r.Host + "/api/frame.jpeg?src=" + url.QueryEscape(findToken(b, "ProfileToken"))
 		b = onvif.GetSnapshotUriResponse(uri)
 
 	default:
@@ -179,6 +179,11 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 	if _, err = w.Write(b); err != nil {
 		log.Error().Err(err).Caller().Send()
 	}
+}
+
+// findToken returns the stream name a token of the request stands for
+func findToken(b []byte, tag string) string {
+	return html.UnescapeString(onvif.FindTagValue(b, tag))
 }
 
 func apiOnvif(w http.ResponseWriter, r *http.Request) {
