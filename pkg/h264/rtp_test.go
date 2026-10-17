@@ -331,6 +331,38 @@ func TestRTPDepayDiscontinuityWithoutLossKeepsEveryFrame(t *testing.T) {
 	}, *got)
 }
 
+// A camera that ends every access unit with a marked SEI, after the slices.
+// Skipped like the marked SEI in front of a picture (#244), its marker never
+// reached the flush: no frame came out at all. An SEI can't follow the
+// picture it belongs to, it is dropped.
+func TestRTPDepayMarkedSEIEndsAccessUnit(t *testing.T) {
+	handler, got := depay(t)
+
+	sei := []byte{0x06, 5, 1, 0x80}
+	idr, p := []byte{0x65, 0xaa, 0xbb}, []byte{0x41, 2}
+	handler(lossPacket(1, 0, false, []byte{fuA, fuStart | NALUTypeIFrame, 0xaa}))
+	handler(lossPacket(2, 0, false, []byte{fuA, fuEnd | NALUTypeIFrame, 0xbb}))
+	handler(lossPacket(3, 0, true, sei))
+	handler(lossPacket(4, 3000, false, p))
+	handler(lossPacket(5, 3000, true, sei))
+
+	require.Equal(t, [][]byte{lossNALs(idr), lossNALs(p)}, *got)
+}
+
+// A small marked STAP-A of an SEI and a slice is a picture, ex. a P-frame of a
+// still scene: only an SEI alone is skipped (#244).
+func TestRTPDepayMarkedAggregationOfSEIAndSlice(t *testing.T) {
+	handler, got := depay(t)
+
+	sei := []byte{0x06, 5, 1, 0x80}
+	p2, p3 := []byte{0x41, 2}, []byte{0x41, 3}
+	handler(lossPacket(1, 0, true, []byte{NALUTypeSTAPA, 0, 4, 0x06, 5, 1, 0x80, 0, 2, 0x41, 2}))
+	handler(lossPacket(2, 3000, false, sei))
+	handler(lossPacket(3, 3000, true, []byte{NALUTypeSTAPA, 0, 4, 0x06, 5, 1, 0x80, 0, 2, 0x41, 3}))
+
+	require.Equal(t, [][]byte{lossNALs(p2), lossNALs(p3)}, *got)
+}
+
 // rtpStream generates a camera like H264 RTP stream: parameter sets as STAP-A
 // or single (sometimes marked) packets, SEI, and one or two slices per frame,
 // big ones FU-A fragmented. It returns the access units the fork is expected

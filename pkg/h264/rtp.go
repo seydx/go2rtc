@@ -158,10 +158,19 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 			case NALUTypeSPS, NALUTypePPS:
 				return
 			case NALUTypeSEI:
+				// a STAP-A with the SEI and a slice is a picture
+				if hasVCL(buf[start:]) {
+					break
+				}
 				// RtspServer https://github.com/AlexxIT/go2rtc/issues/244
 				// sends, marked SPS, marked PPS, marked SEI, marked IFrame
 				buf = buf[:start]
-				return
+				// An SEI can't follow the picture it belongs to, it is
+				// dropped. But its marker ends the access unit: skipped, it
+				// would never reach the flush and no frame would come out.
+				if !hasVCL(buf) {
+					return
+				}
 			}
 		}
 
@@ -233,6 +242,21 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 		clone.Payload = payload
 		handler(&clone)
 	}
+}
+
+// hasVCL reports whether the AVCC holds picture data
+func hasVCL(avcc []byte) bool {
+	for len(avcc) > 4 {
+		if t := NALUType(avcc); t >= NALUTypePFrame && t <= NALUTypeIFrame {
+			return true
+		}
+		size := 4 + uint64(binary.BigEndian.Uint32(avcc))
+		if size >= uint64(len(avcc)) {
+			break
+		}
+		avcc = avcc[size:]
+	}
+	return false
 }
 
 func RTPPay(mtu uint16, handler core.HandlerFunc) core.HandlerFunc {

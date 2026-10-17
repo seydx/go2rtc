@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math/rand"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/pion/rtp"
@@ -327,9 +329,8 @@ func TestRTPDepayMarkedSEIAfterParameterSetsKeepsKeyframe(t *testing.T) {
 	require.Equal(t, [][]byte{lossNALs(vps, sps, pps, idr)}, got)
 }
 
-// A camera that ends every access unit with a marked SEI never lets the marker
-// reach the flush, so the buffer would grow without limit. The h264 depay caps
-// it, this one has to as well.
+// A camera whose marker never reaches the flush would grow the buffer without
+// limit. The h264 depay caps it, this one has to as well.
 func TestRTPDepayCapsBufferWhenMarkerNeverFlushes(t *testing.T) {
 	var lastLen int
 	depay := RTPDepay(&core.Codec{}, func(p *rtp.Packet) { lastLen = len(p.Payload) })
@@ -338,16 +339,133 @@ func TestRTPDepayCapsBufferWhenMarkerNeverFlushes(t *testing.T) {
 	payload[0], payload[1] = NALUTypePFrame<<1, 1
 	seq := uint16(0)
 	for frame := range 20000 {
-		ts := uint32(3000 * frame)
-		depay(lossPacket(seq, ts, false, payload))
-		seq++
-		depay(lossPacket(seq, ts, true, []byte{NALUTypeSuffixSEI << 1, 1, 5}))
+		depay(lossPacket(seq, uint32(3000*frame), false, payload))
 		seq++
 	}
 
 	// force a flush and measure what had accumulated
 	depay(lossPacket(seq, 99999, true, payload))
 	require.Less(t, lastLen, 6*1024*1024, "buffer grew past the cap")
+}
+
+// Haima cameras end every access unit with a marked SEI, after the slices.
+// Skipped like the marked SEI in front of a picture (#244), its marker never
+// reached the flush: no frame came out at all.
+func TestRTPDepayMarkedSEIEndsAccessUnit(t *testing.T) {
+	type frame struct {
+		ts      uint32
+		payload []byte
+	}
+	var got []frame
+	depay := RTPDepay(&core.Codec{}, func(p *rtp.Packet) {
+		require.True(t, p.Marker)
+		got = append(got, frame{p.Timestamp, bytes.Clone(p.Payload)})
+	})
+
+	vps, sps, pps := []byte{NALUTypeVPS << 1, 1, 7}, []byte{NALUTypeSPS << 1, 1, 8}, []byte{NALUTypePPS << 1, 1, 9}
+	sei := append([]byte{NALUTypePrefixSEI << 1, 1}, bytes.Repeat([]byte{5}, 73)...)
+	suffix := []byte{NALUTypeSuffixSEI << 1, 1, 6}
+	idr := []byte{NALUTypeIFrame << 1, 1, 0xaa, 0xbb}
+	p1, p2, p3 := []byte{NALUTypePFrame << 1, 1, 0xcc, 0xdd}, []byte{NALUTypePFrame << 1, 1, 2}, []byte{NALUTypePFrame << 1, 1, 3}
+	// the IDR and the first P-frame come in two fragments
+	fu := func(startEnd, nuType, b byte) []byte { return []byte{NALUTypeFU << 1, 1, startEnd | nuType, b} }
+
+	seq := uint16(65530) // wraps
+	send := func(ts uint32, marker bool, payload []byte) {
+		depay(lossPacket(seq, ts, marker, payload))
+		seq++
+	}
+	send(0, false, buildAP(vps, sps, pps))
+	send(0, false, fu(0x80, NALUTypeIFrame, 0xaa))
+	send(0, false, fu(0x40, NALUTypeIFrame, 0xbb))
+	send(0, true, sei)
+	send(3000, false, fu(0x80, NALUTypePFrame, 0xcc))
+	send(3000, false, fu(0x40, NALUTypePFrame, 0xdd))
+	send(3000, true, sei)
+	send(6000, true, buildAP(p2, sei))
+	send(9000, false, p3)
+	send(9000, true, suffix)
+
+	require.Equal(t, []frame{
+		{0, lossNALs(vps, sps, pps, idr, sei)},
+		{3000, lossNALs(p1, sei)},
+		{6000, lossNALs(p2, sei)},
+		{9000, lossNALs(p3, suffix)},
+	}, got)
+}
+
+// A marked SEI between the fragments of a NAL unit is no end of the access
+// unit: it is skipped, as before, and the unit is completed.
+func TestRTPDepayMarkedSEIInsideFragment(t *testing.T) {
+	var got [][]byte
+	depay := RTPDepay(&core.Codec{}, func(p *rtp.Packet) { got = append(got, bytes.Clone(p.Payload)) })
+
+	depay(lossPacket(1, 100, false, []byte{NALUTypeFU << 1, 1, 0x80 | NALUTypeIFrame, 0xaa}))
+	depay(lossPacket(2, 100, true, []byte{NALUTypePrefixSEI << 1, 1, 5}))
+	depay(lossPacket(3, 100, true, []byte{NALUTypeFU << 1, 1, 0x40 | NALUTypeIFrame, 0xbb}))
+	require.Equal(t, [][]byte{lossNALs([]byte{NALUTypeIFrame << 1, 1, 0xaa, 0xbb})}, got)
+}
+
+// Every consumer of a track gets the same packet, and the GOP cache keeps it
+// for the next consumer. The marker of the marked parameter sets (#244) is
+// dropped in the depay, the packet stays as the camera sent it.
+func TestRTPDepayLeavesSharedPacketUntouched(t *testing.T) {
+	depay := RTPDepay(&core.Codec{}, func(*rtp.Packet) {})
+	for _, nuType := range []byte{NALUTypeVPS, NALUTypeSPS, NALUTypePPS} {
+		packet := lossPacket(uint16(nuType), 100, true, []byte{nuType << 1, 1, 7})
+		depay(packet)
+		require.True(t, packet.Marker)
+	}
+}
+
+// The real fan-out: two consumers on one track depay the same packets on
+// their own goroutines. Run with -race.
+func TestRTPDepayConsumersShareTrack(t *testing.T) {
+	codec := &core.Codec{Name: core.CodecH265, ClockRate: 90000}
+	media := &core.Media{Kind: core.KindVideo, Codecs: []*core.Codec{codec}}
+	track := core.NewReceiver(media, codec)
+
+	const frames = 100
+	vps := []byte{NALUTypeVPS << 1, 1, 7}
+	idr := []byte{NALUTypeIFrame << 1, 1, 0xaa}
+	expected := lossNALs(vps, idr)
+
+	var mu sync.Mutex
+	var keyframes int
+	done := make(chan struct{}, 2)
+	for range 2 {
+		var received int
+		sender := core.NewSender(media, codec)
+		sender.UseGOP = false
+		sender.Handler = RTPDepay(codec, func(packet *rtp.Packet) {
+			if bytes.Equal(expected, packet.Payload) {
+				mu.Lock()
+				keyframes++
+				mu.Unlock()
+			}
+			if received++; received == frames {
+				done <- struct{}{}
+			}
+		})
+		sender.WithParent(track).Start()
+		t.Cleanup(sender.Close)
+	}
+
+	for i := range frames {
+		track.Input(lossPacket(uint16(2*i), uint32(3000*i), true, vps))
+		track.Input(lossPacket(uint16(2*i+1), uint32(3000*i), true, idr))
+	}
+	for range 2 {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the consumers didn't get every frame")
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 2*frames, keyframes)
 }
 
 // The cap must not leave a fragmented unit half-tracked: nuStart would point

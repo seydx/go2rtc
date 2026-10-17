@@ -45,9 +45,9 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 		seqNum, timestamp = packet.SequenceNumber, packet.Timestamp
 
 		// Memory overflow protection, same as the h264 depay: a camera whose
-		// marker never reaches the flush (ex. every access unit ends with a
-		// marked SEI) would grow the buffer without limit. Resetting fragmented
-		// matters, nuStart would otherwise point past the shrunken buffer.
+		// marker never reaches the flush would grow the buffer without limit.
+		// Resetting fragmented matters, nuStart would otherwise point past the
+		// shrunken buffer.
 		if len(buf) > 5*1024*1024 {
 			buf = buf[: 0 : 512*1024]
 			fragmented = false
@@ -61,13 +61,22 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 		nuType := (data[0] >> 1) & 0x3F
 		//log.Printf("[RTP] codec: %s, nalu: %2d, size: %6d, ts: %10d, pt: %2d, ssrc: %d, seq: %d, %v", track.Codec.Name, nuType, len(packet.Payload), packet.Timestamp, packet.PayloadType, packet.SSRC, packet.SequenceNumber, packet.Marker)
 
+		// the packet is shared with the other consumers of the track and with
+		// the GOP cache: its marker is never changed, only this copy
+		marker := packet.Marker
+
 		// Fix for RtspServer https://github.com/AlexxIT/go2rtc/issues/244
-		if packet.Marker && len(data) < h264.PSMaxSize {
+		if marker && len(data) < h264.PSMaxSize {
 			switch nuType {
 			case NALUTypeVPS, NALUTypeSPS, NALUTypePPS:
-				packet.Marker = false
+				marker = false
 			case NALUTypePrefixSEI, NALUTypeSuffixSEI:
-				return
+				// A marked SEI in front of the picture is skipped. One after
+				// it ends the access unit (Haima cameras): skipped, the marker
+				// would never reach the flush and no frame would come out.
+				if fragmented || !hasVCL(buf) {
+					return
+				}
 			}
 		}
 
@@ -153,7 +162,7 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 		}
 
 		// collect all NAL Units for Access Unit
-		if !packet.Marker {
+		if !marker {
 			return
 		}
 
@@ -180,6 +189,21 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 
 		handler(&clone)
 	}
+}
+
+// hasVCL reports whether the AVCC holds picture data
+func hasVCL(avcc []byte) bool {
+	for len(avcc) > 4 {
+		if NALUType(avcc) < 32 { // VCL NAL unit types are 0..31
+			return true
+		}
+		size := 4 + uint64(binary.BigEndian.Uint32(avcc))
+		if size >= uint64(len(avcc)) {
+			break
+		}
+		avcc = avcc[size:]
+	}
+	return false
 }
 
 func RTPPay(mtu uint16, handler core.HandlerFunc) core.HandlerFunc {

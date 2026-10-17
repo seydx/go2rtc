@@ -78,7 +78,12 @@ func pionRTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc 
 				buf = append(buf, payload...)
 				return
 			case NALUTypeSEI:
-				return
+				if !containsVCL(payload) {
+					if !containsVCL(buf) {
+						return
+					}
+					payload = nil // ends the access unit in buf
+				}
 			}
 		}
 
@@ -131,6 +136,15 @@ func pionRTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc 
 		clone.Payload = payload
 		handler(&clone)
 	}
+}
+
+func containsVCL(avcc []byte) bool {
+	for i := 0; i+4 < len(avcc); i += 4 + int(binary.BigEndian.Uint32(avcc[i:])) {
+		if t := avcc[i+4] & 0x1F; t >= NALUTypePFrame && t <= NALUTypeIFrame {
+			return true
+		}
+	}
+	return false
 }
 
 var spropFmtp = "packetization-mode=1;sprop-parameter-sets=" +
