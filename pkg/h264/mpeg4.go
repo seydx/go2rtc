@@ -34,6 +34,10 @@ func DecodeConfig(conf []byte) (profile []byte, sps []byte, pps []byte) {
 		conf = conf[size:]
 	}
 
+	if len(conf) == 0 {
+		return
+	}
+
 	count = conf[0]
 	conf = conf[1:]
 	for i := byte(0); i < count; i++ {

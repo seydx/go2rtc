@@ -22,6 +22,35 @@ func TestDecodeConfig(t *testing.T) {
 	require.Equal(t, src, dst)
 }
 
+// A config that ends after its SPS, without the count of its PPS, panicked:
+// any FLV source could send one as its sequence header.
+func TestDecodeConfigWithoutPPS(t *testing.T) {
+	src, err := hex.DecodeString("01640033ffe1000c67640033ac1514a02800f190")
+	require.Nil(t, err)
+
+	var profile, sps, pps []byte
+	require.NotPanics(t, func() { profile, sps, pps = DecodeConfig(src) })
+	require.Equal(t, src[1:4], profile)
+	require.Equal(t, src[8:], sps)
+	require.Nil(t, pps)
+
+	// no SPS either
+	require.NotPanics(t, func() { profile, sps, pps = DecodeConfig(src[:6]) })
+	require.Equal(t, src[1:4], profile)
+	require.Nil(t, sps)
+	require.Nil(t, pps)
+}
+
+func FuzzDecodeConfig(f *testing.F) {
+	src, _ := hex.DecodeString("01640033ffe1000c67640033ac1514a02800f19001000468ee3cb0")
+	f.Add(src)
+	f.Add(src[:20])
+	f.Fuzz(func(t *testing.T, b []byte) {
+		_, _, _ = DecodeConfig(b)
+		_ = ConfigToCodec(b)
+	})
+}
+
 func TestDecodeSPS(t *testing.T) {
 	s := "Z0IAMukAUAHjQgAAB9IAAOqcCAA=" // Amcrest AD410
 	b, err := base64.StdEncoding.DecodeString(s)

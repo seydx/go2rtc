@@ -55,8 +55,6 @@ func (c *Conn) readResponse(wait func(items []any) bool) ([]any, error) {
 		//log.Printf("[rtmp] type=%d data=%s", msgType, b)
 
 		switch msgType {
-		case TypeSetPacketSize:
-			c.rdPacketSize = binary.BigEndian.Uint32(b)
 		case TypeCommand:
 			items, _ := amf.NewReader(b).ReadItems()
 			if wait(items) {
@@ -145,31 +143,48 @@ func (c *Conn) readMessage() (byte, uint32, []byte, error) {
 
 	//log.Printf("[rtmp] hdr=%d chunkID=%d timeMS=%d size=%d tagType=%d streamID=%d", hdrType, chunkID, ch.timeMS, ch.dataSize, ch.tagType, ch.streamID)
 
+	data, err := c.readData(ch)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+
+	// the peer can change the size of its chunks at any time, also while streaming
+	if ch.tagType == TypeSetPacketSize {
+		if len(data) < 4 || binary.BigEndian.Uint32(data) == 0 {
+			return 0, 0, nil, fmt.Errorf("rtmp: wrong chunk size %x", data)
+		}
+		c.rdPacketSize = binary.BigEndian.Uint32(data)
+	}
+
+	return ch.tagType, ch.timeMS, data, nil
+}
+
+func (c *Conn) readData(ch *chunk) ([]byte, error) {
 	// 1. Response zero size
 	if ch.dataSize == 0 {
-		return ch.tagType, ch.timeMS, nil, nil
+		return nil, nil
 	}
 
 	data := make([]byte, ch.dataSize)
 
 	// 2. Response small packet
 	if ch.dataSize <= c.rdPacketSize {
-		if _, err = io.ReadFull(c.rd, data); err != nil {
-			return 0, 0, nil, err
+		if _, err := io.ReadFull(c.rd, data); err != nil {
+			return nil, err
 		}
-		return ch.tagType, ch.timeMS, data, nil
+		return data, nil
 	}
 
 	// 3. Response big packet
 	var i0 uint32
 	for i1 := c.rdPacketSize; i1 < ch.dataSize; i1 += c.rdPacketSize {
-		if _, err = io.ReadFull(c.rd, data[i0:i1]); err != nil {
-			return 0, 0, nil, err
+		if _, err := io.ReadFull(c.rd, data[i0:i1]); err != nil {
+			return nil, err
 		}
 
 		// hopefully this will be hdrType=3 with same chunkID
-		if _, err = c.readSize(1); err != nil {
-			return 0, 0, nil, err
+		if _, err := c.readSize(1); err != nil {
+			return nil, err
 		}
 
 		_ = ch.readExtendedTime()
@@ -177,11 +192,11 @@ func (c *Conn) readMessage() (byte, uint32, []byte, error) {
 		i0 = i1
 	}
 
-	if _, err = io.ReadFull(c.rd, data[i0:]); err != nil {
-		return 0, 0, nil, err
+	if _, err := io.ReadFull(c.rd, data[i0:]); err != nil {
+		return nil, err
 	}
 
-	return ch.tagType, ch.timeMS, data, nil
+	return data, nil
 }
 
 func (c *Conn) writeMessage(chunkID, tagType byte, timeMS uint32, payload []byte) error {

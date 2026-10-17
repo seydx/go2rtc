@@ -98,8 +98,6 @@ func (c *Conn) ReadCommands() error {
 		//log.Printf("%d %.256x", msgType, b)
 
 		switch msgType {
-		case TypeSetPacketSize:
-			c.rdPacketSize = binary.BigEndian.Uint32(b)
 		case TypeCommand:
 			if err = c.acceptCommand(b); err != nil {
 				return err

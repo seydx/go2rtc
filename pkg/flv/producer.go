@@ -85,7 +85,7 @@ func (c *Producer) Start() error {
 
 		switch pkt.PayloadType {
 		case TagAudio:
-			if c.audio == nil || pkt.Payload[1] == 0 {
+			if c.audio == nil || len(pkt.Payload) < 2 || pkt.Payload[1] == 0 {
 				continue
 			}
 
@@ -94,7 +94,8 @@ func (c *Producer) Start() error {
 			c.audio.WriteRTP(pkt)
 
 		case TagVideo:
-			if c.video == nil {
+			// an empty tag, or one too short for its header, has no frame
+			if c.video == nil || len(pkt.Payload) < 5 {
 				continue
 			}
 
@@ -102,6 +103,9 @@ func (c *Producer) Start() error {
 				switch packetType := pkt.Payload[0] & 0b1111; packetType {
 				case PacketTypeCodedFrames:
 					// frame type 4b, packet type 4b, fourCC 32b, composition time 24b
+					if len(pkt.Payload) < 8 {
+						continue
+					}
 					pkt.Payload = pkt.Payload[8:]
 				case PacketTypeCodedFramesX:
 					// frame type 4b, packet type 4b, fourCC 32b
@@ -161,11 +165,9 @@ func (c *Producer) probe() error {
 
 		switch pkt.PayloadType {
 		case TagAudio:
-			if !waitAudio {
+			if !waitAudio || len(pkt.Payload) < 2 {
 				continue
 			}
-
-			_ = pkt.Payload[1] // bounds
 
 			codecID := pkt.Payload[0] >> 4 // SoundFormat
 			_ = pkt.Payload[0] & 0b1100    // SoundRate
@@ -190,7 +192,7 @@ func (c *Producer) probe() error {
 			waitAudio = false
 
 		case TagVideo:
-			if !waitVideo {
+			if !waitVideo || len(pkt.Payload) < 5 {
 				continue
 			}
 
