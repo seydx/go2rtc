@@ -162,23 +162,76 @@ func (p *Producer) Start() error {
 	}
 }
 
+// The frames on their way when SetResolution is sent still have the old frame
+// size. Their SPS is skipped for this long, so the codec (RTSP
+// sprop-parameter-sets, MP4 avcC) is the one the stream goes on with: hardware
+// decoders configured with the other one decode nothing (Safari, Android).
+const staleSPSTimeout = 3 * time.Second
+
 func probe(client *Client, quality byte) ([]*core.Media, error) {
-	if err := client.SetResolution(quality); err != nil && client.verbose {
+	err := client.SetResolution(quality)
+	if err != nil && client.verbose {
 		fmt.Printf("[Wyze] SetResolution failed, camera will stream its current/default profile: %v\n", err)
 	}
+	skipSD := staleSDUntil(quality, err == nil, time.Now())
 	client.SetDeadline(time.Now().Add(core.ProbeTimeout))
 
-	var vcodec, acodec *core.Codec
-	var tutkAudioCodec byte
+	vcodec, acodec, tutkAudioCodec, err := probeCodecs(client.ReadPacket, client.SupportsAudio(), skipSD, client.verbose)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = client.SetDeadline(time.Time{})
+
+	medias := []*core.Media{
+		{
+			Kind:      core.KindVideo,
+			Direction: core.DirectionRecvonly,
+			Codecs:    []*core.Codec{vcodec},
+		},
+	}
+
+	if acodec != nil {
+		medias = append(medias, &core.Media{
+			Kind:      core.KindAudio,
+			Direction: core.DirectionRecvonly,
+			Codecs:    []*core.Codec{acodec},
+		})
+
+		if client.SupportsIntercom() {
+			client.SetBackchannelCodec(tutkAudioCodec, acodec.ClockRate, uint8(acodec.Channels))
+			medias = append(medias, &core.Media{
+				Kind:      core.KindAudio,
+				Direction: core.DirectionSendonly,
+				Codecs:    []*core.Codec{acodec.Clone()},
+			})
+		}
+	}
+
+	if client.verbose {
+		fmt.Printf("[Wyze] Probed codecs: video=%s audio=%s\n", vcodec.Name, acodec.Name)
+		if client.SupportsIntercom() {
+			fmt.Printf("[Wyze] Intercom supported, audio send codec=%s\n", acodec.Name)
+		}
+	}
+
+	return medias, nil
+}
+
+// probeCodecs reads the codecs from the packets of the camera. Until skipSD an
+// SD SPS is from before the resolution change: it waits for the one after it.
+func probeCodecs(read func() (*tutk.Packet, error), audio bool, skipSD time.Time, verbose bool) (vcodec, acodec *core.Codec, tutkAudioCodec byte, err error) {
+	// the codec of the SD SPS, should the camera stay at SD
+	var sd *core.Codec
 
 	for {
-		if client.verbose {
+		if verbose {
 			fmt.Println("[Wyze] Probing for codecs...")
 		}
 
-		pkt, err := client.ReadPacket()
+		pkt, err := read()
 		if err != nil {
-			return nil, fmt.Errorf("wyze: probe: %w", err)
+			return nil, nil, 0, fmt.Errorf("wyze: probe: %w", err)
 		}
 		if pkt == nil || len(pkt.Payload) < 5 {
 			continue
@@ -236,44 +289,45 @@ func probe(client *Client, quality byte) ([]*core.Media, error) {
 			}
 		}
 
-		if vcodec != nil && (acodec != nil || !client.SupportsAudio()) {
-			break
+		if vcodec != nil && isSD(vcodec) && time.Now().Before(skipSD) {
+			if verbose {
+				fmt.Println("[Wyze] Skipping the SPS from before the resolution change")
+			}
+			sd, vcodec = vcodec, nil
+		} else if vcodec == nil && sd != nil && !time.Now().Before(skipSD) {
+			vcodec = sd // the camera stays at SD
+		}
+
+		if vcodec != nil && (acodec != nil || !audio) {
+			return vcodec, acodec, tutkAudioCodec, nil
 		}
 	}
+}
 
-	_ = client.SetDeadline(time.Time{})
-
-	medias := []*core.Media{
-		{
-			Kind:      core.KindVideo,
-			Direction: core.DirectionRecvonly,
-			Codecs:    []*core.Codec{vcodec},
-		},
+// staleSDUntil is the time up to which an SD SPS is from before the change to
+// quality. Without a change, or with SD asked for, it is none.
+func staleSDUntil(quality byte, changed bool, now time.Time) time.Time {
+	if !changed || quality == FrameSize360P {
+		return time.Time{}
 	}
+	return now.Add(staleSPSTimeout)
+}
 
-	if acodec != nil {
-		medias = append(medias, &core.Media{
-			Kind:      core.KindAudio,
-			Direction: core.DirectionRecvonly,
-			Codecs:    []*core.Codec{acodec},
-		})
-
-		if client.SupportsIntercom() {
-			client.SetBackchannelCodec(tutkAudioCodec, acodec.ClockRate, uint8(acodec.Channels))
-			medias = append(medias, &core.Media{
-				Kind:      core.KindAudio,
-				Direction: core.DirectionSendonly,
-				Codecs:    []*core.Codec{acodec.Clone()},
-			})
+// isSD reports whether the video has the frame size of the SD profile
+func isSD(codec *core.Codec) bool {
+	var height uint16
+	switch codec.Name {
+	case core.CodecH264:
+		sps, _ := h264.GetParameterSet(codec.Fmtp())
+		if s := h264.DecodeSPS(sps); s != nil {
+			height = s.Height()
+		}
+	case core.CodecH265:
+		if _, sps, _ := h265.GetParameterSet(codec.Fmtp()); len(sps) > 2 {
+			if s := h265.DecodeSPS(sps); s != nil {
+				height = s.Height()
+			}
 		}
 	}
-
-	if client.verbose {
-		fmt.Printf("[Wyze] Probed codecs: video=%s audio=%s\n", vcodec.Name, acodec.Name)
-		if client.SupportsIntercom() {
-			fmt.Printf("[Wyze] Intercom supported, audio send codec=%s\n", acodec.Name)
-		}
-	}
-
-	return medias, nil
+	return height != 0 && height <= 360
 }
