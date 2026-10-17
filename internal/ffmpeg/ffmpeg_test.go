@@ -1,11 +1,15 @@
 package ffmpeg
 
 import (
+	"bufio"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/AlexxIT/go2rtc/internal/rtsp"
+	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/ffmpeg"
+	"github.com/AlexxIT/go2rtc/pkg/tcp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -443,6 +447,44 @@ func TestVersion(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			args := parseArgs(test.source)
 			require.Equal(t, test.expect, args.String())
+		})
+	}
+}
+
+// An ffmpeg source of another stream reads it from the RTSP server, which
+// finds the stream by the decoded path of the request, and the request line
+// ends at the first space. A name with %2F (Nest cameras from Home Assistant),
+// a space or another reserved character asked for a stream of another name,
+// or for none at all: 404 Not Found.
+func TestParseArgsStreamName(t *testing.T) {
+	port := rtsp.Port
+	rtsp.Port = "8554"
+	t.Cleanup(func() { rtsp.Port = port })
+
+	for _, name := range []string{
+		"camera",
+		"nest_enterprises%2Fproject%2Fdevices%2Fdevice-camera",
+		"Front Door",
+		"garage/main",
+		"Küche",
+		"what?",
+		"100%",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := streams.New(name)
+			require.NoError(t, err)
+			t.Cleanup(func() { streams.Delete(name) })
+
+			args := parseArgs(name + "#audio=opus")
+			input := args.Input[strings.LastIndex(args.Input, " -i ")+4:]
+			require.True(t, strings.HasPrefix(input, "rtsp://127.0.0.1:8554/"), input)
+
+			// what the RTSP server reads from the request of ffmpeg
+			req, err := tcp.ReadRequest(bufio.NewReader(strings.NewReader("DESCRIBE " + input + " RTSP/1.0\r\nCSeq: 1\r\n\r\n")))
+			require.NoError(t, err)
+			require.Equal(t, name, req.URL.Path[1:])
+			require.Equal(t, "ffmpeg:"+name+"#audio=opus", req.URL.Query().Get("source"))
+			require.True(t, req.URL.Query().Has("audio"))
 		})
 	}
 }

@@ -226,7 +226,8 @@ func parseArgs(s string) *ffmpeg.Args {
 			args.Input = "-i " + s
 		}
 	} else if streams.Get(s) != nil {
-		s = "rtsp://127.0.0.1:" + rtsp.Port + "/" + s
+		// the RTSP server finds the stream by the decoded path
+		s = "rtsp://127.0.0.1:" + rtsp.Port + "/" + url.PathEscape(s)
 		switch {
 		case args.Video > 0 && args.Audio == 0:
 			s += "?video"
