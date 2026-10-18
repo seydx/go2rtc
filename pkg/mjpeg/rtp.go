@@ -13,6 +13,9 @@ import (
 func RTPDepay(handlerFunc core.HandlerFunc) core.HandlerFunc {
 	buf := make([]byte, 0, 512*1024) // 512K
 
+	// dynamic tables outlive their frame, a sender may send them only once (Length 0 afterwards)
+	var dynLqt, dynCqt []byte
+
 	return func(packet *rtp.Packet) {
 		//log.Printf("[RTP] codec: %s, size: %6d, ts: %10d, pt: %2d, ssrc: %d, seq: %d, mark: %v", track.Codec.Name, len(packet.Payload), packet.Timestamp, packet.PayloadType, packet.SSRC, packet.SequenceNumber, packet.Marker)
 
@@ -35,9 +38,27 @@ func RTPDepay(handlerFunc core.HandlerFunc) core.HandlerFunc {
 			// 3.1.8.  Quantization Table header
 			q := packet.Payload[5]
 			if q >= 128 {
-				lqt = b[4:68]
-				cqt = b[68:132]
-				b = b[132:]
+				if len(b) < 4 {
+					return
+				}
+				size := 4 + int(binary.BigEndian.Uint16(b[2:]))
+				if len(b) < size {
+					return
+				}
+				switch {
+				case size >= 4+128:
+					dynLqt = append(dynLqt[:0], b[4:68]...)
+					dynCqt = append(dynCqt[:0], b[68:132]...)
+				case size >= 4+64:
+					// one table for luma and chroma, as ffmpeg sends it
+					dynLqt = append(dynLqt[:0], b[4:68]...)
+					dynCqt = append(dynCqt[:0], b[4:68]...)
+				}
+				if dynLqt == nil {
+					return
+				}
+				lqt, cqt = dynLqt, dynCqt
+				b = b[size:]
 			} else {
 				lqt, cqt = MakeTables(q)
 			}
