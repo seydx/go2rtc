@@ -6,6 +6,8 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pion/rtp"
@@ -18,16 +20,57 @@ func TestRFC2435(t *testing.T) {
 	require.Equal(t, byte(10), cqt[0])
 }
 
+func TestRTPPay(t *testing.T) {
+	t.Run("baseline 4:2:0 is sent as is", func(t *testing.T) {
+		src := testJPEG(t, 64, 48)
+		packets := payPackets(t, src)
+		require.Equal(t, byte(1), packets[0].Payload[4])
+
+		frames := depay(packets)
+		require.Len(t, frames, 1)
+		decodes(t, frames[0], 64, 48)
+		require.Equal(t, scanData(t, src), scanData(t, frames[0]))
+		require.Equal(t, quantTables(t, src), quantTables(t, frames[0]))
+	})
+
+	t.Run("4:2:2 is sent as is with type 0", func(t *testing.T) {
+		src := readTestdata(t, "yuv422.jpg")
+		packets := payPackets(t, src)
+		require.Equal(t, byte(0), packets[0].Payload[4])
+
+		frames := depay(packets)
+		require.Len(t, frames, 1)
+		decodes(t, frames[0], 64, 48)
+		require.Equal(t, scanData(t, src), scanData(t, frames[0]))
+	})
+
+	// own Huffman tables, 4:2:2 as luma 2x2 with chroma 1x2
+	for _, name := range []string{"yuv422_optimal.jpg", "yuv422_ffmpeg.jpg"} {
+		t.Run(name+" is reencoded", func(t *testing.T) {
+			packets := payPackets(t, readTestdata(t, name))
+			require.Equal(t, byte(1), packets[0].Payload[4])
+
+			frames := depay(packets)
+			require.Len(t, frames, 1)
+			decodes(t, frames[0], 64, 48)
+		})
+	}
+
+	t.Run("more than 2040 pixels are cropped", func(t *testing.T) {
+		frames := depay(payPackets(t, testJPEG(t, 2048, 16)))
+		require.Len(t, frames, 1)
+		decodes(t, frames[0], 2040, 16)
+	})
+}
+
 func TestRTPDepayQuantTables(t *testing.T) {
-	src := testJPEG(t)
-	sent, err := Transcode(src)
-	require.NoError(t, err)
+	src := testJPEG(t, 64, 48)
 
 	t.Run("two tables", func(t *testing.T) {
 		frames := depay(payPackets(t, src))
 		require.Len(t, frames, 1)
-		decodes(t, frames[0])
-		require.Equal(t, scanData(t, sent), scanData(t, frames[0]))
+		decodes(t, frames[0], 64, 48)
+		require.Equal(t, scanData(t, src), scanData(t, frames[0]))
 	})
 
 	t.Run("one table for luma and chroma", func(t *testing.T) {
@@ -36,8 +79,8 @@ func TestRTPDepayQuantTables(t *testing.T) {
 
 		frames := depay(packets)
 		require.Len(t, frames, 1)
-		decodes(t, frames[0])
-		require.Equal(t, scanData(t, sent), scanData(t, frames[0]))
+		decodes(t, frames[0], 64, 48)
+		require.Equal(t, scanData(t, src), scanData(t, frames[0]))
 
 		tables := quantTables(t, frames[0])
 		require.Len(t, tables, 2)
@@ -51,7 +94,7 @@ func TestRTPDepayQuantTables(t *testing.T) {
 
 		frames := depay(append(first, second...))
 		require.Len(t, frames, 2)
-		decodes(t, frames[1])
+		decodes(t, frames[1], 64, 48)
 		require.Equal(t, frames[0], frames[1])
 	})
 
@@ -64,16 +107,22 @@ func TestRTPDepayQuantTables(t *testing.T) {
 	})
 }
 
-func testJPEG(t *testing.T) []byte {
-	img := image.NewRGBA(image.Rect(0, 0, 64, 48))
-	for y := range 48 {
-		for x := range 64 {
+func testJPEG(t *testing.T, w, h int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
 			img.Set(x, y, color.RGBA{R: uint8(x * 4), G: uint8(y * 5), B: 128, A: 255})
 		}
 	}
 	var b bytes.Buffer
 	require.NoError(t, jpeg.Encode(&b, img, &jpeg.Options{Quality: 80}))
 	return b.Bytes()
+}
+
+func readTestdata(t *testing.T, name string) []byte {
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	require.NoError(t, err)
+	return b
 }
 
 func payPackets(t *testing.T, jpg []byte) []*rtp.Packet {
@@ -109,10 +158,10 @@ func withQuantLength(payload []byte, n int) []byte {
 	return append(out, payload[main+size:]...)
 }
 
-func decodes(t *testing.T, jpg []byte) {
+func decodes(t *testing.T, jpg []byte, w, h int) {
 	img, err := jpeg.Decode(bytes.NewReader(jpg))
 	require.NoError(t, err)
-	require.Equal(t, image.Pt(64, 48), img.Bounds().Size())
+	require.Equal(t, image.Pt(w, h), img.Bounds().Size())
 }
 
 func scanData(t *testing.T, jpg []byte) []byte {

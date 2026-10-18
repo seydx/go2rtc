@@ -7,4 +7,5 @@ const (
 	markerSOS = 0xDA // Start Of Scan
 	markerDQT = 0xDB // Define Quantization Table
 	markerDHT = 0xC4 // Define Huffman Table
+	markerDRI = 0xDD // Define Restart Interval
 )

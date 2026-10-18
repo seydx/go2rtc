@@ -10,6 +10,18 @@ import (
 	"github.com/pion/rtp"
 )
 
+type rtpFrame struct {
+	typ           byte
+	width, height uint16
+	lqt, cqt      []byte
+	scan          []byte
+}
+
+// RFC 2435 sends the size in 8 pixel units, at most 255 of them
+func (f *rtpFrame) fitsRTP() bool {
+	return f.width > 0 && f.height > 0 && f.width%8 == 0 && f.height%8 == 0 && f.width <= 2040 && f.height <= 2040
+}
+
 func RTPDepay(handlerFunc core.HandlerFunc) core.HandlerFunc {
 	buf := make([]byte, 0, 512*1024) // 512K
 
@@ -116,56 +128,34 @@ func RTPPay(handlerFunc core.HandlerFunc) core.HandlerFunc {
 	sequencer := rtp.NewRandomSequencer()
 
 	return func(packet *rtp.Packet) {
-		// reincode image to more common form
-		p, err := Transcode(packet.Payload)
-		if err != nil {
-			return
+		f := parseRTPFrame(packet.Payload)
+		if f == nil || !f.fitsRTP() {
+			// reincode image to more common form
+			b, err := Transcode(packet.Payload)
+			if err != nil {
+				return
+			}
+			if f = parseRTPFrame(b); f == nil {
+				return
+			}
 		}
 
 		h1 := make([]byte, 8)
-		h1[4] = 1   // Type
-		h1[5] = 255 // Q
+		h1[4] = f.typ // Type
+		h1[5] = 255   // Q
+		h1[6] = uint8(f.width >> 3)
+		h1[7] = uint8(f.height >> 3)
 
 		// MBZ=0, Precision=0, Length=128
 		h2 := make([]byte, 4, 132)
 		h2[3] = 128
+		h2 = append(h2, f.lqt...)
+		h2 = append(h2, f.cqt...)
 
-		var jpgData []byte
-		for jpgData == nil {
-			// 2 bytes h1
-			if p[0] != 0xFF {
-				return
-			}
-
-			size := binary.BigEndian.Uint16(p[2:]) + 2
-
-			// 2 bytes payload size (include 2 bytes)
-			switch p[1] {
-			case 0xD8: // 0. Start Of Image (size=0)
-				p = p[2:]
-				continue
-			case 0xDB: // 1. Define Quantization Table (size=130)
-				for i := uint16(4 + 1); i < size; i += 1 + 64 {
-					h2 = append(h2, p[i:i+64]...)
-				}
-			case 0xC0: // 2. Start Of Frame (size=15)
-				if p[4] != 8 {
-					return
-				}
-				h := binary.BigEndian.Uint16(p[5:])
-				w := binary.BigEndian.Uint16(p[7:])
-				h1[6] = uint8(w >> 3)
-				h1[7] = uint8(h >> 3)
-			case 0xC4: // 3. Define Huffman Table (size=416)
-			case 0xDA: // 4. Start Of Scan (size=10)
-				jpgData = p[size:]
-			}
-
-			p = p[size:]
-		}
+		jpgData := f.scan
 
 		offset := 0
-		p = make([]byte, 0)
+		p := make([]byte, 0)
 
 		for jpgData != nil {
 			p = p[:0]
@@ -238,4 +228,128 @@ func Transcode(b []byte) ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+// parseRTPFrame returns nil for anything a receiver can't rebuild from the RTP/JPEG header:
+// no baseline 8-bit YUV 4:2:x, other than the standard Huffman tables, or restart markers
+func parseRTPFrame(b []byte) *rtpFrame {
+	if len(b) < 4 || b[0] != 0xFF || b[1] != markerSOI {
+		return nil
+	}
+
+	var f rtpFrame
+	var tables [4][]byte
+	var ids [3]byte
+	var lq, cq byte
+	sof := false
+
+	for i := 2; ; {
+		if i+4 > len(b) || b[i] != 0xFF {
+			return nil
+		}
+		marker := b[i+1]
+		if marker == 0xFF {
+			i++ // fill byte
+			continue
+		}
+		size := int(binary.BigEndian.Uint16(b[i+2:]))
+		if size < 2 || i+2+size > len(b) {
+			return nil
+		}
+		seg := b[i+4 : i+2+size]
+
+		switch marker {
+		case markerDQT:
+			for len(seg) >= 65 {
+				// high nibble is the precision, 16-bit tables don't fit the header
+				if seg[0] > 3 {
+					return nil
+				}
+				tables[seg[0]] = seg[1:65]
+				seg = seg[65:]
+			}
+			if len(seg) != 0 {
+				return nil
+			}
+		case markerSOF:
+			if len(seg) != 15 || seg[0] != 8 || seg[5] != 3 {
+				return nil
+			}
+			switch seg[7] {
+			case 0x21:
+				f.typ = 0
+			case 0x22:
+				f.typ = 1
+			default:
+				return nil
+			}
+			// the header has one table for both chroma components
+			if seg[10] != 0x11 || seg[13] != 0x11 || seg[11] != seg[14] {
+				return nil
+			}
+			f.height = binary.BigEndian.Uint16(seg[1:])
+			f.width = binary.BigEndian.Uint16(seg[3:])
+			ids = [3]byte{seg[6], seg[9], seg[12]}
+			lq, cq = seg[8], seg[11]
+			sof = true
+		case markerDHT:
+			for len(seg) >= 17 {
+				n := 17
+				for _, c := range seg[1:17] {
+					n += int(c)
+				}
+				if len(seg) < n || !standardHuffman(seg[0], seg[1:17], seg[17:n]) {
+					return nil
+				}
+				seg = seg[n:]
+			}
+			if len(seg) != 0 {
+				return nil
+			}
+		case markerDRI:
+			if len(seg) != 2 || binary.BigEndian.Uint16(seg) != 0 {
+				return nil
+			}
+		case markerSOS:
+			if !sof || len(seg) != 10 || seg[0] != 3 || lq > 3 || cq > 3 || tables[lq] == nil || tables[cq] == nil {
+				return nil
+			}
+			if seg[1] != ids[0] || seg[2] != 0x00 || seg[3] != ids[1] || seg[4] != 0x11 || seg[5] != ids[2] || seg[6] != 0x11 {
+				return nil
+			}
+			if seg[7] != 0 || seg[8] != 63 || seg[9] != 0 {
+				return nil
+			}
+			f.lqt, f.cqt = tables[lq], tables[cq]
+			f.scan = b[i+2+size:]
+			if j := bytes.LastIndex(f.scan, []byte{0xFF, markerEOI}); j >= 0 {
+				f.scan = f.scan[:j+2]
+			}
+			return &f
+		default:
+			// other frame types and arithmetic coding
+			if marker > markerSOF && marker <= 0xCF {
+				return nil
+			}
+		}
+
+		i += 2 + size
+	}
+}
+
+func standardHuffman(class byte, counts, symbols []byte) bool {
+	var c, s []byte
+	switch class {
+	case 0x00:
+		c, s = lum_dc_codelens, lum_dc_symbols
+	case 0x10:
+		c, s = lum_ac_codelens, lum_ac_symbols
+	case 0x01:
+		c, s = chm_dc_codelens, chm_dc_symbols
+	case 0x11:
+		c, s = chm_ac_codelens, chm_ac_symbols
+	default:
+		return false
+	}
+	return bytes.Equal(counts, c) && bytes.Equal(symbols, s)
 }
