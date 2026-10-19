@@ -9,6 +9,7 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
 	"github.com/AlexxIT/go2rtc/pkg/h265"
+	"github.com/AlexxIT/go2rtc/pkg/mjpeg"
 	"github.com/AlexxIT/go2rtc/pkg/pcm"
 	"github.com/pion/rtp"
 )
@@ -116,6 +117,24 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 			handler.Handler = h265.RTPDepay(track.Codec, handler.Handler)
 		} else {
 			handler.Handler = h265.RepairAVCC(track.Codec, handler.Handler)
+		}
+
+	case core.CodecJPEG:
+		// every picture is a keyframe, the first one starts the fragments
+		handler.Handler = func(packet *rtp.Packet) {
+			c.start = true
+
+			// important to use Mutex because right fragment order
+			c.mu.Lock()
+			b := c.muxer.GetPayload(trackID, packet)
+			if n, err := c.wr.Write(b); err == nil {
+				c.Send += n
+			}
+			c.mu.Unlock()
+		}
+
+		if track.Codec.IsRTP() {
+			handler.Handler = mjpeg.RTPDepay(handler.Handler)
 		}
 
 	default:

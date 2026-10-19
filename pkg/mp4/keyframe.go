@@ -1,6 +1,7 @@
 package mp4
 
 import (
+	"errors"
 	"io"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -47,6 +48,11 @@ func NewKeyframe(medias []*core.Media) *Keyframe {
 }
 
 func (c *Keyframe) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiver) error {
+	// a sender without a handler panics on the first packet
+	if track.Codec.Name != core.CodecH264 && track.Codec.Name != core.CodecH265 {
+		return errors.New("mp4: unsupported codec: " + track.Codec.String())
+	}
+
 	c.muxer.AddTrack(track.Codec)
 	init, err := c.muxer.GetInit()
 	if err != nil {

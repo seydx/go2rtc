@@ -8,6 +8,8 @@ import (
 const (
 	MimeH264 = "avc1.640029"
 	MimeH265 = "hvc1.1.6.L153.B0"
+	// no browser plays it, the Apple TV app decodes the pictures itself
+	MimeJPEG = "jpeg"
 	MimeAAC  = "mp4a.40.2"
 	MimeFlac = "flac"
 	MimeOpus = "opus"
@@ -28,6 +30,8 @@ func MimeCodecs(codecs []*core.Codec) string {
 			// H.265 profile=main level=5.1
 			// hvc1 - supported in Safari, hev1 - doesn't, both supported in Chrome
 			s += MimeH265
+		case core.CodecJPEG:
+			s += MimeJPEG
 		case core.CodecAAC:
 			s += MimeAAC
 		case core.CodecOpus:
