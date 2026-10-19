@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/iso"
 	"github.com/AlexxIT/go2rtc/pkg/mjpeg"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/require"
@@ -74,6 +75,35 @@ func TestMuxerJPEGKeepsLongIntervals(t *testing.T) {
 	}
 	// a sample lasts from the previous picture on
 	require.Equal(t, []uint32{91, 180_000 - 91, 180_000, 900_000, 91, 91, 180_000 - 91}, durations)
+}
+
+// A file knows when the next sample starts: GetSample takes that duration as
+// it is, for the first sample and a long one too.
+func TestMuxerGetSample(t *testing.T) {
+	m := &Muxer{}
+	m.AddVideoTrack(&core.Codec{Name: core.CodecJPEG, ClockRate: 90000}, 640, 480)
+	m.AddTrack(&core.Codec{Name: core.CodecH264, ClockRate: 90000})
+
+	var dts [2]uint64
+	for _, s := range []struct {
+		track    byte
+		payload  []byte
+		duration uint32
+		flags    uint32
+	}{
+		{0, []byte{0xFF, 0xD8, 0xFF, 0xD9}, 180_000, iso.SampleVideoIFrame},
+		{1, []byte{0, 0, 0, 1, 0x65}, 3000, iso.SampleVideoIFrame},
+		{0, []byte{0xFF, 0xD8, 0xFF, 0xD9}, 3_600_000, iso.SampleVideoIFrame},
+		{1, []byte{0, 0, 0, 1, 0x41}, 1, iso.SampleVideoNonIFrame},
+	} {
+		b := m.GetSample(s.track, &rtp.Packet{Payload: s.payload}, s.duration)
+		i, j := bytes.Index(b, []byte("tfhd")), bytes.Index(b, []byte("tfdt"))
+		require.Equal(t, uint32(s.track+1), binary.BigEndian.Uint32(b[i+8:]))
+		require.Equal(t, s.duration, binary.BigEndian.Uint32(b[i+12:]))
+		require.Equal(t, s.flags, binary.BigEndian.Uint32(b[i+20:]))
+		require.Equal(t, dts[s.track], binary.BigEndian.Uint64(b[j+8:]))
+		dts[s.track] += uint64(s.duration)
+	}
 }
 
 func TestMSECodecsJPEG(t *testing.T) {

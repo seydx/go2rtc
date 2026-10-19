@@ -134,16 +134,41 @@ func (m *Muxer) Reset() {
 func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {
 	codec := m.codecs[trackID]
 
-	m.index++
-
 	duration := packet.Timestamp - m.pts[trackID]
 	m.pts[trackID] = packet.Timestamp
 
-	// flags important for Apple Finder video preview
-	var flags uint32
-
 	// longer is a jump of the timestamps, not the interval of two samples
 	maxDuration := codec.ClockRate
+
+	switch codec.Name {
+	case core.CodecJPEG:
+		// cameras may send a picture every few seconds, the first one has no interval
+		maxDuration = 10 * codec.ClockRate
+		if m.dts[trackID] == 0 {
+			duration = 0
+		}
+	case core.CodecAAC:
+		duration = 1024 // important for Apple Finder and QuickTime
+	}
+
+	// minumum duration important for MSE in Apple Safari
+	if duration == 0 || duration > maxDuration {
+		duration = codec.ClockRate/1000 + 1
+		m.pts[trackID] += duration
+	}
+
+	return m.GetSample(trackID, packet, duration)
+}
+
+// GetSample writes a sample of a known duration, as a file knows when the
+// next one starts. GetPayload takes the interval from the previous sample.
+func (m *Muxer) GetSample(trackID byte, packet *rtp.Packet, duration uint32) []byte {
+	codec := m.codecs[trackID]
+
+	m.index++
+
+	// flags important for Apple Finder video preview
+	var flags uint32
 
 	switch codec.Name {
 	case core.CodecH264:
@@ -160,22 +185,10 @@ func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {
 		}
 	case core.CodecJPEG:
 		flags = iso.SampleVideoIFrame
-		// cameras may send a picture every few seconds, the first one has no interval
-		maxDuration = 10 * codec.ClockRate
-		if m.dts[trackID] == 0 {
-			duration = 0
-		}
 	case core.CodecAAC:
-		duration = 1024         // important for Apple Finder and QuickTime
 		flags = iso.SampleAudio // not important?
 	default:
 		flags = iso.SampleAudio // important for FLAC on Android Telegram
-	}
-
-	// minumum duration important for MSE in Apple Safari
-	if duration == 0 || duration > maxDuration {
-		duration = codec.ClockRate/1000 + 1
-		m.pts[trackID] += duration
 	}
 
 	size := len(packet.Payload)
