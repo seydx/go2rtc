@@ -48,11 +48,14 @@ func RTPDepay(handlerFunc core.HandlerFunc) core.HandlerFunc {
 		offset := uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 
 		// 3.1.7.  Restart Marker header
+		var dri uint16
 		if 64 <= t && t <= 127 {
 			if len(b) < 12 {
 				return
 			}
-			b = b[12:] // skip it
+			// the RST markers are in the scan, the picture needs the interval
+			dri = binary.BigEndian.Uint16(b[8:])
+			b = b[12:]
 		} else {
 			b = b[8:]
 		}
@@ -119,7 +122,7 @@ func RTPDepay(handlerFunc core.HandlerFunc) core.HandlerFunc {
 			}
 
 			//fmt.Printf("t: %d, q: %d, w: %d, h: %d\n", t, q, w, h)
-			buf = MakeHeaders(buf, t, w, h, lqt, cqt)
+			buf = MakeHeaders(buf, t, w, h, lqt, cqt, dri)
 		}
 
 		// 3.1.9.  JPEG Payload

@@ -141,14 +141,19 @@ var chm_ac_symbols = []byte{
 	0xf9, 0xfa,
 }
 
-func MakeHeaders(p []byte, t byte, w, h uint16, lqt, cqt []byte) []byte {
+func MakeHeaders(p []byte, t byte, w, h uint16, lqt, cqt []byte, dri uint16) []byte {
 	// Appendix A from https://www.rfc-editor.org/rfc/rfc2435
 	p = append(p, 0xFF, markerSOI)
 
 	p = MakeQuantHeader(p, lqt, 0)
 	p = MakeQuantHeader(p, cqt, 1)
 
-	if t == 0 {
+	if dri != 0 {
+		p = append(p, 0xFF, markerDRI, 0, 4, byte(dri>>8), byte(dri))
+	}
+
+	// types 64 and 65 are 0 and 1 with restart markers
+	if t == 0 || t == 64 {
 		t = 0x21 // hsamp = 2, vsamp = 1
 	} else {
 		t = 0x22 // hsamp = 2, vsamp = 2

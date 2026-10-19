@@ -155,6 +155,23 @@ func TestRTPDepayLoss(t *testing.T) {
 	})
 }
 
+// A camera with a restart interval sends type 64 (4:2:2) or 65 (4:2:0) and a
+// Restart Marker header. The picture needs the interval back as DRI.
+func TestRTPDepayRestartMarkers(t *testing.T) {
+	for name, typ := range map[string]byte{"yuv422_restart.jpg": 64, "yuv420_restart.jpg": 65} {
+		t.Run(name, func(t *testing.T) {
+			src := readTestdata(t, name)
+			packets := restartPackets(t, src)
+			require.Greater(t, len(packets), 1)
+			require.Equal(t, typ, packets[0].Payload[4])
+
+			frames := depay(packets)
+			require.Len(t, frames, 1)
+			require.Equal(t, decode(t, src), decode(t, frames[0]))
+		})
+	}
+}
+
 func testJPEG(t *testing.T, w, h int) []byte {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := range h {
@@ -185,6 +202,23 @@ func payPackets(t *testing.T, jpg []byte) []*rtp.Packet {
 	return packets
 }
 
+// restartPackets packs a picture with a restart interval as a camera does
+func restartPackets(t *testing.T, jpg []byte) []*rtp.Packet {
+	i := bytes.Index(jpg, []byte{0xFF, markerDRI, 0, 4})
+	require.Greater(t, i, 0)
+	dri := jpg[i+4 : i+6]
+
+	// RTPPay refuses the DRI segment, the RST markers stay in the scan
+	packets := payPackets(t, append(jpg[:i:i], jpg[i+6:]...))
+	for _, p := range packets {
+		// F=1, L=1, Restart Count=0x3FFF: packets don't follow the intervals
+		header := []byte{dri[0], dri[1], 0xFF, 0xFF}
+		p.Payload = append(p.Payload[:8:8], append(header, p.Payload[8:]...)...)
+		p.Payload[4] |= 64
+	}
+	return packets
+}
+
 func depay(packets []*rtp.Packet) [][]byte {
 	var frames [][]byte
 	handle := RTPDepay(func(p *rtp.Packet) {
@@ -210,6 +244,12 @@ func decodes(t *testing.T, jpg []byte, w, h int) {
 	img, err := jpeg.Decode(bytes.NewReader(jpg))
 	require.NoError(t, err)
 	require.Equal(t, image.Pt(w, h), img.Bounds().Size())
+}
+
+func decode(t *testing.T, jpg []byte) image.Image {
+	img, err := jpeg.Decode(bytes.NewReader(jpg))
+	require.NoError(t, err)
+	return img
 }
 
 func scanData(t *testing.T, jpg []byte) []byte {
