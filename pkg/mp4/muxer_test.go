@@ -53,6 +53,29 @@ func TestMuxerJPEG(t *testing.T) {
 	require.NotContains(t, string(init), "avcC")
 }
 
+// MJPEG cameras send a picture every few seconds, or lose one at 1 fps: the
+// samples keep these intervals. The first picture has none, a new session
+// jumps.
+func TestMuxerJPEGKeepsLongIntervals(t *testing.T) {
+	m := &Muxer{}
+	m.AddVideoTrack(&core.Codec{Name: core.CodecJPEG, ClockRate: 90000}, 640, 480)
+
+	var durations []uint32
+	var dts uint64
+	// the first picture 5 s into the session, 0.5 fps, 10 s later, 11 s later
+	// (a jump), back in time (a new session), 0.5 fps
+	for _, ts := range []uint32{450_000, 630_000, 810_000, 1_710_000, 2_700_000, 1_000, 181_000} {
+		b := m.GetPayload(0, &rtp.Packet{Header: rtp.Header{Timestamp: ts}, Payload: []byte{0xFF, 0xD8, 0xFF, 0xD9}})
+		i, j := bytes.Index(b, []byte("tfhd")), bytes.Index(b, []byte("tfdt"))
+		require.Equal(t, dts, binary.BigEndian.Uint64(b[j+8:]))
+		duration := binary.BigEndian.Uint32(b[i+12:])
+		durations = append(durations, duration)
+		dts += uint64(duration)
+	}
+	// a sample lasts from the previous picture on
+	require.Equal(t, []uint32{91, 180_000 - 91, 180_000, 900_000, 91, 91, 180_000 - 91}, durations)
+}
+
 func TestMSECodecsJPEG(t *testing.T) {
 	medias := ParseCodecs(MimeH264+","+MimeJPEG+","+MimeAAC, true)
 	require.Len(t, medias, 2)

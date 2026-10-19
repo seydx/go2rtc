@@ -142,6 +142,9 @@ func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {
 	// flags important for Apple Finder video preview
 	var flags uint32
 
+	// longer is a jump of the timestamps, not the interval of two samples
+	maxDuration := codec.ClockRate
+
 	switch codec.Name {
 	case core.CodecH264:
 		if h264.IsKeyframe(packet.Payload) {
@@ -157,6 +160,11 @@ func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {
 		}
 	case core.CodecJPEG:
 		flags = iso.SampleVideoIFrame
+		// cameras may send a picture every few seconds, the first one has no interval
+		maxDuration = 10 * codec.ClockRate
+		if m.dts[trackID] == 0 {
+			duration = 0
+		}
 	case core.CodecAAC:
 		duration = 1024         // important for Apple Finder and QuickTime
 		flags = iso.SampleAudio // not important?
@@ -165,7 +173,7 @@ func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {
 	}
 
 	// minumum duration important for MSE in Apple Safari
-	if duration == 0 || duration > codec.ClockRate {
+	if duration == 0 || duration > maxDuration {
 		duration = codec.ClockRate/1000 + 1
 		m.pts[trackID] += duration
 	}
