@@ -1049,6 +1049,10 @@ func (p *Producer) reconnect(workerID, retry int) {
 	p.receivers = kept
 	p.mu.Unlock()
 
+	if p.stream != nil {
+		p.stream.rebind()
+	}
+
 	for _, receiver := range dropped {
 		receiver.Close()
 	}

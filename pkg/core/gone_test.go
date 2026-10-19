@@ -36,6 +36,25 @@ func TestReceiverGoneFollowsRetirement(t *testing.T) {
 	require.True(t, dropped.Gone())
 }
 
+// The successor is the receiver at the end of the chain, past every
+// reconnect since the retirement, and closed or not.
+func TestReceiverSuccessorFollowsRetirement(t *testing.T) {
+	live := testVideoReceiver()
+	require.Same(t, live, live.Successor())
+
+	old, moved, parked := testVideoReceiver(), testVideoReceiver(), testVideoReceiver()
+	old.Retire(moved)
+	old.Close()
+	require.Same(t, moved, old.Successor())
+
+	moved.Retire(parked)
+	require.Same(t, parked, old.Successor())
+	require.Same(t, parked, moved.Successor())
+
+	parked.Close()
+	require.Same(t, parked, old.Successor())
+}
+
 // A backchannel mixer fed by a receiver that gets dropped must lose that
 // parent, and close when it was the last one: nothing may keep feeding it.
 func TestDroppedReceiverDetachesMixer(t *testing.T) {

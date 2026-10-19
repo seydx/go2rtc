@@ -43,6 +43,23 @@ func (s *Stream) bind(cons core.Consumer, tracks []*core.Receiver) {
 	s.bound[cons] = tracks
 }
 
+// rebind points the bookkeeping at the receivers a reconnect moved the
+// consumers to. A retired receiver leads to the one after it: bound to the
+// receivers of its attach, a consumer that stays (the preload) kept the
+// receivers of every session since then reachable.
+func (s *Stream) rebind() {
+	s.mu.Lock()
+	for cons, tracks := range s.bound {
+		// a new slice: AddConsumer still reads the one it bound
+		successors := make([]*core.Receiver, len(tracks))
+		for i, track := range tracks {
+			successors[i] = track.Successor()
+		}
+		s.bound[cons] = successors
+	}
+	s.mu.Unlock()
+}
+
 // forget drops the bookkeeping of a consumer that is no longer attached.
 // Callers hold s.mu.
 func (s *Stream) forget(cons core.Consumer) {

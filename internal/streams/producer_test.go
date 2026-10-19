@@ -9,11 +9,13 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/probe"
@@ -1004,6 +1006,57 @@ func TestStatusFollowsReconnect(t *testing.T) {
 	cam.reject.Store(false)
 	require.True(t, waitUntil(30*time.Second, func() bool { return stream.Status() == "connected" }), "the status recovers with the camera")
 	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+}
+
+// A consumer that stays, like the preload, is bound to the receivers it was
+// attached to, and each reconnect retires the receivers to the ones of the new
+// session. The retired ones stayed reachable from there: every reconnect kept
+// the receivers of the old session for good, with the GOP cache and its 512K
+// depacketizer, about 300 MB an hour against a camera that kept timing out.
+func TestReconnectsReleaseTheOldReceivers(t *testing.T) {
+	registerTestRTSPHandler()
+	speedUpWatchdog(t)
+
+	cam := newFakeCamera(t)
+	stream, err := New("reconnect_release", cam.URL()+"#gop=1")
+	require.NoError(t, err)
+
+	cons := newProbeConsumer()
+	require.NoError(t, stream.AddConsumer(cons))
+	t.Cleanup(func() { stream.RemoveConsumer(cons) })
+
+	prod := stream.producers[0]
+	var retired []weak.Pointer[core.Receiver]
+	for range 3 {
+		require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+		retired = append(retired, reconnectReceivers(t, cam, prod)...)
+	}
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+
+	runtime.GC()
+	for i, receiver := range retired {
+		require.Nil(t, receiver.Value(), "the receiver of session %d is still reachable", i)
+	}
+}
+
+// reconnectReceivers drops the session of the camera and waits for the
+// producer to replace its receivers. It returns the replaced ones.
+func reconnectReceivers(t *testing.T, cam *fakeCamera, prod *Producer) []weak.Pointer[core.Receiver] {
+	prod.mu.RLock()
+	first := prod.receivers[0]
+	retired := make([]weak.Pointer[core.Receiver], 0, len(prod.receivers))
+	for _, receiver := range prod.receivers {
+		retired = append(retired, weak.Make(receiver))
+	}
+	prod.mu.RUnlock()
+
+	cam.dropConns()
+	require.True(t, waitUntil(10*time.Second, func() bool {
+		prod.mu.RLock()
+		defer prod.mu.RUnlock()
+		return len(prod.receivers) > 0 && prod.receivers[0] != first
+	}))
+	return retired
 }
 
 // countingTrackConn sets tracks up slowly and counts it, like a camera

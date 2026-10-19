@@ -130,19 +130,31 @@ func (r *Receiver) Retire(target *Receiver) {
 // attached to one before or during a reconnect is judged by where its
 // sender actually ended up.
 func (r *Receiver) Gone() bool {
+	current, ok := r.last().owner.(*Receiver)
+	return ok && current.closed.Load()
+}
+
+// Successor returns the receiver that serves r's consumers now: the one a
+// reconnect retired r to, through every reconnect since, or r itself.
+func (r *Receiver) Successor() *Receiver {
+	if current, ok := r.last().owner.(*Receiver); ok {
+		return current
+	}
+	return r
+}
+
+// last follows the nodes r was retired to, up to the one in use
+func (r *Receiver) last() *Node {
 	node := &r.Node
 	for {
 		node.mu.Lock()
 		next := node.movedTo
 		node.mu.Unlock()
 		if next == nil {
-			break
+			return node
 		}
 		node = next
 	}
-
-	current, ok := node.owner.(*Receiver)
-	return ok && current.closed.Load()
 }
 
 func (r *Receiver) Close() {
