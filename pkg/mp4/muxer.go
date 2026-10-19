@@ -15,12 +15,20 @@ type Muxer struct {
 	dts    []uint64
 	pts    []uint32
 	codecs []*core.Codec
+	sizes  [][2]uint16
 }
 
 func (m *Muxer) AddTrack(codec *core.Codec) {
+	m.AddVideoTrack(codec, 0, 0)
+}
+
+// AddVideoTrack adds a track with its picture size, for codecs whose
+// parameters carry none (JPEG)
+func (m *Muxer) AddVideoTrack(codec *core.Codec, width, height uint16) {
 	m.dts = append(m.dts, 0)
 	m.pts = append(m.pts, 0)
 	m.codecs = append(m.codecs, codec)
+	m.sizes = append(m.sizes, [2]uint16{width, height})
 }
 
 func (m *Muxer) GetInit() ([]byte, error) {
@@ -79,6 +87,11 @@ func (m *Muxer) GetInit() ([]byte, error) {
 
 			mv.WriteVideoTrack(
 				uint32(i+1), codec.Name, codec.ClockRate, width, height, h265.EncodeConfig(vps, sps, pps),
+			)
+
+		case core.CodecJPEG:
+			mv.WriteVideoTrack(
+				uint32(i+1), codec.Name, codec.ClockRate, m.sizes[i][0], m.sizes[i][1], nil,
 			)
 
 		case core.CodecAAC:
@@ -142,6 +155,8 @@ func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {
 		} else {
 			flags = iso.SampleVideoNonIFrame
 		}
+	case core.CodecJPEG:
+		flags = iso.SampleVideoIFrame
 	case core.CodecAAC:
 		duration = 1024         // important for Apple Finder and QuickTime
 		flags = iso.SampleAudio // not important?

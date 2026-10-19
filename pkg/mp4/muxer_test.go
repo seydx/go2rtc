@@ -35,3 +35,16 @@ func TestMuxerH265InitUsesDisplaySize(t *testing.T) {
 	require.Equal(t, uint32(1920), binary.BigEndian.Uint32(init[end-8:])>>16)
 	require.Equal(t, uint32(1080), binary.BigEndian.Uint32(init[end-4:])>>16)
 }
+
+func TestMuxerJPEG(t *testing.T) {
+	m := &Muxer{}
+	m.AddVideoTrack(&core.Codec{Name: core.CodecJPEG, ClockRate: 90000}, 640, 480)
+	init, err := m.GetInit()
+	require.Nil(t, err)
+
+	i := bytes.Index(init, []byte("jpeg"))
+	require.Greater(t, i, 0)
+	require.Equal(t, uint16(640), binary.BigEndian.Uint16(init[i+28:]))
+	require.Equal(t, uint16(480), binary.BigEndian.Uint16(init[i+30:]))
+	require.NotContains(t, string(init), "avcC")
+}

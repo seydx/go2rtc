@@ -107,6 +107,54 @@ func TestRTPDepayQuantTables(t *testing.T) {
 	})
 }
 
+func TestRTPDepayLoss(t *testing.T) {
+	src := testJPEG(t, 640, 480)
+	stream := func() []*rtp.Packet {
+		first, second := payPackets(t, src), payPackets(t, src)
+		require.Greater(t, len(first), 2)
+		packets := append(first, second...)
+		for i, p := range packets {
+			p.SequenceNumber = uint16(1000 + i)
+			if i >= len(first) {
+				p.Timestamp = 3000
+			}
+		}
+		return packets
+	}
+	without := func(packets []*rtp.Packet, i int) []*rtp.Packet {
+		return append(packets[:i:i], packets[i+1:]...)
+	}
+	n := len(payPackets(t, src))
+
+	for name, lost := range map[string]int{"first": 0, "middle": 1, "marker": n - 1} {
+		t.Run("lost "+name+" packet drops only that picture", func(t *testing.T) {
+			frames := depay(without(stream(), lost))
+			require.Len(t, frames, 1)
+			decodes(t, frames[0], 640, 480)
+			require.Equal(t, scanData(t, src), scanData(t, frames[0]))
+		})
+	}
+
+	t.Run("short packets are dropped", func(t *testing.T) {
+		packets := []*rtp.Packet{
+			{Payload: nil},
+			{Payload: []byte{0, 0, 0, 0, 1}},
+			{Payload: []byte{0, 0, 0, 0, 64, 255, 80, 60, 0}, Header: rtp.Header{Marker: true}},
+		}
+		require.NotPanics(t, func() { require.Empty(t, depay(packets)) })
+	})
+
+	t.Run("end marker is added when the scan ends in another D9", func(t *testing.T) {
+		packets := payPackets(t, src)
+		last := packets[len(packets)-1]
+		last.Payload = append(last.Payload, 0xD9)
+
+		frames := depay(packets)
+		require.Len(t, frames, 1)
+		require.Equal(t, []byte{0xD9, 0xFF, 0xD9}, frames[0][len(frames[0])-3:])
+	})
+}
+
 func testJPEG(t *testing.T, w, h int) []byte {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := range h {

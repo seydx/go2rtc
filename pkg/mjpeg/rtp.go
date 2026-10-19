@@ -22,29 +22,53 @@ func (f *rtpFrame) fitsRTP() bool {
 	return f.width > 0 && f.height > 0 && f.width%8 == 0 && f.height%8 == 0 && f.width <= 2040 && f.height <= 2040
 }
 
+// RTPDepay joins RFC 2435 packets into JPEG pictures. A picture that lost a
+// packet is dropped. The payload passed to handlerFunc is reused for the next
+// picture.
 func RTPDepay(handlerFunc core.HandlerFunc) core.HandlerFunc {
 	buf := make([]byte, 0, 512*1024) // 512K
 
 	// dynamic tables outlive their frame, a sender may send them only once (Length 0 afterwards)
 	var dynLqt, dynCqt []byte
 
+	var seq uint16
+	var ts uint32
+
 	return func(packet *rtp.Packet) {
 		//log.Printf("[RTP] codec: %s, size: %6d, ts: %10d, pt: %2d, ssrc: %d, seq: %d, mark: %v", track.Codec.Name, len(packet.Payload), packet.Timestamp, packet.PayloadType, packet.SSRC, packet.SequenceNumber, packet.Marker)
 
 		// https://www.rfc-editor.org/rfc/rfc2435#section-3.1
 		b := packet.Payload
+		if len(b) < 8 {
+			return
+		}
 
 		// 3.1.  JPEG header
 		t := b[4]
+		offset := uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 
 		// 3.1.7.  Restart Marker header
 		if 64 <= t && t <= 127 {
+			if len(b) < 12 {
+				return
+			}
 			b = b[12:] // skip it
 		} else {
 			b = b[8:]
 		}
 
+		// a lost packet, or a lost marker that would glue two pictures together
+		if len(buf) > 0 && (packet.SequenceNumber != seq+1 || packet.Timestamp != ts) {
+			buf = buf[:0]
+		}
+		seq, ts = packet.SequenceNumber, packet.Timestamp
+
 		if len(buf) == 0 {
+			// the start of this picture is gone
+			if offset != 0 {
+				return
+			}
+
 			var lqt, cqt []byte
 
 			// 3.1.8.  Quantization Table header
@@ -105,7 +129,7 @@ func RTPDepay(handlerFunc core.HandlerFunc) core.HandlerFunc {
 			return
 		}
 
-		if len(buf) >= 2 && buf[len(buf)-2] != 0xFF && buf[len(buf)-1] != 0xD9 {
+		if len(buf) < 2 || buf[len(buf)-2] != 0xFF || buf[len(buf)-1] != 0xD9 {
 			buf = append(buf, 0xFF, 0xD9)
 		}
 
