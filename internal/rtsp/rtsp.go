@@ -121,11 +121,20 @@ func rtspHandler(rawURL string) (core.Producer, error) {
 		})
 	}
 
-	if err := conn.Dial(); err != nil {
-		return nil, err
+	// a connection left open counts against the camera's sessions until the
+	// process collects it
+	describe := func() error {
+		if err := conn.Dial(); err != nil {
+			return err
+		}
+		if err := conn.Describe(); err != nil {
+			_ = conn.Close()
+			return err
+		}
+		return nil
 	}
 
-	if err := conn.Describe(); err != nil {
+	if err := describe(); err != nil {
 		if !conn.Backchannel {
 			return nil, err
 		}
@@ -133,10 +142,7 @@ func rtspHandler(rawURL string) (core.Producer, error) {
 
 		// second try without backchannel, we need to reconnect
 		conn.Backchannel = false
-		if err = conn.Dial(); err != nil {
-			return nil, err
-		}
-		if err = conn.Describe(); err != nil {
+		if err = describe(); err != nil {
 			return nil, err
 		}
 	}
@@ -149,10 +155,7 @@ func rtspHandler(rawURL string) (core.Producer, error) {
 		_ = conn.Close()
 		conn.Backchannel = false
 		conn.Medias = nil
-		if err := conn.Dial(); err != nil {
-			return nil, err
-		}
-		if err := conn.Describe(); err != nil {
+		if err := describe(); err != nil {
 			return nil, err
 		}
 	}
