@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -29,10 +30,22 @@ type Client struct {
 
 	stream *camera.Stream
 
+	// mu holds Stop until the stream is set up, both talk over the one HAP
+	// connection. done ends Start.
+	mu      sync.Mutex
+	stopped bool
+	done    chan struct{}
+
 	MaxWidth  int `json:"-"`
 	MaxHeight int `json:"-"`
 	Bitrate   int `json:"-"` // in bits/s
 }
+
+// a camera that stops answering or sending can't hold the stream
+var (
+	streamTimeout = core.ConnDeadline // its setup, and its end
+	dataTimeout   = core.ConnDeadline // between two packets
+)
 
 func Dial(rawURL string, server *srtp.Server) (*Client, error) {
 	conn, err := hap.Dial(rawURL)
@@ -177,19 +190,31 @@ func (c *Client) Start() error {
 	audioTrack := c.trackByKind(core.KindAudio)
 	audioCodec := trackToAudio(audioTrack, &c.audioConfig.Codecs[0])
 
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return net.ErrClosed
+	}
+	done := make(chan struct{})
+	c.done = done
+
 	c.videoSession = &srtp.Session{Local: c.srtpEndpoint()}
 	c.audioSession = &srtp.Session{Local: c.srtpEndpoint()}
 
 	var err error
+	_ = c.hap.Conn.SetDeadline(time.Now().Add(streamTimeout))
 	c.stream, err = camera.NewStream(c.hap, videoCodec, audioCodec, c.videoSession, c.audioSession, c.Bitrate)
+	_ = c.hap.Conn.SetDeadline(time.Time{})
 	if err != nil {
+		c.mu.Unlock()
 		return err
 	}
 
 	c.srtp.AddSession(c.videoSession)
 	c.srtp.AddSession(c.audioSession)
+	c.mu.Unlock()
 
-	deadline := time.NewTimer(core.ConnDeadline)
+	deadline := time.NewTimer(dataTimeout)
 
 	if videoTrack != nil {
 		// The accessory only sends SPS/PPS in-band alongside a keyframe, and
@@ -202,7 +227,7 @@ func (c *Client) Start() error {
 		var sps, pps []byte
 
 		c.videoSession.OnReadRTP = func(packet *rtp.Packet) {
-			deadline.Reset(core.ConnDeadline)
+			deadline.Reset(dataTimeout)
 
 			if sps == nil || pps == nil {
 				collectParameterSets(packet.Payload, &sps, &pps)
@@ -225,7 +250,7 @@ func (c *Client) Start() error {
 		}
 	} else {
 		c.audioSession.OnReadRTP = func(packet *rtp.Packet) {
-			deadline.Reset(core.ConnDeadline)
+			deadline.Reset(dataTimeout)
 			audioTrack.WriteRTP(packet)
 			c.Recv += len(packet.Payload)
 		}
@@ -235,12 +260,47 @@ func (c *Client) Start() error {
 		c.audioSession.OnReadRTP = timekeeper(c.audioSession.OnReadRTP)
 	}
 
-	<-deadline.C
+	select {
+	case <-deadline.C:
+		// the producer worker closes the connection before it stops the
+		// producer: the stream has to end now
+		c.mu.Lock()
+		_ = c.endStream()
+		c.mu.Unlock()
+	case <-done:
+	}
 
 	return nil
 }
 
+// endStream ends the camera's stream. Some cameras keep it reserved after the
+// HAP connection closes and have none left after a few reconnects. Callers
+// hold mu.
+func (c *Client) endStream() error {
+	if c.stream == nil {
+		return nil
+	}
+	_ = c.hap.Conn.SetDeadline(time.Now().Add(streamTimeout))
+	err := c.stream.Close()
+	_ = c.hap.Conn.SetDeadline(time.Time{})
+	c.stream = nil
+	return err
+}
+
 func (c *Client) Stop() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.stopped {
+		return nil
+	}
+	c.stopped = true
+	if c.done != nil {
+		close(c.done)
+	}
+
+	err := c.endStream()
+
 	if c.videoSession != nil && c.videoSession.Remote != nil {
 		c.srtp.DelSession(c.videoSession)
 	}
@@ -248,7 +308,7 @@ func (c *Client) Stop() error {
 		c.srtp.DelSession(c.audioSession)
 	}
 
-	return c.Connection.Stop()
+	return errors.Join(err, c.Connection.Stop())
 }
 
 func (c *Client) trackByKind(kind string) *core.Receiver {

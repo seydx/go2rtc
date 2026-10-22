@@ -99,6 +99,12 @@ func (c *Client) Dial() (err error) {
 		return false
 	})
 
+	return c.Connect()
+}
+
+// Connect dials the device address as it is, without looking it up, and
+// verifies the pairing.
+func (c *Client) Connect() (err error) {
 	// TODO: close conn on error
 	if c.Conn, err = net.DialTimeout("tcp", c.DeviceAddress, ConnDialTimeout); err != nil {
 		return

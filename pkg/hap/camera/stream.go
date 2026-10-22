@@ -27,7 +27,9 @@ func NewStream(
 		return nil, err
 	}
 
+	// the camera may have reserved the stream already
 	if err := stream.ExchangeEndpoints(videoSession, audioSession); err != nil {
+		_ = stream.Close()
 		return nil, err
 	}
 
@@ -68,6 +70,7 @@ func NewStream(
 	}
 
 	if err := stream.SetStreamConfig(config); err != nil {
+		_ = stream.Close()
 		return nil, err
 	}
 
