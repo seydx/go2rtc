@@ -15,6 +15,27 @@ var videoCodecs = [...]string{core.CodecH264}
 var videoProfiles = [...]string{"4200", "4D00", "6400"}
 var videoLevels = [...]string{"1F", "20", "28"}
 
+// usableVideo returns the codecs this side streams, H264 with a profile and a
+// level. A camera may offer more, as H265.
+func usableVideo(codecs []camera.VideoCodecConfiguration) (usable []camera.VideoCodecConfiguration) {
+	for _, codec := range codecs {
+		if int(codec.CodecType) >= len(videoCodecs) {
+			continue
+		}
+		var params []camera.VideoCodecParameters
+		for _, param := range codec.CodecParams {
+			if len(param.ProfileID) > 0 && len(param.Level) > 0 {
+				params = append(params, param)
+			}
+		}
+		if params != nil {
+			codec.CodecParams = params
+			usable = append(usable, codec)
+		}
+	}
+	return
+}
+
 func videoToMedia(codecs []camera.VideoCodecConfiguration) *core.Media {
 	media := &core.Media{
 		Kind: core.KindVideo, Direction: core.DirectionRecvonly,
@@ -46,6 +67,34 @@ func videoToMedia(codecs []camera.VideoCodecConfiguration) *core.Media {
 
 var audioCodecs = [...]string{core.CodecPCMU, core.CodecPCMA, core.CodecELD, core.CodecOpus}
 var audioSampleRates = [...]uint32{8000, 16000, 24000}
+
+// usableAudio returns the codecs with the sample rates this side knows. HAP
+// has more of both, as AMR.
+func usableAudio(codecs []camera.AudioCodecConfiguration) (usable []camera.AudioCodecConfiguration) {
+	for _, codec := range codecs {
+		if int(codec.CodecType) >= len(audioCodecs) {
+			continue
+		}
+		var params []camera.AudioCodecParameters
+		for _, param := range codec.CodecParams {
+			var sampleRates []byte
+			for _, sampleRate := range param.SampleRate {
+				if int(sampleRate) < len(audioSampleRates) {
+					sampleRates = append(sampleRates, sampleRate)
+				}
+			}
+			if sampleRates != nil {
+				param.SampleRate = sampleRates
+				params = append(params, param)
+			}
+		}
+		if params != nil {
+			codec.CodecParams = params
+			usable = append(usable, codec)
+		}
+	}
+	return
+}
 
 func audioToMedia(codecs []camera.AudioCodecConfiguration) *core.Media {
 	media := &core.Media{

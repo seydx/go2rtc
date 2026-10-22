@@ -103,7 +103,8 @@ func (c *Client) GetMedias() []*core.Media {
 // returns that one, while GetFreeStream() later streams from the service that
 // is actually available. So prefer the richest service that parses, and only
 // fall back to the accessory-wide lookup for cameras that spread the two
-// characteristics across services.
+// characteristics across services. Either way only what can be streamed is
+// kept: the helpers index by it, Start needs one of each.
 func (c *Client) readStreamConfig(acc *hap.Accessory) bool {
 	found := false
 
@@ -115,14 +116,18 @@ func (c *Client) readStreamConfig(acc *hap.Accessory) bool {
 		}
 
 		var videoConfig camera.SupportedVideoStreamConfiguration
-		if charVideo.ReadTLV8(&videoConfig) != nil || len(videoConfig.Codecs) == 0 ||
-			len(videoConfig.Codecs[0].CodecParams) == 0 {
+		if charVideo.ReadTLV8(&videoConfig) != nil {
+			continue
+		}
+		if videoConfig.Codecs = usableVideo(videoConfig.Codecs); videoConfig.Codecs == nil {
 			continue
 		}
 
 		var audioConfig camera.SupportedAudioStreamConfiguration
-		if charAudio.ReadTLV8(&audioConfig) != nil || len(audioConfig.Codecs) == 0 ||
-			len(audioConfig.Codecs[0].CodecParams) == 0 {
+		if charAudio.ReadTLV8(&audioConfig) != nil {
+			continue
+		}
+		if audioConfig.Codecs = usableAudio(audioConfig.Codecs); audioConfig.Codecs == nil {
 			continue
 		}
 
@@ -147,6 +152,8 @@ func (c *Client) readStreamConfig(acc *hap.Accessory) bool {
 		return false
 	}
 
+	c.videoConfig.Codecs = usableVideo(c.videoConfig.Codecs)
+	c.audioConfig.Codecs = usableAudio(c.audioConfig.Codecs)
 	return true
 }
 
@@ -157,6 +164,11 @@ func (c *Client) Start() error {
 
 	if c.Receivers[0].Codec.Name == core.CodecJPEG {
 		return c.startMJPEG()
+	}
+
+	// a camera without anything to stream still has its pictures
+	if c.videoConfig.Codecs == nil || c.audioConfig.Codecs == nil {
+		return errors.New("homekit: no stream configuration")
 	}
 
 	videoTrack := c.trackByKind(core.KindVideo)
