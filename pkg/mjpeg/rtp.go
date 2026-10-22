@@ -3,6 +3,7 @@ package mjpeg
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"image"
 	"image/jpeg"
 
@@ -227,26 +228,27 @@ func Transcode(b []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// the header has the size in 8 pixel units, at most 255 of them: a
+	// receiver takes anything else for another size and shifts the lines
 	wh := img.Bounds().Size()
-	w := wh.X
-	h := wh.Y
-
-	if w > 2040 {
-		w = 2040
-	} else if w&3 > 0 {
-		w &^= 3 // round down to nearest multiple of 4
-	}
-	if h > 2040 {
-		h = 2040
-	} else if h&3 > 0 {
-		h &^= 3 // round down to nearest multiple of 4
+	w := min(wh.X, 2040) &^ 7
+	h := min(wh.Y, 2040) &^ 7
+	if w == 0 || h == 0 {
+		return nil, errors.New("mjpeg: picture too small")
 	}
 
 	if w != wh.X || h != wh.Y {
 		x0 := (wh.X - w) / 2
 		y0 := (wh.Y - h) / 2
 		rect := image.Rect(x0, y0, x0+w, y0+h)
-		img = img.(*image.YCbCr).SubImage(rect)
+		img = img.(interface {
+			SubImage(image.Rectangle) image.Image
+		}).SubImage(rect)
+	}
+
+	// the header has no grayscale, the encoder writes it as one channel
+	if _, ok := img.(*image.Gray); ok {
+		img = struct{ image.Image }{img}
 	}
 
 	buf := bytes.NewBuffer(nil)

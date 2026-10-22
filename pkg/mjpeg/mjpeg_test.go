@@ -61,6 +61,34 @@ func TestRTPPay(t *testing.T) {
 		require.Len(t, frames, 1)
 		decodes(t, frames[0], 2040, 16)
 	})
+
+	// the header has the size in 8 pixel units: a receiver took 1366 as 1360
+	// and shifted every line of the picture
+	t.Run("a size out of 8 pixel units is cropped", func(t *testing.T) {
+		src := testJPEG(t, 1366, 770)
+		frames := depay(payPackets(t, src))
+		require.Len(t, frames, 1)
+		decodes(t, frames[0], 1360, 768)
+		showsTheMiddle(t, src, frames[0])
+	})
+
+	// the header has no grayscale: such a picture was lost, one to crop took
+	// the whole process down
+	for _, size := range []image.Point{{64, 48}, {70, 48}, {2048, 16}} {
+		t.Run("grayscale "+size.String()+" is sent in color", func(t *testing.T) {
+			src := testGrayJPEG(t, size.X, size.Y)
+			frames := depay(payPackets(t, src))
+			require.Len(t, frames, 1)
+			decodes(t, frames[0], min(size.X, 2040)&^7, size.Y)
+			showsTheMiddle(t, src, frames[0])
+		})
+	}
+
+	t.Run("under 8 pixels nothing is sent", func(t *testing.T) {
+		RTPPay(func(*rtp.Packet) {
+			t.Fatal("a picture of 0 pixels")
+		})(&rtp.Packet{Payload: testJPEG(t, 4, 48)})
+	})
 }
 
 func TestRTPDepayQuantTables(t *testing.T) {
@@ -182,6 +210,45 @@ func testJPEG(t *testing.T, w, h int) []byte {
 	var b bytes.Buffer
 	require.NoError(t, jpeg.Encode(&b, img, &jpeg.Options{Quality: 80}))
 	return b.Bytes()
+}
+
+func testGrayJPEG(t *testing.T, w, h int) []byte {
+	img := image.NewGray(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			img.SetGray(x, y, color.Gray{Y: uint8(x*4 + y*5)})
+		}
+	}
+	var b bytes.Buffer
+	require.NoError(t, jpeg.Encode(&b, img, &jpeg.Options{Quality: 80}))
+	return b.Bytes()
+}
+
+// showsTheMiddle compares the brightness of a cropped picture with the
+// middle of its source: a shifted line is far off
+func showsTheMiddle(t *testing.T, src, cropped []byte) {
+	t.Helper()
+	a, b := decode(t, src), decode(t, cropped)
+	dx := (a.Bounds().Dx() - b.Bounds().Dx()) / 2
+	dy := (a.Bounds().Dy() - b.Bounds().Dy()) / 2
+	luma := func(c color.Color) int {
+		return int(color.GrayModel.Convert(c).(color.Gray).Y)
+	}
+	var sum, n int
+	for y := range b.Bounds().Dy() {
+		for x := range b.Bounds().Dx() {
+			sum += abs(luma(b.At(x, y)) - luma(a.At(x+dx, y+dy)))
+			n++
+		}
+	}
+	require.Less(t, sum/n, 4, "mean brightness difference")
+}
+
+func abs(i int) int {
+	if i < 0 {
+		return -i
+	}
+	return i
 }
 
 func readTestdata(t *testing.T, name string) []byte {
