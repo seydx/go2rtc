@@ -1,8 +1,10 @@
 package webrtc
 
 import (
+	"net"
 	"testing"
 
+	"github.com/pion/stun/v3"
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -68,4 +70,34 @@ a=fingerprint:sha-256 A2:93:53:50:E4:2F:C5:4E:DF:7C:70:99:5A:A7:39:50:1A:63:E5:B
 
 	_, err = conn.GetAnswer()
 	require.Nil(t, err)
+}
+
+// A STUN server answers with an empty XOR-MAPPED-ADDRESS: pion/stun before
+// v3.1.5 read its family past the end and took the process down
+// (GO-2026-6163). It ends the client's 1024 byte read buffer here, as an
+// inbound packet ends the exactly sized one of the ICE agent.
+func TestGetPublicIPRefusesShortAddress(t *testing.T) {
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	go func() {
+		buf := make([]byte, 1500)
+		n, addr, err := conn.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		req := &stun.Message{Raw: buf[:n]}
+		if req.Decode() != nil {
+			return
+		}
+		res := stun.MustBuild(stun.NewTransactionIDSetter(req.TransactionID), stun.BindingSuccess)
+		res.Add(stun.AttrSoftware, make([]byte, 1024-len(res.Raw)-8))
+		res.Add(stun.AttrXORMappedAddress, nil)
+		_, _ = conn.WriteTo(res.Raw, addr)
+	}()
+
+	ip, err := GetPublicIP(conn.LocalAddr().String())
+	require.Error(t, err)
+	require.Nil(t, ip)
 }

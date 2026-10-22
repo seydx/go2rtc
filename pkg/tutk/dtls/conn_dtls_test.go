@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pion/dtls/v3"
+	"github.com/pion/dtls/v3/pkg/protocol"
+	"github.com/pion/dtls/v3/pkg/protocol/handshake"
+	"github.com/pion/dtls/v3/pkg/protocol/recordlayer"
 	"github.com/stretchr/testify/require"
 )
 
@@ -143,4 +147,52 @@ func TestWriteAndWaitMatchesIPInEitherForm(t *testing.T) {
 	res, err := c.WriteAndWait([]byte("hello"), func([]byte) bool { return true })
 	require.NoError(t, err)
 	require.Equal(t, answer, res)
+}
+
+// rawMessage is a handshake message as a camera puts it on the wire
+type rawMessage struct {
+	typ  handshake.Type
+	body []byte
+}
+
+func (m *rawMessage) Marshal() ([]byte, error) { return m.body, nil }
+func (m *rawMessage) Unmarshal([]byte) error   { return nil }
+func (m *rawMessage) Type() handshake.Type     { return m.typ }
+
+// A camera answers the ClientHello with an ECDHE_PSK ServerKeyExchange that
+// ends after the identity hint: pion/dtls before v3.1.4 read past it and took
+// the process down (GO-2026-6165). The handshake fails instead, the client
+// drops the message and waits for a valid one until it gives up.
+func TestClientRefusesTruncatedServerKeyExchange(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	suite := uint16(CipherSuiteID_CCAC)
+	var flight [][]byte
+	for seq, msg := range []handshake.Message{
+		&handshake.MessageServerHello{Version: protocol.Version1_2, CipherSuiteID: &suite, CompressionMethod: &protocol.CompressionMethod{}},
+		&rawMessage{typ: handshake.TypeServerKeyExchange, body: []byte{0, 0}},
+		&handshake.MessageServerHelloDone{},
+	} {
+		b, err := (&recordlayer.RecordLayer{
+			Header:  recordlayer.Header{Version: protocol.Version1_2, SequenceNumber: uint64(seq)},
+			Content: &handshake.Handshake{Header: handshake.Header{MessageSequence: uint16(seq)}, Message: msg},
+		}).Marshal()
+		require.NoError(t, err)
+		flight = append(flight, b)
+	}
+
+	// the camera answers the first ClientHello
+	toClient := make(chan []byte, len(flight))
+	var once sync.Once
+	writeFn := func([]byte, uint8) error {
+		once.Do(func() {
+			for _, b := range flight {
+				toClient <- b
+			}
+		})
+		return nil
+	}
+	_, err := NewDTLSClient(ctx, iotcChannelMain, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)}, writeFn, toClient, DerivePSK("test"))
+	require.Error(t, err)
 }
