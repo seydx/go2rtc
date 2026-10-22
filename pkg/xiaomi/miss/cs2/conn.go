@@ -20,6 +20,12 @@ func Dial(host, transport string) (*Conn, error) {
 
 	_, isTCP := conn.(*tcpConn)
 
+	c := newConn(conn, isTCP)
+	go c.worker()
+	return c, nil
+}
+
+func newConn(conn net.Conn, isTCP bool) *Conn {
 	// Some cameras keep sending unsolicited control notifications after login.
 	// There is no long-running command reader, so retaining every notification
 	// eventually fills the queue and used to tear down the media connection.
@@ -27,15 +33,13 @@ func Dial(host, transport string) (*Conn, error) {
 	commandChannel := newDataChannel(0, 10)
 	commandChannel.dropOldest = true
 
-	c := &Conn{
+	return &Conn{
 		Conn:  conn,
 		isTCP: isTCP,
 		channels: [4]*dataChannel{
 			commandChannel, nil, newDataChannel(250, 100), nil,
 		},
 	}
-	go c.worker()
-	return c, nil
 }
 
 type Conn struct {
@@ -130,6 +134,10 @@ func (c *Conn) worker() {
 			return
 		}
 
+		if n < 2 {
+			continue
+		}
+
 		// 0  f1d0  magic
 		// 2  005d  size = total size + 4
 		// 4  d1    magic
@@ -137,7 +145,14 @@ func (c *Conn) worker() {
 		// 6  0000  seq
 		switch buf[1] {
 		case msgDrw:
+			// skip a datagram without data or for a channel nobody reads
+			if n < 8 {
+				continue
+			}
 			ch := buf[5]
+			if int(ch) >= len(c.channels) || c.channels[ch] == nil {
+				continue
+			}
 			channel := c.channels[ch]
 
 			if c.isTCP {
@@ -200,13 +215,16 @@ func (c *Conn) Error() error {
 }
 
 func (c *Conn) ReadCommand() (cmd uint32, data []byte, err error) {
-	buf, ok := c.channels[0].Pop()
-	if !ok {
-		return 0, nil, c.Error()
+	for {
+		buf, ok := c.channels[0].Pop()
+		if !ok {
+			return 0, nil, c.Error()
+		}
+		// skip a command too short for its type
+		if len(buf) >= 4 {
+			return binary.LittleEndian.Uint32(buf), buf[4:], nil
+		}
 	}
-	cmd = binary.LittleEndian.Uint32(buf)
-	data = buf[4:]
-	return
 }
 
 func (c *Conn) WriteCommand(cmd uint32, data []byte) error {
@@ -250,11 +268,16 @@ func (c *Conn) WriteCommand(cmd uint32, data []byte) error {
 const hdrSize = 32
 
 func (c *Conn) ReadPacket() (hdr, payload []byte, err error) {
-	data, ok := c.channels[2].Pop()
-	if !ok {
-		return nil, nil, c.Error()
+	for {
+		data, ok := c.channels[2].Pop()
+		if !ok {
+			return nil, nil, c.Error()
+		}
+		// skip a packet too short for its header
+		if len(data) >= hdrSize {
+			return data[:hdrSize], data[hdrSize:], nil
+		}
 	}
-	return data[:hdrSize], data[hdrSize:], nil
 }
 
 func (c *Conn) WritePacket(hdr, payload []byte) error {
@@ -440,17 +463,32 @@ type dataChannel struct {
 	dropOldest bool
 }
 
+// maxDataSize is far above a video frame. A corrupt size kept everything after
+// it waiting, up to 4 GiB, or turned negative on 32 bit builds.
+const maxDataSize = 16 << 20
+
 func (c *dataChannel) Push(b []byte) error {
 	c.waitData = append(c.waitData, b...)
 
-	for len(c.waitData) > 4 {
+	for {
 		// Every new data starts with size. There can be several data inside one packet.
 		if c.waitSize == 0 {
-			c.waitSize = int(binary.BigEndian.Uint32(c.waitData))
+			if len(c.waitData) < 4 {
+				return nil
+			}
+			size := binary.BigEndian.Uint32(c.waitData)
 			c.waitData = c.waitData[4:]
+			if size == 0 {
+				continue
+			}
+			// the data after it can't be told apart anymore
+			if size > maxDataSize {
+				return fmt.Errorf("data size %d is too big", size)
+			}
+			c.waitSize = int(size)
 		}
 		if c.waitSize > len(c.waitData) {
-			break
+			return nil
 		}
 
 		data := c.waitData[:c.waitSize]
@@ -476,7 +514,6 @@ func (c *dataChannel) Push(b []byte) error {
 		c.waitData = c.waitData[c.waitSize:]
 		c.waitSize = 0
 	}
-	return nil
 }
 
 func (c *dataChannel) Pop() ([]byte, bool) {

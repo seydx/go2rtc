@@ -3,6 +3,7 @@ package crypto
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/nacl/box"
@@ -49,6 +50,9 @@ func Encode(src, key32 []byte) ([]byte, error) {
 }
 
 func Decode(src, key32 []byte) ([]byte, error) {
+	if len(src) < 8 {
+		return nil, errors.New("crypto: data without nonce")
+	}
 	return DecodeNonce(src[8:], src[:8], key32)
 }
 

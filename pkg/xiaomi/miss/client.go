@@ -222,13 +222,18 @@ func (c *Client) SpeakerCodec() uint32 {
 const hdrSize = 32
 
 func (c *Client) ReadPacket() (*Packet, error) {
-	hdr, payload, err := c.Conn.ReadPacket()
-	if err != nil {
-		return nil, fmt.Errorf("miss: read media: %w", err)
-	}
+	var hdr, payload []byte
+	var err error
 
-	if len(hdr) < hdrSize {
-		return nil, fmt.Errorf("miss: packet header too small")
+	// skip a payload too short for its nonce
+	for len(payload) < 8 {
+		if hdr, payload, err = c.Conn.ReadPacket(); err != nil {
+			return nil, fmt.Errorf("miss: read media: %w", err)
+		}
+
+		if len(hdr) < hdrSize {
+			return nil, fmt.Errorf("miss: packet header too small")
+		}
 	}
 
 	payload, err = crypto.Decode(payload, c.key)
