@@ -1,13 +1,58 @@
 package rtsp
 
 import (
+	"bufio"
 	"net"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/AlexxIT/go2rtc/pkg/tcp"
 	"github.com/stretchr/testify/require"
 )
+
+// Google Nest (Wowza) does not answer a request unless CSeq is its first
+// header, whatever else the request carries.
+func TestRequestSendsCSeqFirst(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	u, err := url.Parse("rtsp://127.0.0.1/stream")
+	require.NoError(t, err)
+
+	c := NewClient(u.String())
+	c.conn = client
+	c.session = "12345"
+
+	const requests = 50
+	go func() {
+		for range requests {
+			_ = c.WriteRequest(&tcp.Request{
+				Method: MethodDescribe,
+				URL:    u,
+				Header: map[string][]string{"Accept": {"application/sdp"}, "User-Agent": {"go2rtc"}},
+			})
+		}
+	}()
+
+	r := bufio.NewReader(server)
+	for range requests {
+		_, err = r.ReadString('\n') // the request line
+		require.NoError(t, err)
+
+		line, err := r.ReadString('\n')
+		require.NoError(t, err)
+		require.True(t, strings.HasPrefix(line, "CSeq: "), line)
+
+		for line != tcp.EndLine {
+			line, err = r.ReadString('\n')
+			require.NoError(t, err)
+		}
+	}
+}
 
 // setTimeout changes the package Timeout for one test. Left behind, 1ms
 // deadlines broke every later test of the package that reads a request.

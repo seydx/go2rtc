@@ -7,11 +7,34 @@ import (
 	"io"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
 
 const EndLine = "\r\n"
+
+// headerString writes CSeq first and the other headers sorted: some servers
+// (ex. Google Nest, Wowza) ignore a request unless CSeq is the first header.
+// https://github.com/AlexxIT/go2rtc/issues/2622
+func headerString(header textproto.MIMEHeader) string {
+	var s string
+	keys := make([]string, 0, len(header))
+	for k := range header {
+		if !strings.EqualFold(k, "CSeq") {
+			keys = append(keys, k)
+		} else if v := header[k]; len(v) > 0 {
+			s += k + ": " + v[0] + EndLine
+		}
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		if v := header[k]; len(v) > 0 {
+			s += k + ": " + v[0] + EndLine
+		}
+	}
+	return s
+}
 
 // Response like http.Response, but with any proto
 type Response struct {
@@ -25,9 +48,7 @@ type Response struct {
 
 func (r Response) String() string {
 	s := r.Proto + " " + r.Status + EndLine
-	for k, v := range r.Header {
-		s += k + ": " + v[0] + EndLine
-	}
+	s += headerString(r.Header)
 	s += EndLine
 	if r.Body != nil {
 		s += string(r.Body)
@@ -97,9 +118,7 @@ type Request struct {
 
 func (r *Request) String() string {
 	s := r.Method + " " + r.URL.String() + " " + r.Proto + EndLine
-	for k, v := range r.Header {
-		s += k + ": " + v[0] + EndLine
-	}
+	s += headerString(r.Header)
 	s += EndLine
 	if r.Body != nil {
 		s += string(r.Body)
