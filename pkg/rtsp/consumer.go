@@ -110,8 +110,9 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 
 	flushBuf := func() {
 		//log.Printf("[rtsp] channel:%2d write_size:%6d buffer_size:%6d", channel, n, len(buf))
-		_ = c.writeInterleavedData(buf[:n])
-		c.addSend(n)
+		if err := c.writeInterleavedData(buf[:n]); err == nil {
+			c.addSend(n)
+		}
 		n = 0
 	}
 

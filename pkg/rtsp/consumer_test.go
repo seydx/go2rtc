@@ -205,3 +205,27 @@ func TestConsumerSendsAudioWithoutTouchingPacket(t *testing.T) {
 	}
 	require.Equal(t, len(packets), sent, "every audio packet went out without waiting for a marker")
 }
+
+// Send counts what reached the client, a failed write adds nothing.
+func TestConsumerCountsOnlyWrittenBytes(t *testing.T) {
+	server, client := net.Pipe()
+	c := NewServer(server)
+	c.mode = core.ModePassiveConsumer
+	c.state.Store(StatePlay)
+	c.playOK.Store(true)
+	wire := readWire(client)
+
+	// without a clock rate there are no reports, only the packet is counted
+	codec := &core.Codec{Name: core.CodecPCMA, PayloadType: 8}
+	handler := c.packetWriter(codec, 0, 8)
+
+	const payload = 160
+	packet := &rtp.Packet{Header: rtp.Header{Version: 2}, Payload: make([]byte, payload)}
+
+	handler(packet)
+	require.Equal(t, intHdr+rtpHdr+payload, c.Send)
+
+	wire() // closes the client, so the next write fails
+	handler(packet)
+	require.Equal(t, intHdr+rtpHdr+payload, c.Send, "failed write")
+}
