@@ -1,14 +1,46 @@
 package hass
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
+	"sync"
 
 	"github.com/gorilla/websocket"
+	pion "github.com/pion/webrtc/v4"
 )
+
+type Message struct {
+	ID      int             `json:"id"`
+	Type    string          `json:"type"`
+	Success bool            `json:"success"`
+	Result  json.RawMessage `json:"result"`
+	Event   json.RawMessage `json:"event"`
+	Error   *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type ClientConfig struct {
+	Configuration struct {
+		ICEServers json.RawMessage `json:"iceServers"`
+	} `json:"configuration"`
+	DataChannel string `json:"dataChannel"`
+}
+
+type WebRTCEvent struct {
+	Type      string                `json:"type"`
+	SessionID string                `json:"session_id"`
+	Answer    string                `json:"answer"`
+	Candidate pion.ICECandidateInit `json:"candidate"`
+	Message   string                `json:"message"`
+}
 
 type API struct {
 	ws *websocket.Conn
+	mu sync.Mutex
+	id int
 }
 
 func NewAPI(url, token string) (*API, error) {
@@ -54,27 +86,65 @@ func (a *API) Close() error {
 	return a.ws.Close()
 }
 
-func (a *API) ExchangeSDP(entityID, offer string) (string, error) {
-	var msg = map[string]any{
-		"id":        1,
-		"type":      "camera/web_rtc_offer",
-		"entity_id": entityID,
-		"offer":     offer,
+func (a *API) Send(msg map[string]any) (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.id++
+	msg["id"] = a.id
+	return a.id, a.ws.WriteJSON(msg)
+}
+
+func (a *API) Read() (*Message, error) {
+	var msg Message
+	if err := a.ws.ReadJSON(&msg); err != nil {
+		return nil, err
 	}
-	if err := a.ws.WriteJSON(msg); err != nil {
-		return "", err
+	return &msg, nil
+}
+
+func (a *API) Call(msg map[string]any, result any) error {
+	id, err := a.Send(msg)
+	if err != nil {
+		return err
 	}
 
-	var res ResponseOffer
-	if err := a.ws.ReadJSON(&res); err != nil {
-		return "", err
+	for {
+		res, err := a.Read()
+		if err != nil {
+			return err
+		}
+		if res.ID != id || res.Type != "result" {
+			continue
+		}
+		if !res.Success {
+			return res.err()
+		}
+		return json.Unmarshal(res.Result, result)
 	}
+}
 
-	if res.Type != "result" || !res.Success {
-		return "", errors.New("hass: wrong response")
+func (a *API) ClientConfig(entityID string) (*ClientConfig, error) {
+	var config ClientConfig
+	msg := map[string]any{"type": "camera/webrtc/get_client_config", "entity_id": entityID}
+	if err := a.Call(msg, &config); err != nil {
+		return nil, err
 	}
+	return &config, nil
+}
 
-	return res.Result.Answer, nil
+func (a *API) SendOffer(entityID, offer string) (int, error) {
+	return a.Send(map[string]any{"type": "camera/webrtc/offer", "entity_id": entityID, "offer": offer})
+}
+
+func (a *API) SendCandidate(entityID, sessionID string, candidate pion.ICECandidateInit) error {
+	_, err := a.Send(map[string]any{
+		"type":       "camera/webrtc/candidate",
+		"entity_id":  entityID,
+		"session_id": sessionID,
+		"candidate":  candidate,
+	})
+	return err
 }
 
 func (a *API) GetWebRTCEntities() (map[string]string, error) {
@@ -130,13 +200,11 @@ type ResponseStates struct {
 	} `json:"result"`
 }
 
-type ResponseOffer struct {
-	//Id      int    `json:"id"`
-	Type    string `json:"type"`
-	Success bool   `json:"success"`
-	Result  struct {
-		Answer string `json:"answer"`
-	} `json:"result"`
+func (m *Message) err() error {
+	if m.Error != nil {
+		return errors.New("hass: " + m.Error.Message)
+	}
+	return errors.New("hass: wrong response")
 }
 
 func SupervisorToken() string {

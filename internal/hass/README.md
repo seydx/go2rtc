@@ -22,11 +22,7 @@ streams:
 
 [`new in v1.6.0`](https://github.com/AlexxIT/go2rtc/releases/tag/v1.6.0)
 
-Any cameras in WebRTC format are supported. But at the moment Home Assistant only supports some [Nest](https://www.home-assistant.io/integrations/nest/) cameras in this format.
-
-**Important.** The Nest API only allows you to get a link to a stream for 5 minutes.
-Do not use this with Frigate! If the stream expires, Frigate will consume all available RAM on your machine within seconds.
-It's recommended to use [Nest source](../nest/README.md) - it supports extending the stream.
+Every camera that Home Assistant offers over WebRTC is supported: cameras with native WebRTC like [Nest](https://www.home-assistant.io/integrations/nest/), and every other streaming camera through Home Assistant's own go2rtc. It uses the WebRTC API of Home Assistant 2024.11 and newer, and the connection to Home Assistant stays open while the stream runs.
 
 ```yaml
 streams:
@@ -34,7 +30,13 @@ streams:
   hass-webrtc1: hass://supervisor?entity_id=camera.nest_doorbell
   # link to external Home Assistant with Long-Lived Access Tokens
   hass-webrtc2: hass://192.168.1.123:8123?entity_id=camera.nest_doorbell&token=eyXYZ...
+  # Home Assistant behind HTTPS
+  hass-webrtc3: hass://ha.example.com?entity_id=camera.nest_doorbell&token=eyXYZ...&tls=1
+  # two-way audio, if the camera and its integration support it
+  hass-webrtc4: hass://supervisor?entity_id=camera.front_door#backchannel=1
 ```
+
+Two-way audio through Home Assistant came with 2026.11 and needs the Labs feature "Two-way audio".
 
 ### RTSP Cameras
 
