@@ -1,6 +1,7 @@
 package cui
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/AlexxIT/go2rtc/internal/api/ws"
@@ -20,6 +21,8 @@ func Init() {
 
 var log zerolog.Logger
 
+var tokenQuery = regexp.MustCompile(`token=[^&#]*`)
+
 // redirectCui resolves a camera.ui stream to the URL its plugin serves. The
 // options on the cui URL describe the source, not the lookup, so they travel
 // on to the connection that is actually made.
@@ -36,7 +39,7 @@ func redirectCui(rawURL string) (string, error) {
 		location += "#" + rawQuery
 	}
 
-	log.Debug().Msgf("[cui] new uri=%s", location)
+	log.Debug().Msgf("[cui] new uri=%s", tokenQuery.ReplaceAllString(location, "token=***"))
 
 	return location, nil
 }
