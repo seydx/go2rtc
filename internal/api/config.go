@@ -37,12 +37,15 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		var update func(config []byte) ([]byte, error)
 		if r.Method == "PATCH" {
-			// no need to validate after merge
-			data, err = mergeYAML(app.ConfigPath, data)
-			if err != nil {
+			var patch map[string]any
+			if err = yaml.Unmarshal(data, &patch); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
+			}
+			update = func(config []byte) ([]byte, error) {
+				return mergeYAML(config, patch)
 			}
 		} else {
 			// validate config
@@ -50,12 +53,22 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			update = func([]byte) ([]byte, error) {
+				return data, nil
+			}
 		}
 
-		if err = os.WriteFile(app.ConfigPath, data, 0644); err != nil {
+		// the modules take the saves in their order
+		saveMu.Lock()
+		defer saveMu.Unlock()
+
+		if data, err = app.UpdateConfig(update); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// the modules read ${VAR} replaced, like at the start
+		data = creds.ReplaceVars(data)
 
 		configSavedMu.Lock()
 		handlers := configSaved
@@ -65,6 +78,8 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+var saveMu sync.Mutex
 
 var configSaved []func(data []byte)
 var configSavedMu sync.Mutex
@@ -78,30 +93,15 @@ func OnConfigSave(handler func(data []byte)) {
 	configSavedMu.Unlock()
 }
 
-func mergeYAML(file1 string, yaml2 []byte) ([]byte, error) {
-	// Read the contents of the first YAML file
-	data1, err := os.ReadFile(file1)
-	if err != nil {
+func mergeYAML(data []byte, patch map[string]any) ([]byte, error) {
+	config := map[string]any{}
+	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, err
 	}
 
-	// Unmarshal the first YAML file into a map
-	var config1 map[string]any
-	if err = yaml.Unmarshal(data1, &config1); err != nil {
-		return nil, err
-	}
+	config = merge(config, patch)
 
-	// Unmarshal the second YAML document into a map
-	var config2 map[string]any
-	if err = yaml.Unmarshal(yaml2, &config2); err != nil {
-		return nil, err
-	}
-
-	// Merge the two maps
-	config1 = merge(config1, config2)
-
-	// Marshal the merged map into YAML
-	return yaml.Marshal(&config1)
+	return yaml.Marshal(&config)
 }
 
 func merge(dst, src map[string]any) map[string]any {

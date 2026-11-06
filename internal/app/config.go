@@ -44,6 +44,27 @@ func PatchConfig(path []string, value any) error {
 	return os.WriteFile(ConfigPath, b, 0644)
 }
 
+// UpdateConfig writes what update makes of the config file, under the lock of
+// PatchConfig, and returns the written config
+func UpdateConfig(update func(data []byte) ([]byte, error)) ([]byte, error) {
+	if ConfigPath == "" {
+		return nil, errors.New("config file disabled")
+	}
+
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	// empty config is OK
+	b, _ := os.ReadFile(ConfigPath)
+
+	b, err := update(b)
+	if err != nil {
+		return nil, err
+	}
+
+	return b, os.WriteFile(ConfigPath, b, 0644)
+}
+
 type flagConfig []string
 
 func (c *flagConfig) String() string {

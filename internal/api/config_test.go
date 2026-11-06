@@ -62,3 +62,38 @@ func TestOnConfigSave(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, before, after)
 }
+
+// The modules read the saved config like at the start, with ${VAR} replaced.
+// The file keeps the variable.
+func TestOnConfigSaveReplacesVariables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "go2rtc.yaml")
+	configPath := app.ConfigPath
+	app.ConfigPath = path
+	t.Cleanup(func() { app.ConfigPath = configPath })
+	t.Setenv("GO2RTC_TEST_RTSP_PASSWORD", "secret")
+
+	var saved []string
+	handlers := configSaved
+	OnConfigSave(func(data []byte) { saved = append(saved, string(data)) })
+	t.Cleanup(func() { configSaved = handlers })
+
+	send := func(method, body string) int {
+		w := httptest.NewRecorder()
+		configHandler(w, httptest.NewRequest(method, "/api/config", strings.NewReader(body)))
+		return w.Code
+	}
+
+	// PATCH without a config file: the patch is the config
+	require.Equal(t, http.StatusOK, send("PATCH", "rtsp:\n  password: ${GO2RTC_TEST_RTSP_PASSWORD}\n"))
+	require.Equal(t, []string{"rtsp:\n    password: secret\n"}, saved)
+	file, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Contains(t, string(file), "${GO2RTC_TEST_RTSP_PASSWORD}")
+
+	// a patch that is no YAML: refused, the file stays
+	require.Equal(t, http.StatusBadRequest, send("PATCH", "rtsp: ["))
+	require.Len(t, saved, 1)
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, file, after)
+}
