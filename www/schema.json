@@ -478,6 +478,33 @@
             ":8888",
             "127.0.0.1:8888"
           ]
+        },
+        "video_sources": {
+          "description": "Cameras in the order the server offers them, only their streams are profiles. Without it every stream is a camera of its own",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "token": {
+                "description": "Token of the video source, the first profile by default",
+                "type": "string"
+              },
+              "name": {
+                "description": "Name of its profiles, with their position when there are more",
+                "type": "string"
+              },
+              "profiles": {
+                "description": "Streams of the camera, the highest quality first",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "profiles"
+            ]
+          }
         }
       }
     },

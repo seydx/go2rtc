@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,13 +23,16 @@ import (
 func Init() {
 	var cfg struct {
 		Mod struct {
-			Listen string `yaml:"listen"`
+			Listen       string         `yaml:"listen"`
+			VideoSources []sourceConfig `yaml:"video_sources"`
 		} `yaml:"onvif"`
 	}
 
 	app.LoadConfig(&cfg)
 
 	log = app.GetLogger("onvif")
+
+	setSourceConfigs(cfg.Mod.VideoSources)
 
 	streams.HandleFunc("onvif", streamOnvif)
 
@@ -152,10 +154,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		onvif.DeviceGetNetworkProtocols,
 		onvif.DeviceGetNTP,
 		onvif.DeviceGetScopes,
-		onvif.MediaGetVideoEncoderConfiguration,
-		onvif.MediaGetVideoEncoderConfigurations,
 		onvif.MediaGetAudioEncoderConfigurations,
-		onvif.MediaGetVideoEncoderConfigurationOptions,
 		onvif.MediaGetAudioSources,
 		onvif.MediaGetAudioSourceConfigurations:
 		b = onvif.StaticResponse(operation)
@@ -172,23 +171,62 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetDeviceInformationResponse("", "go2rtc", app.Version, r.Host)
 
 	case onvif.MediaGetVideoSources:
-		b = onvif.GetVideoSourcesResponse(profileNames())
+		b = onvif.GetVideoSourcesResponse(describe(configs()))
 
 	case onvif.MediaGetProfiles:
 		// important for Hass: H264 codec, width, height
-		b = onvif.GetProfilesResponse(profileNames())
+		b = onvif.GetProfilesResponse(profilesOf(describe(configs())))
 
 	case onvif.MediaGetProfile:
-		b = onvif.GetProfileResponse(findToken(b, "ProfileToken"))
+		profile := findProfile(findToken(b, "ProfileToken"))
+		if profile == nil {
+			fault(w, "NoProfile", "no such profile")
+			return
+		}
+		b = onvif.GetProfileResponse(profile)
 
 	case onvif.MediaGetVideoSourceConfigurations:
 		// important for Happytime Onvif Client
-		b = onvif.GetVideoSourceConfigurationsResponse(profileNames())
+		b = onvif.GetVideoSourceConfigurationsResponse(describe(configs()))
 
 	case onvif.MediaGetVideoSourceConfiguration:
-		b = onvif.GetVideoSourceConfigurationResponse(findToken(b, "ConfigurationToken"))
+		source := findSource(findToken(b, "ConfigurationToken"))
+		if source == nil {
+			fault(w, "NoConfig", "no such configuration")
+			return
+		}
+		b = onvif.GetVideoSourceConfigurationResponse(source)
+
+	case onvif.MediaGetVideoEncoderConfigurations:
+		b = onvif.GetVideoEncoderConfigurationsResponse(profilesOf(describe(configs())))
+
+	case onvif.MediaGetVideoEncoderConfiguration:
+		// the token of the encoder configuration is the one of its profile
+		profile := findProfile(findToken(b, "ConfigurationToken"))
+		if profile == nil {
+			fault(w, "NoConfig", "no such configuration")
+			return
+		}
+		b = onvif.GetVideoEncoderConfigurationResponse(profile)
+
+	case onvif.MediaGetVideoEncoderConfigurationOptions:
+		token := findToken(b, "ProfileToken")
+		if token == "" {
+			token = findToken(b, "ConfigurationToken")
+		}
+		profile := findProfile(token)
+		if profile == nil {
+			fault(w, "NoProfile", "no such profile")
+			return
+		}
+		b = onvif.GetVideoEncoderConfigurationOptionsResponse(profile)
 
 	case onvif.MediaGetStreamUri:
+		if !isProfile(findToken(b, "ProfileToken")) {
+			fault(w, "NoProfile", "no such profile")
+			return
+		}
+
 		host, _, err := net.SplitHostPort(r.Host)
 		if err != nil {
 			host = r.Host // in case of Host without port
@@ -199,6 +237,11 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetStreamUriResponse(uri)
 
 	case onvif.MediaGetSnapshotUri:
+		if !isProfile(findToken(b, "ProfileToken")) {
+			fault(w, "NoProfile", "no such profile")
+			return
+		}
+
 		uri := protocol + "://" + r.Host + snapshotPath + "?src=" + url.QueryEscape(findToken(b, "ProfileToken"))
 		b = onvif.GetSnapshotUriResponse(uri)
 
@@ -217,12 +260,11 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// profileNames returns the names of the streams in a stable order: clients
-// take the cameras by their position in the list (ex. Dahua its channels)
-func profileNames() []string {
-	names := streams.GetAllNames()
-	slices.Sort(names)
-	return names
+// fault answers a request for something the server doesn't have
+func fault(w http.ResponseWriter, subcode, reason string) {
+	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write(onvif.FaultResponse(subcode, reason))
 }
 
 // findToken returns the stream name a token of the request stands for

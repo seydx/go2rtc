@@ -2,6 +2,7 @@ package onvif
 
 import (
 	"bytes"
+	"fmt"
 	"html"
 	"regexp"
 	"time"
@@ -134,104 +135,150 @@ func GetDeviceInformationResponse(manuf, model, firmware, serial string) []byte 
 	return e.Bytes()
 }
 
-func GetProfilesResponse(names []string) []byte {
+func GetProfilesResponse(profiles []*MediaProfile) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetProfilesResponse>`)
-	for _, name := range names {
-		appendProfile(e, "Profiles", name)
+	for _, p := range profiles {
+		appendProfile(e, "Profiles", p)
 	}
 	e.Append(`</trt:GetProfilesResponse>`)
 	return e.Bytes()
 }
 
-func GetProfileResponse(name string) []byte {
+func GetProfileResponse(p *MediaProfile) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetProfileResponse>`)
-	appendProfile(e, "Profile", name)
+	appendProfile(e, "Profile", p)
 	e.Append(`</trt:GetProfileResponse>`)
 	return e.Bytes()
 }
 
-func appendProfile(e *Envelope, tag, name string) {
-	// go2rtc name = ONVIF Profile Name = ONVIF Profile token
+func appendProfile(e *Envelope, tag string, p *MediaProfile) {
+	// go2rtc name = ONVIF Profile token
 	// a name is any text: one with & or < made the whole response invalid XML
-	e.Appendf(`<trt:%s token="%s" fixed="true">`, tag, html.EscapeString(name))
-	e.Appendf(`<tt:Name>%s</tt:Name>`, html.EscapeString(name))
-	appendVideoSourceConfiguration(e, "VideoSourceConfiguration", name)
-	appendVideoEncoderConfiguration(e, "VideoEncoderConfiguration")
+	e.Appendf(`<trt:%s token="%s" fixed="true">`, tag, html.EscapeString(p.Token))
+	e.Appendf(`<tt:Name>%s</tt:Name>`, html.EscapeString(p.Name))
+	appendVideoSourceConfiguration(e, "tt:VideoSourceConfiguration", p.Source)
+	appendVideoEncoderConfiguration(e, "tt:VideoEncoderConfiguration", p)
 	e.Appendf(`</trt:%s>`, tag)
 }
 
-func GetVideoSourcesResponse(names []string) []byte {
-	// go2rtc name = ONVIF VideoSource token
+func GetVideoSourcesResponse(sources []*VideoSource) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetVideoSourcesResponse>`)
-	for _, name := range names {
+	for _, s := range sources {
+		width, height := s.size()
 		e.Appendf(`<trt:VideoSources token="%s">
-	<tt:Framerate>30.000000</tt:Framerate>
-	<tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution>
-</trt:VideoSources>`, html.EscapeString(name))
+	<tt:Framerate>%d</tt:Framerate>
+	<tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution>
+</trt:VideoSources>`, html.EscapeString(s.Token), defaultFrameRate, width, height)
 	}
 	e.Append(`</trt:GetVideoSourcesResponse>`)
 	return e.Bytes()
 }
 
-func GetVideoSourceConfigurationsResponse(names []string) []byte {
+func GetVideoSourceConfigurationsResponse(sources []*VideoSource) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetVideoSourceConfigurationsResponse>`)
-	for _, name := range names {
-		appendVideoSourceConfiguration(e, "Configurations", name)
+	for _, s := range sources {
+		appendVideoSourceConfiguration(e, "trt:Configurations", s)
 	}
 	e.Append(`</trt:GetVideoSourceConfigurationsResponse>`)
 	return e.Bytes()
 }
 
-func GetVideoSourceConfigurationResponse(name string) []byte {
+func GetVideoSourceConfigurationResponse(s *VideoSource) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetVideoSourceConfigurationResponse>`)
-	appendVideoSourceConfiguration(e, "Configuration", name)
+	appendVideoSourceConfiguration(e, "trt:Configuration", s)
 	e.Append(`</trt:GetVideoSourceConfigurationResponse>`)
 	return e.Bytes()
 }
 
-func appendVideoSourceConfiguration(e *Envelope, tag, name string) {
-	// go2rtc name = ONVIF VideoSourceConfiguration token
-	name = html.EscapeString(name)
-	e.Appendf(`<tt:%s token="%s" fixed="true">
+// appendVideoSourceConfiguration: the token of the configuration of a video
+// source is the token of the source, all of its profiles use it
+func appendVideoSourceConfiguration(e *Envelope, tag string, s *VideoSource) {
+	token := html.EscapeString(s.Token)
+	width, height := s.size()
+	e.Appendf(`<%s token="%s" fixed="true">
 	<tt:Name>VSC</tt:Name>
+	<tt:UseCount>%d</tt:UseCount>
 	<tt:SourceToken>%s</tt:SourceToken>
-	<tt:Bounds x="0" y="0" width="1920" height="1080"></tt:Bounds>
-</tt:%s>`, tag, name, name, tag)
+	<tt:Bounds x="0" y="0" width="%d" height="%d"></tt:Bounds>
+</%s>`, tag, token, len(s.Profiles), token, width, height, tag)
 }
 
-func GetVideoEncoderConfigurationsResponse() []byte {
+func GetVideoEncoderConfigurationsResponse(profiles []*MediaProfile) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetVideoEncoderConfigurationsResponse>`)
-	appendVideoEncoderConfiguration(e, "VideoEncoderConfigurations")
+	for _, p := range profiles {
+		appendVideoEncoderConfiguration(e, "trt:Configurations", p)
+	}
 	e.Append(`</trt:GetVideoEncoderConfigurationsResponse>`)
 	return e.Bytes()
 }
 
-func GetVideoEncoderConfigurationResponse() []byte {
+func GetVideoEncoderConfigurationResponse(p *MediaProfile) []byte {
 	e := NewEnvelope()
 	e.Append(`<trt:GetVideoEncoderConfigurationResponse>`)
-	appendVideoEncoderConfiguration(e, "VideoEncoderConfiguration")
+	appendVideoEncoderConfiguration(e, "trt:Configuration", p)
 	e.Append(`</trt:GetVideoEncoderConfigurationResponse>`)
 	return e.Bytes()
 }
 
-func appendVideoEncoderConfiguration(e *Envelope, tag string) {
-	// empty `RateControl` important for UniFi Protect
-	e.Appendf(`<tt:%s token="vec">
-		<tt:Name>VEC</tt:Name>
-        <tt:UseCount>1</tt:UseCount>
-		<tt:Encoding>H264</tt:Encoding>
-		<tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution>
-        <tt:Quality>0</tt:Quality>
-		<tt:RateControl><tt:FrameRateLimit>30</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>8192</tt:BitrateLimit></tt:RateControl>
-        <tt:H264><tt:GovLength>10</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>
-        <tt:SessionTimeout>PT10S</tt:SessionTimeout>
-	</tt:%s>`, tag, tag)
+// appendVideoEncoderConfiguration: the token of the encoder configuration of a
+// profile is the token of the profile. Important for UniFi Protect: RateControl,
+// and H265 as the encoding of an H.265 stream (else its live view stays black).
+func appendVideoEncoderConfiguration(e *Envelope, tag string, p *MediaProfile) {
+	v := p.Video
+	e.Appendf(`<%s token="%s">
+	<tt:Name>VEC</tt:Name>
+	<tt:UseCount>1</tt:UseCount>
+	<tt:Encoding>%s</tt:Encoding>
+	<tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution>
+	<tt:Quality>0</tt:Quality>
+	<tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>%d</tt:BitrateLimit></tt:RateControl>`,
+		tag, html.EscapeString(p.Token), v.Encoding, v.Width, v.Height, defaultFrameRate, defaultBitrate)
+	if v.Encoding == "H264" {
+		e.Appendf(`<tt:H264><tt:GovLength>10</tt:GovLength><tt:H264Profile>%s</tt:H264Profile></tt:H264>`, v.Profile)
+	}
+	e.Appendf(`<tt:SessionTimeout>PT10S</tt:SessionTimeout>
+</%s>`, tag)
+}
+
+// GetVideoEncoderConfigurationOptionsResponse: the only option of a profile is
+// its configuration, go2rtc doesn't change how a stream is encoded
+func GetVideoEncoderConfigurationOptionsResponse(p *MediaProfile) []byte {
+	v := p.Video
+	options := fmt.Sprintf(`<tt:ResolutionsAvailable><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:ResolutionsAvailable>
+	<tt:GovLengthRange><tt:Min>10</tt:Min><tt:Max>10</tt:Max></tt:GovLengthRange>
+	<tt:FrameRateRange><tt:Min>%d</tt:Min><tt:Max>%d</tt:Max></tt:FrameRateRange>
+	<tt:EncodingIntervalRange><tt:Min>1</tt:Min><tt:Max>1</tt:Max></tt:EncodingIntervalRange>`,
+		v.Width, v.Height, defaultFrameRate, defaultFrameRate)
+
+	e := NewEnvelope()
+	e.Append(`<trt:GetVideoEncoderConfigurationOptionsResponse><trt:Options>
+	<tt:QualityRange><tt:Min>0</tt:Min><tt:Max>0</tt:Max></tt:QualityRange>`)
+	if v.Encoding == "H264" {
+		e.Append(`<tt:H264>`, options, `<tt:H264ProfilesSupported>`, v.Profile, `</tt:H264ProfilesSupported></tt:H264>`)
+	} else {
+		// Media1 has no H265 options, UniFi Protect reads them from Extension
+		e.Append(`<tt:Extension><tt:H265>`, options, `<tt:H265ProfilesSupported>Main</tt:H265ProfilesSupported></tt:H265></tt:Extension>`)
+	}
+	e.Append(`</trt:Options></trt:GetVideoEncoderConfigurationOptionsResponse>`)
+	return e.Bytes()
+}
+
+// FaultResponse answers a request for something the server doesn't have, ex.
+// the subcode NoProfile for an unknown profile token. SOAP 1.2 sends a fault
+// of the sender with HTTP 400.
+func FaultResponse(subcode, reason string) []byte {
+	e := NewEnvelope()
+	e.Appendf(`<s:Fault xmlns:ter="http://www.onvif.org/ver10/error">
+	<s:Code><s:Value>s:Sender</s:Value><s:Subcode><s:Value>ter:InvalidArgVal</s:Value><s:Subcode><s:Value>ter:%s</s:Value></s:Subcode></s:Subcode></s:Code>
+	<s:Reason><s:Text xml:lang="en">%s</s:Text></s:Reason>
+</s:Fault>`, subcode, html.EscapeString(reason))
+	return e.Bytes()
 }
 
 func GetStreamUriResponse(uri string) []byte {
@@ -250,10 +297,6 @@ func StaticResponse(operation string) []byte {
 	switch operation {
 	case DeviceGetSystemDateAndTime:
 		return GetSystemDateAndTimeResponse()
-	case MediaGetVideoEncoderConfiguration:
-		return GetVideoEncoderConfigurationResponse()
-	case MediaGetVideoEncoderConfigurations:
-		return GetVideoEncoderConfigurationsResponse()
 	}
 
 	e := NewEnvelope()
@@ -288,17 +331,4 @@ var responses = map[string]string{
 	MediaGetAudioEncoderConfigurations: `<trt:GetAudioEncoderConfigurationsResponse />`,
 	MediaGetAudioSources:               `<trt:GetAudioSourcesResponse />`,
 	MediaGetAudioSourceConfigurations:  `<trt:GetAudioSourceConfigurationsResponse />`,
-
-	MediaGetVideoEncoderConfigurationOptions: `<trt:GetVideoEncoderConfigurationOptionsResponse>
-   <trt:Options>
-       <tt:QualityRange><tt:Min>1</tt:Min><tt:Max>6</tt:Max></tt:QualityRange>
-	   <tt:H264>
-		   <tt:ResolutionsAvailable><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:ResolutionsAvailable>
-		   <tt:GovLengthRange><tt:Min>0</tt:Min><tt:Max>100</tt:Max></tt:GovLengthRange>
-		   <tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>30</tt:Max></tt:FrameRateRange>
-		   <tt:EncodingIntervalRange><tt:Min>1</tt:Min><tt:Max>100</tt:Max></tt:EncodingIntervalRange>
-           <tt:H264ProfilesSupported>Main</tt:H264ProfilesSupported>
-	   </tt:H264>
-   </trt:Options>
-</trt:GetVideoEncoderConfigurationOptionsResponse>`,
 }
