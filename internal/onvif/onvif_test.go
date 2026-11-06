@@ -221,7 +221,7 @@ func serveOnvif(t *testing.T) string {
 		serve(ln)
 		close(done)
 	}()
-	// the server is gone before the next test, it logs its end
+	// the server is gone before the next test
 	t.Cleanup(func() {
 		_ = ln.Close()
 		<-done
@@ -394,4 +394,30 @@ func TestSnapshotOfUnknownSource(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, get(t, "http://"+addr+snapshotPath+"?src="+url.QueryEscape(src)))
 	require.Nil(t, streams.Get(src), "a stream from the src")
+}
+
+// camera.ui turns the ONVIF server on, moves it to another port and turns it
+// off with a saved config, without a restart of go2rtc
+func TestListenerOfSavedConfig(t *testing.T) {
+	t.Cleanup(func() { reloadConfig([]byte("streams: {}\n")) })
+
+	free := func() string {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		require.NoError(t, ln.Close())
+		return ln.Addr().String()
+	}
+	first, second := free(), free()
+
+	reloadConfig([]byte("onvif:\n  listen: " + first + "\n"))
+	require.Equal(t, http.StatusNotFound, get(t, "http://"+first+snapshotPath))
+
+	reloadConfig([]byte("onvif:\n  listen: " + second + "\n"))
+	require.Equal(t, http.StatusNotFound, get(t, "http://"+second+snapshotPath))
+	_, err := net.Dial("tcp", first)
+	require.Error(t, err)
+
+	reloadConfig([]byte("streams: {}\n"))
+	_, err = net.Dial("tcp", second)
+	require.Error(t, err)
 }

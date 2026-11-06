@@ -59,20 +59,17 @@ func setSourceConfigs(configs []sourceConfig) {
 	sourceConfigsMu.Unlock()
 }
 
-// reloadSourceConfigs takes the video sources of the config the API saved:
-// camera.ui adds and removes its cameras without a restart. The other settings
-// of the ONVIF server take effect with the next start.
-func reloadSourceConfigs(data []byte) {
-	var cfg struct {
-		Mod struct {
-			VideoSources []sourceConfig `yaml:"video_sources"`
-		} `yaml:"onvif"`
-	}
+// reloadConfig takes the video sources and the listener of the config the API
+// saved: camera.ui adds and removes its cameras and moves or stops the server
+// without a restart. Open connections stay.
+func reloadConfig(data []byte) {
+	var cfg config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		log.Warn().Err(err).Msg("[onvif] video sources of the saved config")
+		log.Warn().Err(err).Msg("[onvif] settings of the saved config")
 		return
 	}
 	setSourceConfigs(cfg.Mod.VideoSources)
+	listen(cfg.Mod.Listen)
 }
 
 // configs returns the video sources the server offers: the ones of the config,

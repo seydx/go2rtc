@@ -1,6 +1,7 @@
 package onvif
 
 import (
+	"errors"
 	"html"
 	"io"
 	"net"
@@ -17,23 +18,18 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/onvif"
+	"github.com/AlexxIT/go2rtc/pkg/xnet"
 	"github.com/rs/zerolog"
 )
 
 func Init() {
-	var cfg struct {
-		Mod struct {
-			Listen       string         `yaml:"listen"`
-			VideoSources []sourceConfig `yaml:"video_sources"`
-		} `yaml:"onvif"`
-	}
+	var cfg config
 
 	app.LoadConfig(&cfg)
 
 	log = app.GetLogger("onvif")
 
 	setSourceConfigs(cfg.Mod.VideoSources)
-	api.OnConfigSave(reloadSourceConfigs)
 
 	streams.HandleFunc("onvif", streamOnvif)
 
@@ -42,24 +38,38 @@ func Init() {
 
 	// ONVIF server: plain HTTP on a listener of its own, off without one. On
 	// the API it was wherever the API was, and the API came along with it.
-	if cfg.Mod.Listen == "" {
-		return
-	}
+	listen(cfg.Mod.Listen)
 
-	ln, err := net.Listen("tcp", cfg.Mod.Listen)
-	if err != nil {
-		log.Error().Err(err).Msg("[onvif] listen")
-		return
-	}
-
-	log.Info().Str("addr", cfg.Mod.Listen).Msg("[onvif] listen")
-
-	go serve(ln)
+	api.OnConfigSave(reloadConfig)
 }
 
 var log zerolog.Logger
 
 const snapshotPath = "/onvif/snapshot"
+
+type config struct {
+	Mod struct {
+		Listen       string         `yaml:"listen"`
+		VideoSources []sourceConfig `yaml:"video_sources"`
+	} `yaml:"onvif"`
+}
+
+var listener xnet.Listener
+
+func listen(address string) {
+	ln, err := listener.Listen(address)
+	if err != nil {
+		log.Error().Err(err).Msg("[onvif] listen")
+		return
+	}
+	if ln == nil {
+		return
+	}
+
+	log.Info().Str("addr", address).Msg("[onvif] listen")
+
+	go serve(ln)
+}
 
 func serve(ln net.Listener) {
 	mux := http.NewServeMux()
@@ -67,7 +77,7 @@ func serve(ln net.Listener) {
 	mux.HandleFunc(snapshotPath, onvifSnapshot)
 
 	server := http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	if err := server.Serve(ln); err != nil {
+	if err := server.Serve(ln); err != nil && !errors.Is(err, net.ErrClosed) {
 		log.Error().Err(err).Msg("[onvif] serve")
 	}
 }

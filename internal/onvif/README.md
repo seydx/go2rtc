@@ -43,7 +43,7 @@ onvif:
       profiles: [garage]
 ```
 
-`video_sources: []` has no profiles at all. The `video_sources` of a config saved through the API (`POST` or `PATCH /api/config`) apply right away, without a restart: camera.ui saves its cameras that way. The other settings of the ONVIF server take effect with the next start.
+`video_sources: []` has no profiles at all. The `video_sources` and the `listen` of a config saved through the API (`POST` or `PATCH /api/config`) apply right away, without a restart: camera.ui saves its cameras and turns the server on and off that way.
 
 The token of a profile is the name of its stream. A profile tells the codec (H264 or H265) and the resolution of its stream: what the stream sends, or sent the last time. A stream whose resolution is not known yet is read for it, for at most 5 s: a running stream from its next keyframe, a stopped one is dialed. That is a stream that has not run since go2rtc started, or one whose source sends the resolution with its keyframes only (Tapo). The profile keeps the resolution until the stream gets other sources. A camera that does not answer, or sends no keyframe in time, gets placeholders (H264 1920x1080) and is read again a minute later at the earliest.
 

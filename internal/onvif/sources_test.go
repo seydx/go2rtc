@@ -488,16 +488,16 @@ func TestVideoSourcesFollowTheSavedConfig(t *testing.T) {
 		return tokens
 	}
 
-	camera := []byte("onvif:\n  listen: \":8890\"\n  video_sources:\n    - name: Cam\n      profiles: [cam_main, cam_sub]\n")
-	reloadSourceConfigs(camera)
+	camera := []byte("onvif:\n  video_sources:\n    - name: Cam\n      profiles: [cam_main, cam_sub]\n")
+	reloadConfig(camera)
 	require.Equal(t, []string{"cam_main", "cam_sub"}, tokens())
 
 	// a config that is no YAML changes nothing
-	reloadSourceConfigs([]byte("onvif: ["))
+	reloadConfig([]byte("onvif: ["))
 	require.Equal(t, []string{"cam_main", "cam_sub"}, tokens())
 
 	// no cameras: no profiles, not every stream
-	reloadSourceConfigs([]byte("onvif:\n  video_sources: []\n"))
+	reloadConfig([]byte("onvif:\n  video_sources: []\n"))
 	require.Empty(t, tokens())
 	var sources struct {
 		Sources []struct{} `xml:"Body>GetVideoSourcesResponse>VideoSources"`
@@ -506,7 +506,7 @@ func TestVideoSourcesFollowTheSavedConfig(t *testing.T) {
 	require.Empty(t, sources.Sources)
 
 	// without video sources: every stream
-	reloadSourceConfigs([]byte("streams: {}\n"))
+	reloadConfig([]byte("streams: {}\n"))
 	require.Subset(t, tokens(), []string{"cam_main", "cam_sub", "preview"})
 
 	// the requests read the video sources while a save replaces them
@@ -523,8 +523,8 @@ func TestVideoSourcesFollowTheSavedConfig(t *testing.T) {
 		}
 	})
 	for range 50 {
-		reloadSourceConfigs(camera)
-		reloadSourceConfigs([]byte("onvif:\n  video_sources: []\n"))
+		reloadConfig(camera)
+		reloadConfig([]byte("onvif:\n  video_sources: []\n"))
 	}
 	close(stop)
 	wg.Wait()
