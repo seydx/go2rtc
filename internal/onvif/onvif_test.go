@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -123,6 +124,20 @@ func TestProfilesOfAnyName(t *testing.T) {
 
 	res = parse(t, request(t, "GetVideoSourceConfigurations", ""))
 	require.ElementsMatch(t, names, res.tokens["Configurations"])
+}
+
+// Clients take the cameras by their position in the list: Dahua maps its
+// channels by it, UniFi Protect its streams at adoption. The list came from a
+// map, in another order with every request.
+func TestProfilesInStableOrder(t *testing.T) {
+	useStreams(t)
+
+	want := slices.Sorted(slices.Values(names))
+	for range 20 {
+		require.Equal(t, want, parse(t, request(t, "GetProfiles", "")).tokens["Profiles"])
+		require.Equal(t, want, parse(t, request(t, "GetVideoSources", "")).tokens["VideoSources"])
+		require.Equal(t, want, parse(t, request(t, "GetVideoSourceConfigurations", "")).tokens["Configurations"])
+	}
 }
 
 // The client sends the token back, escaped for XML. The URIs of the stream

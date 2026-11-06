@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -171,18 +172,18 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetDeviceInformationResponse("", "go2rtc", app.Version, r.Host)
 
 	case onvif.MediaGetVideoSources:
-		b = onvif.GetVideoSourcesResponse(streams.GetAllNames())
+		b = onvif.GetVideoSourcesResponse(profileNames())
 
 	case onvif.MediaGetProfiles:
 		// important for Hass: H264 codec, width, height
-		b = onvif.GetProfilesResponse(streams.GetAllNames())
+		b = onvif.GetProfilesResponse(profileNames())
 
 	case onvif.MediaGetProfile:
 		b = onvif.GetProfileResponse(findToken(b, "ProfileToken"))
 
 	case onvif.MediaGetVideoSourceConfigurations:
 		// important for Happytime Onvif Client
-		b = onvif.GetVideoSourceConfigurationsResponse(streams.GetAllNames())
+		b = onvif.GetVideoSourceConfigurationsResponse(profileNames())
 
 	case onvif.MediaGetVideoSourceConfiguration:
 		b = onvif.GetVideoSourceConfigurationResponse(findToken(b, "ConfigurationToken"))
@@ -214,6 +215,14 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 	if _, err = w.Write(b); err != nil {
 		log.Error().Err(err).Caller().Send()
 	}
+}
+
+// profileNames returns the names of the streams in a stable order: clients
+// take the cameras by their position in the list (ex. Dahua its channels)
+func profileNames() []string {
+	names := streams.GetAllNames()
+	slices.Sort(names)
+	return names
 }
 
 // findToken returns the stream name a token of the request stands for
