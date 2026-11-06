@@ -208,6 +208,18 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		}
 		b = onvif.GetVideoSourceConfigurationResponse(source)
 
+	case onvif.MediaGetVideoSourceConfigurationOptions:
+		sources, subcode := optionSources(findToken(b, "ConfigurationToken"), findToken(b, "ProfileToken"))
+		if sources == nil {
+			reason := "no such configuration"
+			if subcode == "NoProfile" {
+				reason = "no such profile"
+			}
+			fault(w, subcode, reason)
+			return
+		}
+		b = onvif.GetVideoSourceConfigurationOptionsResponse(sources)
+
 	case onvif.MediaGetVideoEncoderConfigurations:
 		b = onvif.GetVideoEncoderConfigurationsResponse(profilesOf(describe(configs())))
 

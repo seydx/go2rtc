@@ -1,12 +1,15 @@
 package onvif
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/xml"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +19,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
+	"github.com/AlexxIT/go2rtc/pkg/onvif"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/require"
 )
@@ -529,4 +533,161 @@ func TestVideoSourcesFollowTheSavedConfig(t *testing.T) {
 func unmarshal(t *testing.T, b []byte, v any) {
 	t.Helper()
 	require.NoError(t, xml.Unmarshal(b, v), "%s", b)
+}
+
+// children are the names of the elements directly in the first element at
+// path (below Body), in their order: the schema of ONVIF is a sequence
+func children(t *testing.T, b []byte, path ...string) []string {
+	t.Helper()
+	want := append([]string{"Envelope", "Body"}, path...)
+	var stack, names []string
+	found := false
+	d := xml.NewDecoder(bytes.NewReader(b))
+	for {
+		token, err := d.Token()
+		if err == io.EOF {
+			require.True(t, found, "no %s in %s", strings.Join(path, "/"), b)
+			return names
+		}
+		require.NoError(t, err, "%s", b)
+		switch token := token.(type) {
+		case xml.StartElement:
+			if found && len(stack) == len(want) && slices.Equal(stack, want) {
+				names = append(names, token.Name.Local)
+			}
+			stack = append(stack, token.Name.Local)
+			if !found && slices.Equal(stack, want) {
+				found = true
+			}
+		case xml.EndElement:
+			if found && slices.Equal(stack, want) {
+				return names
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+}
+
+// The answers lacked elements the ONVIF schema requires (an OxDM structure
+// check found them): MediaUri without InvalidAfterConnect, InvalidAfterReboot
+// and Timeout, the encoder configurations without Multicast, DNS, NTP and the
+// hostname without FromDHCP, and no network interface at all. A strict client
+// rejects such an answer.
+func TestRequiredElements(t *testing.T) {
+	freshProbes(t)
+	newStub(t, "front_main", &stubSource{codec: h265Codec(fmtpH265Wide)})
+	newStub(t, "front_sub", &stubSource{codec: h264Codec(fmtpH264Base)})
+	useConfig(t, sourceConfig{Profiles: []string{"front_main", "front_sub"}})
+
+	mediaUri := []string{"Uri", "InvalidAfterConnect", "InvalidAfterReboot", "Timeout"}
+	for _, operation := range []string{"GetStreamUri", "GetSnapshotUri"} {
+		b := request(t, operation, "<trt:ProfileToken>front_sub</trt:ProfileToken>")
+		require.Equal(t, mediaUri, children(t, b, operation+"Response", "MediaUri"), operation)
+
+		// the schema says false and PT0S: valid for good
+		res := parse(t, b)
+		require.Equal(t, []string{"false"}, res.texts["InvalidAfterConnect"], operation)
+		require.Equal(t, []string{"false"}, res.texts["InvalidAfterReboot"], operation)
+		require.Equal(t, []string{"PT0S"}, res.texts["Timeout"], operation)
+	}
+
+	h264 := []string{"Name", "UseCount", "Encoding", "Resolution", "Quality", "RateControl", "H264", "Multicast", "SessionTimeout"}
+	h265 := []string{"Name", "UseCount", "Encoding", "Resolution", "Quality", "RateControl", "Multicast", "SessionTimeout"}
+	require.Equal(t, h265, children(t, request(t, "GetProfiles", ""), "GetProfilesResponse", "Profiles", "VideoEncoderConfiguration"))
+	require.Equal(t, h264, children(t, request(t, "GetProfile", "<trt:ProfileToken>front_sub</trt:ProfileToken>"), "GetProfileResponse", "Profile", "VideoEncoderConfiguration"))
+	require.Equal(t, h265, children(t, request(t, "GetVideoEncoderConfigurations", ""), "GetVideoEncoderConfigurationsResponse", "Configurations"))
+	b := request(t, "GetVideoEncoderConfiguration", "<trt:ConfigurationToken>front_sub</trt:ConfigurationToken>")
+	require.Equal(t, h264, children(t, b, "GetVideoEncoderConfigurationResponse", "Configuration"))
+	require.Equal(t, []string{"Address", "Port", "TTL", "AutoStart"}, children(t, b, "GetVideoEncoderConfigurationResponse", "Configuration", "Multicast"))
+	require.Equal(t, []string{"Type", "IPv4Address"}, children(t, b, "GetVideoEncoderConfigurationResponse", "Configuration", "Multicast", "Address"))
+
+	for operation, path := range map[string][]string{
+		"GetDNS":      {"GetDNSResponse", "DNSInformation"},
+		"GetNTP":      {"GetNTPResponse", "NTPInformation"},
+		"GetHostname": {"GetHostnameResponse", "HostnameInformation"},
+	} {
+		w := requestService(t, onvif.DeviceNamespace, operation)
+		require.Equal(t, http.StatusOK, w.Code, operation)
+		require.Equal(t, []string{"FromDHCP"}, children(t, w.Body.Bytes(), path...), operation)
+	}
+
+	w := requestService(t, onvif.DeviceNamespace, "GetNetworkInterfaces")
+	require.Equal(t, http.StatusOK, w.Code)
+	var interfaces struct {
+		Interfaces []struct {
+			Token   string `xml:"token,attr"`
+			Enabled string `xml:"Enabled"`
+			MAC     string `xml:"Info>HwAddress"`
+		} `xml:"Body>GetNetworkInterfacesResponse>NetworkInterfaces"`
+	}
+	unmarshal(t, w.Body.Bytes(), &interfaces)
+	require.Len(t, interfaces.Interfaces, 1)
+	require.NotEmpty(t, interfaces.Interfaces[0].Token)
+	require.Equal(t, "true", interfaces.Interfaces[0].Enabled)
+	require.Empty(t, interfaces.Interfaces[0].MAC, "Hass would join the device with others of the MAC of the host")
+}
+
+type sourceOptions struct {
+	Tokens []string `xml:"Body>GetVideoSourceConfigurationOptionsResponse>Options>VideoSourceTokensAvailable"`
+
+	WidthMin  int `xml:"Body>GetVideoSourceConfigurationOptionsResponse>Options>BoundsRange>WidthRange>Min"`
+	WidthMax  int `xml:"Body>GetVideoSourceConfigurationOptionsResponse>Options>BoundsRange>WidthRange>Max"`
+	HeightMin int `xml:"Body>GetVideoSourceConfigurationOptionsResponse>Options>BoundsRange>HeightRange>Min"`
+	HeightMax int `xml:"Body>GetVideoSourceConfigurationOptionsResponse>Options>BoundsRange>HeightRange>Max"`
+}
+
+// GetVideoSourceConfigurationOptions is required of the media service, the
+// server answered ActionNotSupported. The options are the size of the source:
+// of the configuration, of the profile, of all sources without a token.
+func TestVideoSourceConfigurationOptions(t *testing.T) {
+	freshProbes(t)
+	newStub(t, "front_main", &stubSource{codec: h265Codec(fmtpH265Wide)})
+	newStub(t, "front_sub", &stubSource{codec: h264Codec(fmtpH264Base)})
+	newStub(t, "back", &stubSource{codec: h264Codec(fmtpH264High)})
+	newStub(t, "side", &stubSource{codec: h264Codec(fmtpH264Base)})
+	useConfig(t,
+		sourceConfig{Profiles: []string{"front_main", "front_sub"}},
+		sourceConfig{Profiles: []string{"side"}},
+		sourceConfig{Profiles: []string{"back"}},
+	)
+
+	options := func(body string) sourceOptions {
+		t.Helper()
+		var o sourceOptions
+		unmarshal(t, request(t, "GetVideoSourceConfigurationOptions", body), &o)
+		return o
+	}
+	front := sourceOptions{Tokens: []string{"front_main"}, WidthMin: 5120, WidthMax: 5120, HeightMin: 1440, HeightMax: 1440}
+	back := sourceOptions{Tokens: []string{"back"}, WidthMin: 2560, WidthMax: 2560, HeightMin: 1920, HeightMax: 1920}
+
+	require.Equal(t, front, options("<trt:ConfigurationToken>front_main</trt:ConfigurationToken>"))
+	require.Equal(t, front, options("<trt:ProfileToken>front_sub</trt:ProfileToken>"), "the source of the profile")
+	require.Equal(t, back, options("<trt:ProfileToken>back</trt:ProfileToken><trt:ConfigurationToken>back</trt:ConfigurationToken>"))
+	// 5120x1440, 1280x720 and 2560x1920
+	require.Equal(t, sourceOptions{Tokens: []string{"front_main", "side", "back"}, WidthMin: 1280, WidthMax: 5120, HeightMin: 720, HeightMax: 1920}, options(""))
+
+	b := request(t, "GetVideoSourceConfigurationOptions", "")
+	require.Equal(t, []string{"BoundsRange", "VideoSourceTokensAvailable", "VideoSourceTokensAvailable", "VideoSourceTokensAvailable"},
+		children(t, b, "GetVideoSourceConfigurationOptionsResponse", "Options"))
+	require.Equal(t, []string{"XRange", "YRange", "WidthRange", "HeightRange"},
+		children(t, b, "GetVideoSourceConfigurationOptionsResponse", "Options", "BoundsRange"))
+
+	for _, tc := range []struct{ body, subcode string }{
+		{"<trt:ProfileToken>unlisted</trt:ProfileToken>", "ter:NoProfile"},
+		{"<trt:ConfigurationToken>front_sub</trt:ConfigurationToken>", "ter:NoConfig"}, // a profile, not a source
+		{"<trt:ProfileToken>back</trt:ProfileToken><trt:ConfigurationToken>front_main</trt:ConfigurationToken>", "ter:NoConfig"},
+	} {
+		status, b := requestStatus(t, "GetVideoSourceConfigurationOptions", tc.body)
+		require.Equal(t, http.StatusBadRequest, status, tc.body)
+		var fault struct {
+			Subcode string `xml:"Body>Fault>Code>Subcode>Subcode>Value"`
+		}
+		unmarshal(t, b, &fault)
+		require.Equal(t, tc.subcode, fault.Subcode, tc.body)
+	}
+
+	// no video source at all
+	setSourceConfigs([]sourceConfig{})
+	status, _ := requestStatus(t, "GetVideoSourceConfigurationOptions", "")
+	require.Equal(t, http.StatusBadRequest, status)
 }

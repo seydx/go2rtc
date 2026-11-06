@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"html"
+	"math"
 	"regexp"
 	"time"
 )
@@ -49,6 +50,7 @@ const (
 	MediaGetVideoSources                     = "GetVideoSources"
 	MediaGetVideoSourceConfiguration         = "GetVideoSourceConfiguration"
 	MediaGetVideoSourceConfigurations        = "GetVideoSourceConfigurations"
+	MediaGetVideoSourceConfigurationOptions  = "GetVideoSourceConfigurationOptions"
 )
 
 func GetRequestAction(b []byte) string {
@@ -283,6 +285,7 @@ func GetVideoEncoderConfigurationResponse(p *MediaProfile) []byte {
 // appendVideoEncoderConfiguration: the token of the encoder configuration of a
 // profile is the token of the profile. Important for UniFi Protect: RateControl,
 // and H265 as the encoding of an H.265 stream (else its live view stays black).
+// Multicast is required, its address 0.0.0.0 tells there is none.
 func appendVideoEncoderConfiguration(e *Envelope, tag string, p *MediaProfile) {
 	v := p.Video
 	e.Appendf(`<%s token="%s">
@@ -296,8 +299,36 @@ func appendVideoEncoderConfiguration(e *Envelope, tag string, p *MediaProfile) {
 	if v.Encoding == "H264" {
 		e.Appendf(`<tt:H264><tt:GovLength>10</tt:GovLength><tt:H264Profile>%s</tt:H264Profile></tt:H264>`, v.Profile)
 	}
-	e.Appendf(`<tt:SessionTimeout>PT10S</tt:SessionTimeout>
+	e.Appendf(`<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address><tt:Port>0</tt:Port><tt:TTL>0</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast>
+	<tt:SessionTimeout>PT10S</tt:SessionTimeout>
 </%s>`, tag)
+}
+
+// GetVideoSourceConfigurationOptionsResponse: the bounds of a video source are
+// its whole picture, go2rtc doesn't crop it. Options for several sources range
+// over their sizes.
+func GetVideoSourceConfigurationOptionsResponse(sources []*VideoSource) []byte {
+	minWidth, minHeight := math.MaxInt, math.MaxInt
+	var maxWidth, maxHeight int
+	for _, s := range sources {
+		width, height := s.size()
+		minWidth, maxWidth = min(minWidth, width), max(maxWidth, width)
+		minHeight, maxHeight = min(minHeight, height), max(maxHeight, height)
+	}
+
+	e := NewEnvelope()
+	e.Appendf(`<trt:GetVideoSourceConfigurationOptionsResponse><trt:Options>
+	<tt:BoundsRange>
+		<tt:XRange><tt:Min>0</tt:Min><tt:Max>0</tt:Max></tt:XRange>
+		<tt:YRange><tt:Min>0</tt:Min><tt:Max>0</tt:Max></tt:YRange>
+		<tt:WidthRange><tt:Min>%d</tt:Min><tt:Max>%d</tt:Max></tt:WidthRange>
+		<tt:HeightRange><tt:Min>%d</tt:Min><tt:Max>%d</tt:Max></tt:HeightRange>
+	</tt:BoundsRange>`, minWidth, maxWidth, minHeight, maxHeight)
+	for _, s := range sources {
+		e.Appendf(`<tt:VideoSourceTokensAvailable>%s</tt:VideoSourceTokensAvailable>`, html.EscapeString(s.Token))
+	}
+	e.Append(`</trt:Options></trt:GetVideoSourceConfigurationOptionsResponse>`)
+	return e.Bytes()
 }
 
 // GetVideoEncoderConfigurationOptionsResponse: the only option of a profile is
@@ -347,14 +378,20 @@ func NotSupportedResponse(reason string) []byte {
 
 func GetStreamUriResponse(uri string) []byte {
 	e := NewEnvelope()
-	e.Appendf(`<trt:GetStreamUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri></trt:MediaUri></trt:GetStreamUriResponse>`, html.EscapeString(uri))
+	e.Appendf(`<trt:GetStreamUriResponse>%s</trt:GetStreamUriResponse>`, mediaUri(uri))
 	return e.Bytes()
 }
 
 func GetSnapshotUriResponse(uri string) []byte {
 	e := NewEnvelope()
-	e.Appendf(`<trt:GetSnapshotUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri></trt:MediaUri></trt:GetSnapshotUriResponse>`, html.EscapeString(uri))
+	e.Appendf(`<trt:GetSnapshotUriResponse>%s</trt:GetSnapshotUriResponse>`, mediaUri(uri))
 	return e.Bytes()
+}
+
+// mediaUri: a URI stays valid after a connect and a restart, for good (PT0S)
+func mediaUri(uri string) string {
+	return `<trt:MediaUri><tt:Uri>` + html.EscapeString(uri) + `</tt:Uri>` +
+		`<tt:InvalidAfterConnect>false</tt:InvalidAfterConnect><tt:InvalidAfterReboot>false</tt:InvalidAfterReboot><tt:Timeout>PT0S</tt:Timeout></trt:MediaUri>`
 }
 
 func StaticResponse(operation string) []byte {
@@ -369,15 +406,19 @@ func StaticResponse(operation string) []byte {
 }
 
 var responses = map[string]string{
-	DeviceGetDiscoveryMode:        `<tds:GetDiscoveryModeResponse><tds:DiscoveryMode>Discoverable</tds:DiscoveryMode></tds:GetDiscoveryModeResponse>`,
-	DeviceGetDNS:                   `<tds:GetDNSResponse><tds:DNSInformation /></tds:GetDNSResponse>`,
-	DeviceGetHostname:              `<tds:GetHostnameResponse><tds:HostnameInformation /></tds:GetHostnameResponse>`,
+	DeviceGetDiscoveryMode: `<tds:GetDiscoveryModeResponse><tds:DiscoveryMode>Discoverable</tds:DiscoveryMode></tds:GetDiscoveryModeResponse>`,
+	// FromDHCP is required: go2rtc gets no DNS, hostname or NTP settings from
+	// DHCP, it has none (NetworkConfigNotSupported)
+	DeviceGetDNS:                   `<tds:GetDNSResponse><tds:DNSInformation><tt:FromDHCP>false</tt:FromDHCP></tds:DNSInformation></tds:GetDNSResponse>`,
+	DeviceGetHostname:              `<tds:GetHostnameResponse><tds:HostnameInformation><tt:FromDHCP>false</tt:FromDHCP></tds:HostnameInformation></tds:GetHostnameResponse>`,
 	DeviceGetNetworkDefaultGateway: `<tds:GetNetworkDefaultGatewayResponse><tds:NetworkGateway /></tds:GetNetworkDefaultGatewayResponse>`,
-	DeviceGetNTP:                   `<tds:GetNTPResponse><tds:NTPInformation /></tds:GetNTPResponse>`,
+	DeviceGetNTP:                   `<tds:GetNTPResponse><tds:NTPInformation><tt:FromDHCP>false</tt:FromDHCP></tds:NTPInformation></tds:GetNTPResponse>`,
 	DeviceSetSystemDateAndTime:     `<tds:SetSystemDateAndTimeResponse />`,
 	DeviceSystemReboot:             `<tds:SystemRebootResponse><tds:Message>OK</tds:Message></tds:SystemRebootResponse>`,
 
-	DeviceGetNetworkInterfaces: `<tds:GetNetworkInterfacesResponse />`,
+	// at least one interface is required. Without its Info: Hass would take the
+	// MAC of the host as the ID and join the device with others of that MAC.
+	DeviceGetNetworkInterfaces: `<tds:GetNetworkInterfacesResponse><tds:NetworkInterfaces token="0"><tt:Enabled>true</tt:Enabled></tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>`,
 	DeviceGetNetworkProtocols:  `<tds:GetNetworkProtocolsResponse />`,
 	DeviceGetScopes: `<tds:GetScopesResponse>
 	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/name/go2rtc</tt:ScopeItem></tds:Scopes>

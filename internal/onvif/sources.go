@@ -261,6 +261,36 @@ func findSource(token string) *onvif.VideoSource {
 	return nil
 }
 
+// optionSources are the video sources of the options a client asks for: the one
+// of the configuration, the one of the profile, both have to match. Without a
+// token all of them. Nil with the subcode of the fault.
+func optionSources(configToken, profileToken string) ([]*onvif.VideoSource, string) {
+	var source *onvif.VideoSource
+	if profileToken != "" {
+		profile := findProfile(profileToken)
+		if profile == nil {
+			return nil, "NoProfile"
+		}
+		source = profile.Source
+	}
+	if configToken != "" {
+		if source == nil {
+			source = findSource(configToken)
+		}
+		// the token of a source configuration is the one of its source
+		if source == nil || source.Token != configToken {
+			return nil, "NoConfig"
+		}
+	}
+	if source != nil {
+		return []*onvif.VideoSource{source}, ""
+	}
+	if sources := describe(configs()); len(sources) > 0 {
+		return sources, ""
+	}
+	return nil, "NoConfig"
+}
+
 // isProfile tells if token is a profile, without describing it
 func isProfile(token string) bool {
 	for _, cfg := range configs() {
