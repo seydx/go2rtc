@@ -173,7 +173,7 @@ func (c *Conn) Accept() error {
 
 			// Test if client requests TCP transport, otherwise return 461 Transport not supported
 			// This allows smart clients who initially requested UDP to fall back on TCP transport
-			if tr := req.Header.Get("Transport"); strings.HasPrefix(tr, "RTP/AVP/TCP") {
+			if tr := tcpTransport(req.Header.Get("Transport")); tr != "" {
 				// one session for all tracks: the SETUP of each further track
 				// joins the session of the first one
 				if c.session == "" {
@@ -252,4 +252,15 @@ func reqTrackID(req *tcp.Request) int {
 		}
 	}
 	return -1
+}
+
+// tcpTransport returns the TCP interleaved one of the transports a client
+// lists in the order of its preference (RFC 2326 12.39), or none
+func tcpTransport(header string) string {
+	for tr := range strings.SplitSeq(header, ",") {
+		if tr = strings.TrimSpace(tr); strings.HasPrefix(tr, "RTP/AVP/TCP") {
+			return tr
+		}
+	}
+	return ""
 }

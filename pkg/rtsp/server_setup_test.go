@@ -65,3 +65,58 @@ func TestServerKeepsSessionAcrossSetups(t *testing.T) {
 
 	require.Equal(t, sessions[0], sessions[1], "both tracks are in one session")
 }
+
+// RFC 2326 12.39: a client lists the transports it takes, in order of
+// preference. One that listed UDP first got 461 for all of them, though TCP
+// was among them. UDP alone stays 461, so the client may ask again with TCP.
+func TestServerTakesTCPFromTransportList(t *testing.T) {
+	const udp = "RTP/AVP;unicast;client_port=5000-5001"
+	for _, tc := range []struct {
+		name      string
+		mode      core.Mode
+		transport string
+		status    int
+		reply     string
+	}{
+		{"tcp", core.ModePassiveConsumer, "RTP/AVP/TCP;unicast;interleaved=0-1", 200, "RTP/AVP/TCP;unicast;interleaved=0-1"},
+		{"udp, then tcp", core.ModePassiveConsumer, udp + ",RTP/AVP/TCP;unicast;interleaved=0-1", 200, "RTP/AVP/TCP;unicast;interleaved=0-1"},
+		{"udp, then tcp after a space", core.ModePassiveConsumer, udp + ", RTP/AVP/TCP;unicast;interleaved=0-1", 200, "RTP/AVP/TCP;unicast;interleaved=0-1"},
+		{"udp only", core.ModePassiveConsumer, udp, 461, ""},
+		{"publisher: udp, then tcp", core.ModePassiveProducer, udp + ";mode=record,RTP/AVP/TCP;unicast;interleaved=0-1;mode=record", 200, "RTP/AVP/TCP;unicast;interleaved=0-1;mode=record"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, client := net.Pipe()
+			require.NoError(t, client.SetDeadline(time.Now().Add(5*time.Second)))
+
+			c := NewServer(server)
+			c.HandshakeTimeout = 5
+			c.mode = tc.mode
+			if tc.mode == core.ModePassiveConsumer {
+				codec := &core.Codec{Name: core.CodecH264, ClockRate: 90000, PayloadType: 96}
+				media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionSendonly, Codecs: []*core.Codec{codec}}
+				require.NoError(t, c.AddTrack(media, codec, core.NewReceiver(media, codec)))
+			}
+
+			accepted := make(chan struct{})
+			go func() {
+				_ = c.Accept()
+				close(accepted)
+			}()
+			t.Cleanup(func() {
+				_ = client.Close()
+				<-accepted
+				for _, sender := range c.Senders {
+					sender.Close()
+				}
+			})
+
+			_, err := fmt.Fprintf(client, "SETUP rtsp://127.0.0.1/cam/trackID=0 RTSP/1.0\r\nCSeq: 1\r\nTransport: %s\r\n\r\n", tc.transport)
+			require.NoError(t, err)
+
+			res, err := tcp.ReadResponse(bufio.NewReader(client))
+			require.NoError(t, err)
+			require.Equal(t, tc.status, res.StatusCode)
+			require.Equal(t, tc.reply, res.Header.Get("Transport"))
+		})
+	}
+}
