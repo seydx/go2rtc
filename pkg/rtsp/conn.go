@@ -40,6 +40,9 @@ type Conn struct {
 
 	URL *url.URL
 
+	// streamNamed: a DESCRIBE or ANNOUNCE set URL, it names the stream
+	streamNamed bool
+
 	// internal
 
 	auth      *tcp.Auth

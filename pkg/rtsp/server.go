@@ -104,6 +104,7 @@ func (c *Conn) Accept() error {
 			c.infoMu.Unlock()
 
 			c.mode = core.ModePassiveProducer
+			c.streamURL(req)
 			c.Fire(MethodAnnounce)
 
 			res := &tcp.Response{Request: req}
@@ -113,6 +114,7 @@ func (c *Conn) Accept() error {
 
 		case MethodDescribe:
 			c.mode = core.ModePassiveConsumer
+			c.streamURL(req)
 			c.Fire(MethodDescribe)
 
 			if c.Senders == nil {
@@ -263,4 +265,15 @@ func tcpTransport(header string) string {
 		}
 	}
 	return ""
+}
+
+// streamURL takes the URL of the first DESCRIBE or ANNOUNCE as the one of the
+// connection: it names the stream. The first request of a client may be
+// OPTIONS * or for the bare server URL (RFC 2326 10.1). A DESCRIBE again stays
+// with the stream the connection is attached to.
+func (c *Conn) streamURL(req *tcp.Request) {
+	if !c.streamNamed {
+		c.streamNamed = true
+		c.URL = req.URL
+	}
 }
