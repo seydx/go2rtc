@@ -6,13 +6,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
+	"github.com/AlexxIT/go2rtc/internal/mjpeg"
 	"github.com/AlexxIT/go2rtc/internal/rtsp"
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -21,18 +21,63 @@ import (
 )
 
 func Init() {
+	var cfg struct {
+		Mod struct {
+			Listen string `yaml:"listen"`
+		} `yaml:"onvif"`
+	}
+
+	app.LoadConfig(&cfg)
+
 	log = app.GetLogger("onvif")
 
 	streams.HandleFunc("onvif", streamOnvif)
 
-	// ONVIF server on all suburls
-	api.HandleFunc("/onvif/", onvifDeviceService)
-
 	// ONVIF client autodiscovery
 	api.HandleFunc("api/onvif", apiOnvif)
+
+	// ONVIF server: plain HTTP on a listener of its own, off without one. On
+	// the API it was wherever the API was, and the API came along with it.
+	if cfg.Mod.Listen == "" {
+		return
+	}
+
+	ln, err := net.Listen("tcp", cfg.Mod.Listen)
+	if err != nil {
+		log.Error().Err(err).Msg("[onvif] listen")
+		return
+	}
+
+	log.Info().Str("addr", cfg.Mod.Listen).Msg("[onvif] listen")
+
+	go serve(ln)
 }
 
 var log zerolog.Logger
+
+const snapshotPath = "/onvif/snapshot"
+
+func serve(ln net.Listener) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/onvif/", onvifDeviceService) // the services on all suburls
+	mux.HandleFunc(snapshotPath, onvifSnapshot)
+
+	server := http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	if err := server.Serve(ln); err != nil {
+		log.Error().Err(err).Msg("[onvif] serve")
+	}
+}
+
+// onvifSnapshot serves the snapshot URI for the streams of the config only:
+// for any other src the snapshot handler creates a stream with it as source,
+// and the ONVIF port has no login.
+func onvifSnapshot(w http.ResponseWriter, r *http.Request) {
+	if streams.Get(r.URL.Query().Get("src")) == nil {
+		http.Error(w, api.StreamNotFound, http.StatusNotFound)
+		return
+	}
+	mjpeg.HandlerKeyframe(w, r)
+}
 
 func streamOnvif(rawURL string) (core.Producer, error) {
 	client, err := onvif.NewClient(rawURL)
@@ -92,10 +137,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	log.Trace().Msgf("[onvif] server request %s %s:\n%s", r.Method, r.RequestURI, b)
 
-	protocol := "http"
-	if api.IsHTTPS {
-		protocol = "https"
-	}
+	const protocol = "http" // the listener of the ONVIF server has no TLS
 
 	switch operation {
 	case onvif.ServiceGetServiceCapabilities, // important for Hass
@@ -128,13 +170,6 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		// important for Hass: SerialNumber (unique server ID)
 		b = onvif.GetDeviceInformationResponse("", "go2rtc", app.Version, r.Host)
 
-	case onvif.DeviceSystemReboot:
-		b = onvif.StaticResponse(operation)
-
-		time.AfterFunc(time.Second, func() {
-			os.Exit(0)
-		})
-
 	case onvif.MediaGetVideoSources:
 		b = onvif.GetVideoSourcesResponse(streams.GetAllNames())
 
@@ -163,7 +198,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetStreamUriResponse(uri)
 
 	case onvif.MediaGetSnapshotUri:
-		uri := protocol + "://" + r.Host + "/api/frame.jpeg?src=" + url.QueryEscape(findToken(b, "ProfileToken"))
+		uri := protocol + "://" + r.Host + snapshotPath + "?src=" + url.QueryEscape(findToken(b, "ProfileToken"))
 		b = onvif.GetSnapshotUriResponse(uri)
 
 	default:

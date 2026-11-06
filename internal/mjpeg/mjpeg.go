@@ -36,6 +36,12 @@ func Init() {
 
 var log zerolog.Logger
 
+// HandlerKeyframe serves a JPEG of the stream in ?src=, also the ONVIF snapshot.
+// A src that names no stream creates one from it as a source.
+func HandlerKeyframe(w http.ResponseWriter, r *http.Request) {
+	handlerKeyframe(w, r)
+}
+
 func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	stream, _ := streams.GetOrPatch(query)

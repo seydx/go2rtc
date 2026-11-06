@@ -468,6 +468,19 @@
         }
       }
     },
+    "onvif": {
+      "description": "ONVIF server, plain HTTP on a listener of its own, off without listen",
+      "type": "object",
+      "properties": {
+        "listen": {
+          "type": "string",
+          "examples": [
+            ":8888",
+            "127.0.0.1:8888"
+          ]
+        }
+      }
+    },
     "pinggy": {
       "type": "object",
       "properties": {

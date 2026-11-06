@@ -17,6 +17,18 @@ streams:
 
 ## ONVIF Server
 
+The ONVIF server runs on a listener of its own, plain HTTP, and is off until `listen` is set. It is not part of the API.
+
+```yaml
+onvif:
+  listen: ":8888"            # all interfaces
+  # listen: "127.0.0.1:8888" # this host only
+```
+
+Clients connect to `http://<host>:8888/onvif/device_service`. The stream URIs point to the RTSP server (`rtsp.listen`) and need its credentials. The snapshot URIs point to `/onvif/snapshot?src=<stream>` on the same listener, it serves the streams of the config only.
+
+The ONVIF server has no login: whoever reaches the listener sees the names of all streams. `SystemReboot` is not supported, an ONVIF client cannot restart go2rtc.
+
 A regular camera has a single video source (`GetVideoSources`) and two profiles (`GetProfiles`).
 
 Go2rtc has one video source and one profile per stream.

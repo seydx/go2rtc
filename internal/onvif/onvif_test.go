@@ -4,16 +4,22 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/rtsp"
 	"github.com/AlexxIT/go2rtc/internal/streams"
+	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/tcp"
 	"github.com/stretchr/testify/require"
 )
@@ -149,7 +155,7 @@ func TestURIsOfAnyName(t *testing.T) {
 			require.Len(t, res.texts["Uri"], 1)
 			u, err := url.Parse(res.texts["Uri"][0])
 			require.NoError(t, err)
-			require.Equal(t, "http://192.168.1.2:1984/api/frame.jpeg", u.Scheme+"://"+u.Host+u.Path)
+			require.Equal(t, "http://192.168.1.2:1984/onvif/snapshot", u.Scheme+"://"+u.Host+u.Path)
 			require.Equal(t, name, u.Query().Get("src"))
 		})
 	}
@@ -163,5 +169,130 @@ func TestURIsOfAnyHost(t *testing.T) {
 	require.Equal(t, []string{"rtsp://cam&era:8554/camera"}, res.texts["Uri"])
 
 	res = parse(t, requestHost(t, "cam&era:1984", "GetSnapshotUri", "<trt:ProfileToken>camera</trt:ProfileToken>"))
-	require.Equal(t, []string{"http://cam&era:1984/api/frame.jpeg?src=camera"}, res.texts["Uri"])
+	require.Equal(t, []string{"http://cam&era:1984/onvif/snapshot?src=camera"}, res.texts["Uri"])
+}
+
+// The ONVIF server has its own plain HTTP listener: the addresses it hands out
+// are http, also when the API runs on HTTPS.
+func TestAddressesAreHTTP(t *testing.T) {
+	useStreams(t)
+
+	https := api.IsHTTPS
+	api.IsHTTPS = true
+	t.Cleanup(func() { api.IsHTTPS = https })
+
+	for _, operation := range []string{"GetCapabilities", "GetServices"} {
+		res := parse(t, requestHost(t, "192.168.1.2:8899", operation, ""))
+		require.NotEmpty(t, res.texts["XAddr"])
+		for _, addr := range res.texts["XAddr"] {
+			require.True(t, strings.HasPrefix(addr, "http://192.168.1.2:8899/onvif/"), addr)
+		}
+	}
+
+	res := parse(t, requestHost(t, "192.168.1.2:8899", "GetSnapshotUri", "<trt:ProfileToken>camera</trt:ProfileToken>"))
+	require.Equal(t, []string{"http://192.168.1.2:8899/onvif/snapshot?src=camera"}, res.texts["Uri"])
+}
+
+var initOnce sync.Once
+
+// serveOnvif starts the ONVIF server on a listener of its own
+func serveOnvif(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	done := make(chan struct{})
+	go func() {
+		serve(ln)
+		close(done)
+	}()
+	// the server is gone before the next test, it logs its end
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+	})
+	return ln.Addr().String()
+}
+
+func get(t *testing.T, uri string) int {
+	t.Helper()
+	client := http.Client{Timeout: 5 * time.Second}
+	res, err := client.Get(uri)
+	require.NoError(t, err)
+	_ = res.Body.Close()
+	return res.StatusCode
+}
+
+// A client finds everything on the listener of the ONVIF server: it follows
+// the service addresses and the URIs it gets there. The API is not on it.
+func TestOwnListener(t *testing.T) {
+	useStreams(t)
+	addr := serveOnvif(t)
+
+	post := func(uri, operation, body string) []byte {
+		res, err := http.Post(uri, "application/soap+xml", strings.NewReader(
+			`<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>`+
+				`<trt:`+operation+` xmlns:trt="http://www.onvif.org/ver10/media/wsdl">`+body+`</trt:`+operation+`>`+
+				`</s:Body></s:Envelope>`,
+		))
+		require.NoError(t, err)
+		defer res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		b, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
+		return b
+	}
+
+	res := parse(t, post("http://"+addr+"/onvif/device_service", "GetServices", ""))
+	media := "http://" + addr + "/onvif/media_service"
+	require.Contains(t, res.texts["XAddr"], media)
+
+	res = parse(t, post(media, "GetSnapshotUri", "<trt:ProfileToken>Front Door</trt:ProfileToken>"))
+	require.Equal(t, []string{"http://" + addr + "/onvif/snapshot?src=Front+Door"}, res.texts["Uri"])
+
+	// the snapshot handler answers: without a source no frame, but 200 (the
+	// device service would refuse a GET with 400, an unknown stream is 404)
+	require.Equal(t, http.StatusOK, get(t, res.texts["Uri"][0]))
+}
+
+// Restarting go2rtc is not up to an ONVIF client, the ONVIF server has no
+// login: anyone who reached it stopped every stream and recording.
+func TestNoReboot(t *testing.T) {
+	req := httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(
+		`<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>`+
+			`<tds:SystemReboot xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`+
+			`</s:Body></s:Envelope>`,
+	))
+	w := httptest.NewRecorder()
+	onvifDeviceService(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// The ONVIF server is no longer on the API: there it was reachable wherever
+// the API was, with all of the API next to it. The client discovery stays.
+func TestNotOnAPI(t *testing.T) {
+	initOnce.Do(Init) // without onvif.listen in the config, the API routes register once
+
+	route := func(path string) string {
+		_, pattern := http.DefaultServeMux.Handler(httptest.NewRequest("POST", path, nil))
+		return pattern
+	}
+	require.Empty(t, route("/onvif/device_service"))
+	require.Empty(t, route("/onvif/media_service"))
+	require.Equal(t, "/api/onvif", route("/api/onvif"))
+}
+
+// The snapshot URI serves the streams of the config only. For any other src
+// the snapshot handler creates a stream with it as source, and the ONVIF port
+// has no login: anyone who reaches it could have go2rtc dial anything.
+func TestSnapshotOfUnknownSource(t *testing.T) {
+	streams.HandleFunc("zzonvif", func(string) (core.Producer, error) {
+		return nil, errors.New("test source")
+	})
+	addr := serveOnvif(t)
+
+	const src = "zzonvif:camera"
+	t.Cleanup(func() { streams.Delete(src) })
+
+	require.Equal(t, http.StatusNotFound, get(t, "http://"+addr+snapshotPath+"?src="+url.QueryEscape(src)))
+	require.Nil(t, streams.Get(src), "a stream from the src")
 }
