@@ -191,6 +191,12 @@ func tcpHandler(conn *rtsp.Conn) {
 
 		switch msg {
 		case rtsp.MethodDescribe:
+			// a client may describe again on its connection (ex. Hikvision
+			// ISC): it is attached already, the answer is the same session
+			if closer != nil {
+				return
+			}
+
 			if len(conn.URL.Path) == 0 {
 				log.Warn().Msg("[rtsp] server empty URL on DESCRIBE")
 				return

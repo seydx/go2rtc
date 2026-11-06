@@ -2,6 +2,7 @@ package rtsp
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AlexxIT/go2rtc/internal/streams"
+	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/rtsp"
 	"github.com/AlexxIT/go2rtc/pkg/tcp"
 	"github.com/stretchr/testify/require"
 )
@@ -158,4 +162,102 @@ func TestHandlerClosesFailedDescribes(t *testing.T) {
 			require.Equal(t, tc.closed, cam.closedConns(len(tc.closed)))
 		})
 	}
+}
+
+// stubCamera is a source with an H264 track that sends nothing
+type stubCamera struct {
+	core.Connection
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func (c *stubCamera) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
+	receiver := core.NewReceiver(media, codec)
+	c.Receivers = append(c.Receivers, receiver)
+	return receiver, nil
+}
+
+func (c *stubCamera) Start() error {
+	<-c.stopped
+	return nil
+}
+
+func (c *stubCamera) Stop() error {
+	c.once.Do(func() { close(c.stopped) })
+	return c.Connection.Stop()
+}
+
+func newStubStream(t *testing.T, name string) {
+	streams.HandleFunc("rtspstubcam", func(string) (core.Producer, error) {
+		return &stubCamera{
+			Connection: core.Connection{Medias: []*core.Media{{
+				Kind:      core.KindVideo,
+				Direction: core.DirectionRecvonly,
+				Codecs:    []*core.Codec{{Name: core.CodecH264, ClockRate: 90000, PayloadType: 96}},
+			}}},
+			stopped: make(chan struct{}),
+		}, nil
+	})
+	_, err := streams.New(name, "rtspstubcam://"+name)
+	require.NoError(t, err)
+	t.Cleanup(func() { streams.Delete(name) })
+}
+
+// serveRTSP runs the handler of the RTSP server on a listener of its own
+func serveRTSP(t *testing.T) string {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go tcpHandler(rtsp.NewServer(conn))
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func consumersOf(t *testing.T, name string) int {
+	b, err := streams.Get(name).MarshalJSON()
+	require.NoError(t, err)
+	var info struct {
+		Consumers []json.RawMessage `json:"consumers"`
+	}
+	require.NoError(t, json.Unmarshal(b, &info))
+	return len(info.Consumers)
+}
+
+// A client may send DESCRIBE again on its connection (ex. Hikvision ISC). Each
+// one attached the connection to the stream once more: the second answer
+// listed every track twice, and the disconnect left one attachment behind,
+// which kept the camera connected for nobody.
+func TestDescribeAgainAttachesOnce(t *testing.T) {
+	newStubStream(t, "describe")
+	addr := serveRTSP(t)
+
+	conn, err := net.Dial("tcp", addr)
+	require.NoError(t, err)
+	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	reader := bufio.NewReader(conn)
+
+	describe := func(cseq int) string {
+		_, err := fmt.Fprintf(conn, "DESCRIBE rtsp://%s/describe?video RTSP/1.0\r\nCSeq: %d\r\nAccept: application/sdp\r\n\r\n", addr, cseq)
+		require.NoError(t, err)
+		res, err := tcp.ReadResponse(reader)
+		require.NoError(t, err)
+		require.Equal(t, 200, res.StatusCode)
+		return string(res.Body)
+	}
+
+	first := describe(1)
+	require.Equal(t, first, describe(2))
+	require.Equal(t, 1, consumersOf(t, "describe"))
+
+	require.NoError(t, conn.Close())
+	require.Eventually(t, func() bool {
+		return consumersOf(t, "describe") == 0
+	}, 2*time.Second, 10*time.Millisecond, "an attachment outlived the client")
 }
