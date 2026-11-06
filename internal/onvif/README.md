@@ -27,7 +27,7 @@ onvif:
 
 Clients connect to `http://<host>:8888/onvif/device_service`. The stream URIs point to the RTSP server (`rtsp.listen`) and need its credentials. The snapshot URIs point to `/onvif/snapshot?src=<stream>` on the same listener, it serves the streams of the config only.
 
-The ONVIF server has no login: whoever reaches the listener sees the names of all streams. `SystemReboot` is not supported, an ONVIF client cannot restart go2rtc.
+The ONVIF server has no login: whoever reaches the listener sees the names of all streams. `SystemReboot` is not supported, an ONVIF client cannot restart go2rtc. An action the server doesn't have, `SystemReboot` or `GetUsers` say, gets the fault `ter:ActionNotSupported`.
 
 A regular camera has a single video source (`GetVideoSources`) and two profiles (`GetProfiles`), its main and its sub stream.
 
@@ -42,6 +42,8 @@ onvif:
     - token: garage                             # optional, the first profile by default
       profiles: [garage]
 ```
+
+`video_sources: []` has no profiles at all. The `video_sources` of a config saved through the API (`POST` or `PATCH /api/config`) apply right away, without a restart: camera.ui saves its cameras that way. The other settings of the ONVIF server take effect with the next start.
 
 The token of a profile is the name of its stream. A profile tells the codec (H264 or H265) and the resolution of its stream: what the stream sends, or sent the last time. A stream whose resolution is not known yet is read for it, for at most 5 s: a running stream from its next keyframe, a stopped one is dialed. That is a stream that has not run since go2rtc started, or one whose source sends the resolution with its keyframes only (Tapo). The profile keeps the resolution until the stream gets other sources. A camera that does not answer, or sends no keyframe in time, gets placeholders (H264 1920x1080) and is read again a minute later at the earliest.
 
