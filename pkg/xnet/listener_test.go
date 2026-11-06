@@ -93,3 +93,33 @@ func TestListenerMoves(t *testing.T) {
 	_, err = net.Dial("tcp", busy.Addr().String())
 	require.Error(t, err)
 }
+
+// A server turned off, or one whose new port was in use, opens again on its old
+// address
+func TestListenerReopens(t *testing.T) {
+	var l Listener
+	t.Cleanup(func() { _, _ = l.Listen("") })
+
+	addr := freeAddress(t)
+	open := func() {
+		t.Helper()
+		ln, err := l.Listen(addr)
+		require.NoError(t, err)
+		require.NotNil(t, ln)
+		conn, err := net.Dial("tcp", addr)
+		require.NoError(t, err)
+		_ = conn.Close()
+	}
+
+	open()
+	_, err := l.Listen("")
+	require.NoError(t, err)
+	open()
+
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = busy.Close() })
+	_, err = l.Listen(busy.Addr().String())
+	require.Error(t, err)
+	open()
+}
