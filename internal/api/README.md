@@ -39,6 +39,17 @@ api:
   unix_listen: "/tmp/go2rtc.sock"  # default "", unix socket listener for API
 ```
 
+## Saving the config
+
+`POST /api/config` replaces the main config file, `PATCH /api/config` merges a patch into it. These settings apply right away, without a restart:
+
+- `rtsp`: `username`, `password`, `pkt_size` and `default_query`, for the next clients
+- `rtmp.listen`, `onvif.listen` and `onvif.video_sources`, open connections stay
+- `srtp.listen`, from the first session after the running ones
+- `webrtc`: `candidates`, `ice_servers` and `filters.candidates`, for the next connections
+
+Everything else takes effect with the next start. `${VAR}` in a saved config is replaced like at the start.
+
 **PS:**
 
 - MJPEG over WebSocket plays better than native MJPEG because Chrome [bug](https://bugs.chromium.org/p/chromium/issues/detail?id=527446)
