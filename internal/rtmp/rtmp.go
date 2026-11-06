@@ -12,15 +12,13 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/flv"
 	"github.com/AlexxIT/go2rtc/pkg/rtmp"
+	"github.com/AlexxIT/go2rtc/pkg/xnet"
+	"github.com/AlexxIT/go2rtc/pkg/yaml"
 	"github.com/rs/zerolog"
 )
 
 func Init() {
-	var conf struct {
-		Mod struct {
-			Listen string `yaml:"listen" json:"listen"`
-		} `yaml:"rtmp"`
-	}
+	var conf config
 
 	app.LoadConfig(&conf)
 
@@ -36,14 +34,25 @@ func Init() {
 	streams.HandleConsumerFunc("rtmps", streamsConsumerHandle)
 	streams.HandleConsumerFunc("rtmpx", streamsConsumerHandle)
 
-	address := conf.Mod.Listen
-	if address == "" {
-		return
-	}
+	listen(conf.Mod.Listen)
+	api.OnConfigSave(reloadListener)
+}
 
-	ln, err := net.Listen("tcp", address)
+type config struct {
+	Mod struct {
+		Listen string `yaml:"listen" json:"listen"`
+	} `yaml:"rtmp"`
+}
+
+var listener xnet.Listener
+
+func listen(address string) {
+	ln, err := listener.Listen(address)
 	if err != nil {
 		log.Error().Err(err).Caller().Send()
+		return
+	}
+	if ln == nil {
 		return
 	}
 
@@ -57,12 +66,23 @@ func Init() {
 			}
 
 			go func() {
-				if err = tcpHandle(conn); err != nil {
+				if err := tcpHandle(conn); err != nil {
 					log.Error().Err(err).Caller().Send()
 				}
 			}()
 		}
 	}()
+}
+
+// reloadListener moves the server to the address of the config the API saved,
+// open connections stay
+func reloadListener(data []byte) {
+	var conf config
+	if err := yaml.Unmarshal(data, &conf); err != nil {
+		log.Warn().Err(err).Msg("[rtmp] listen of the saved config")
+		return
+	}
+	listen(conf.Mod.Listen)
 }
 
 func tcpHandle(netConn net.Conn) error {
