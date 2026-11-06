@@ -22,6 +22,9 @@ func NewServer(address string) *Server {
 }
 
 func (s *Server) Port() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.conn != nil {
 		return s.conn.LocalAddr().(*net.UDPAddr).Port
 	}
@@ -29,6 +32,14 @@ func (s *Server) Port() int {
 	_, a, _ := net.SplitHostPort(s.address)
 	i, _ := strconv.Atoi(a)
 	return i
+}
+
+// SetAddress changes the address of the socket, it opens there with the first
+// session after the current ones
+func (s *Server) SetAddress(address string) {
+	s.mu.Lock()
+	s.address = address
+	s.mu.Unlock()
 }
 
 func (s *Server) AddSession(session *Session) {
@@ -44,7 +55,7 @@ func (s *Server) AddSession(session *Session) {
 		if s.conn, err = net.ListenPacket("udp", s.address); err != nil {
 			return
 		}
-		go s.handle()
+		go s.handle(s.conn)
 	}
 
 	session.conn = s.conn
@@ -60,6 +71,7 @@ func (s *Server) DelSession(session *Session) {
 	// check s.conn for https://github.com/AlexxIT/go2rtc/issues/734
 	if len(s.sessions) == 0 && s.conn != nil {
 		_ = s.conn.Close()
+		s.conn = nil
 	}
 
 	s.mu.Unlock()
@@ -72,10 +84,10 @@ func (s *Server) GetSession(ssrc uint32) (session *Session) {
 	return
 }
 
-func (s *Server) handle() error {
+func (s *Server) handle(conn net.PacketConn) error {
 	b := make([]byte, 2048)
 	for {
-		n, _, err := s.conn.ReadFrom(b)
+		n, _, err := conn.ReadFrom(b)
 		if err != nil {
 			return err
 		}
