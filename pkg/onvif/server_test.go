@@ -47,7 +47,26 @@ func streamingCapabilities(t *testing.T, b []byte) map[string]string {
 func TestStreamingOverTCP(t *testing.T) {
 	want := map[string]string{"RTP_TCP": "true", "RTP_RTSP_TCP": "true"}
 	require.Equal(t, want, streamingCapabilities(t, GetCapabilitiesResponse("http", "192.168.1.2:8899")))
-	require.Equal(t, want, streamingCapabilities(t, StaticResponse(ServiceGetServiceCapabilities)))
+	require.Equal(t, want, streamingCapabilities(t, MediaServiceCapabilitiesResponse()))
+}
+
+// GetServiceCapabilities has the same name in every service, the namespace
+// of the action tells which service a client asks
+func TestRequestNamespace(t *testing.T) {
+	const envelope = `<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl">`
+	for _, tc := range []struct{ name, request, namespace string }{
+		{"prefix of the envelope", envelope + `<s:Body><tds:GetServiceCapabilities/></s:Body></s:Envelope>`, DeviceNamespace},
+		{"own prefix", envelope + `<s:Body><ns0:GetServiceCapabilities xmlns:ns0="http://www.onvif.org/ver10/media/wsdl"/></s:Body></s:Envelope>`, MediaNamespace},
+		{"default namespace", envelope + `<s:Body><GetServiceCapabilities xmlns="http://www.onvif.org/ver10/media/wsdl"/></s:Body></s:Envelope>`, MediaNamespace},
+		{"after a header", envelope + `<s:Header><Security><UsernameToken><Username>admin</Username></UsernameToken></Security></s:Header>` +
+			`<s:Body><tds:GetServiceCapabilities/></s:Body></s:Envelope>`, DeviceNamespace},
+		{"no namespace", envelope + `<s:Body><GetServiceCapabilities/></s:Body></s:Envelope>`, ""},
+		{"no body", envelope + `</s:Envelope>`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.namespace, GetRequestNamespace([]byte(tc.request)))
+		})
+	}
 }
 
 const (

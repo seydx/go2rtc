@@ -2,13 +2,21 @@ package onvif
 
 import (
 	"bytes"
+	"encoding/xml"
 	"fmt"
 	"html"
 	"regexp"
 	"time"
 )
 
+// GetServiceCapabilities is an action of every service, the namespace of the
+// request tells which one
 const ServiceGetServiceCapabilities = "GetServiceCapabilities"
+
+const (
+	DeviceNamespace = "http://www.onvif.org/ver10/device/wsdl"
+	MediaNamespace  = "http://www.onvif.org/ver10/media/wsdl"
+)
 
 const (
 	DeviceGetCapabilities          = "GetCapabilities"
@@ -55,6 +63,52 @@ func GetRequestAction(b []byte) string {
 		return string(m[1][i+1:])
 	}
 	return string(m[1])
+}
+
+// GetRequestNamespace returns the namespace of the action in the body of a
+// request: the service it is for. Empty without one.
+func GetRequestNamespace(b []byte) string {
+	d := xml.NewDecoder(bytes.NewReader(b))
+	var body bool
+	for {
+		token, err := d.Token()
+		if err != nil {
+			return ""
+		}
+		if start, ok := token.(xml.StartElement); ok {
+			if body {
+				return start.Name.Space
+			}
+			body = start.Name.Local == "Body"
+		}
+	}
+}
+
+// DeviceServiceCapabilitiesResponse tells what the device service can do: no
+// network, user or security settings and no discovery
+func DeviceServiceCapabilitiesResponse() []byte {
+	e := NewEnvelope()
+	e.Append(`<tds:GetServiceCapabilitiesResponse>
+	<tds:Capabilities>
+		<tds:Network IPFilter="false" ZeroConfiguration="false" IPVersion6="false" DynDNS="false" />
+		<tds:Security TLS1.0="false" TLS1.1="false" TLS1.2="false" OnboardKeyGeneration="false" AccessPolicyConfig="false" X.509Token="false" SAMLToken="false" KerberosToken="false" UsernameToken="false" HttpDigest="false" RELToken="false" />
+		<tds:System DiscoveryResolve="false" DiscoveryBye="false" RemoteDiscovery="false" SystemBackup="false" SystemLogging="false" DiscoveryNotSupported="true" NetworkConfigNotSupported="true" UserConfigNotSupported="true" />
+	</tds:Capabilities>
+</tds:GetServiceCapabilitiesResponse>`)
+	return e.Bytes()
+}
+
+// MediaServiceCapabilitiesResponse tells what the media service can do. The
+// ProfileCapabilities are required, even without an attribute.
+func MediaServiceCapabilitiesResponse() []byte {
+	e := NewEnvelope()
+	e.Append(`<trt:GetServiceCapabilitiesResponse>
+	<trt:Capabilities SnapshotUri="true" Rotation="false" VideoSourceMode="false" OSD="false" TemporaryOSDText="false" EXICompression="false">
+		<trt:ProfileCapabilities />
+		<trt:StreamingCapabilities RTPMulticast="false" RTP_TCP="true" RTP_RTSP_TCP="true" NonAggregateControl="false" NoRTSPStreaming="false" />
+	</trt:Capabilities>
+</trt:GetServiceCapabilitiesResponse>`)
+	return e.Bytes()
 }
 
 func GetCapabilitiesResponse(protocol string, host string) []byte {
@@ -281,6 +335,16 @@ func FaultResponse(subcode, reason string) []byte {
 	return e.Bytes()
 }
 
+// NotSupportedResponse is the fault for an action the device doesn't have
+func NotSupportedResponse(reason string) []byte {
+	e := NewEnvelope()
+	e.Appendf(`<s:Fault xmlns:ter="http://www.onvif.org/ver10/error">
+	<s:Code><s:Value>s:Receiver</s:Value><s:Subcode><s:Value>ter:ActionNotSupported</s:Value></s:Subcode></s:Code>
+	<s:Reason><s:Text xml:lang="en">%s</s:Text></s:Reason>
+</s:Fault>`, html.EscapeString(reason))
+	return e.Bytes()
+}
+
 func GetStreamUriResponse(uri string) []byte {
 	e := NewEnvelope()
 	e.Appendf(`<trt:GetStreamUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri></trt:MediaUri></trt:GetStreamUriResponse>`, html.EscapeString(uri))
@@ -305,13 +369,7 @@ func StaticResponse(operation string) []byte {
 }
 
 var responses = map[string]string{
-	ServiceGetServiceCapabilities: `<trt:GetServiceCapabilitiesResponse>
-	<trt:Capabilities SnapshotUri="true" Rotation="false" VideoSourceMode="false" OSD="false" TemporaryOSDText="false" EXICompression="false">
-		<trt:StreamingCapabilities RTPMulticast="false" RTP_TCP="true" RTP_RTSP_TCP="true" NonAggregateControl="false" NoRTSPStreaming="false" />
-	</trt:Capabilities>
-</trt:GetServiceCapabilitiesResponse>`,
-
-	DeviceGetDiscoveryMode:         `<tds:GetDiscoveryModeResponse><tds:DiscoveryMode>Discoverable</tds:DiscoveryMode></tds:GetDiscoveryModeResponse>`,
+	DeviceGetDiscoveryMode:        `<tds:GetDiscoveryModeResponse><tds:DiscoveryMode>Discoverable</tds:DiscoveryMode></tds:GetDiscoveryModeResponse>`,
 	DeviceGetDNS:                   `<tds:GetDNSResponse><tds:DNSInformation /></tds:GetDNSResponse>`,
 	DeviceGetHostname:              `<tds:GetHostnameResponse><tds:HostnameInformation /></tds:GetHostnameResponse>`,
 	DeviceGetNetworkDefaultGateway: `<tds:GetNetworkDefaultGatewayResponse><tds:NetworkGateway /></tds:GetNetworkDefaultGatewayResponse>`,

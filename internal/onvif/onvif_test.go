@@ -21,6 +21,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/rtsp"
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/onvif"
 	"github.com/AlexxIT/go2rtc/pkg/tcp"
 	"github.com/stretchr/testify/require"
 )
@@ -269,17 +270,100 @@ func TestOwnListener(t *testing.T) {
 	require.Equal(t, http.StatusOK, get(t, res.texts["Uri"][0]))
 }
 
-// Restarting go2rtc is not up to an ONVIF client, the ONVIF server has no
-// login: anyone who reached it stopped every stream and recording.
-func TestNoReboot(t *testing.T) {
+// requestService sends an action of a service, by its namespace
+func requestService(t *testing.T, namespace, operation string) *httptest.ResponseRecorder {
+	t.Helper()
+	action := `<ns0:` + operation + ` xmlns:ns0="` + namespace + `"/>`
+	if namespace == "" {
+		action = `<` + operation + `/>`
+	}
 	req := httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(
 		`<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>`+
-			`<tds:SystemReboot xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`+
-			`</s:Body></s:Envelope>`,
+			action+`</s:Body></s:Envelope>`,
 	))
+	req.Host = "192.168.1.2:1984"
 	w := httptest.NewRecorder()
 	onvifDeviceService(w, req)
-	require.Equal(t, http.StatusBadRequest, w.Code)
+	return w
+}
+
+// answer is the action of a response with the elements in its Capabilities
+type answer struct {
+	namespace, action string
+	capabilities      []string
+}
+
+func readAnswer(t *testing.T, b []byte) answer {
+	t.Helper()
+	var a answer
+	d := xml.NewDecoder(bytes.NewReader(b))
+	var depth int
+	for {
+		token, err := d.Token()
+		if err == io.EOF {
+			return a
+		}
+		require.NoError(t, err, "%s", b)
+		switch token := token.(type) {
+		case xml.StartElement:
+			depth++
+			switch depth {
+			case 3: // Envelope > Body > the action
+				a.namespace, a.action = token.Name.Space, token.Name.Local
+			case 5: // > Capabilities > its elements
+				a.capabilities = append(a.capabilities, token.Name.Local)
+			}
+		case xml.EndElement:
+			depth--
+		}
+	}
+}
+
+// GetServiceCapabilities of the device service got the answer of the media
+// service: a client read no device capabilities from it. The media answer
+// lacked its required ProfileCapabilities, a strict client read none either.
+func TestServiceCapabilitiesOfEachService(t *testing.T) {
+	const imaging = "http://www.onvif.org/ver20/imaging/wsdl"
+
+	w := requestService(t, onvif.DeviceNamespace, "GetServiceCapabilities")
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, answer{onvif.DeviceNamespace, "GetServiceCapabilitiesResponse", []string{"Network", "Security", "System"}}, readAnswer(t, w.Body.Bytes()))
+
+	media := answer{onvif.MediaNamespace, "GetServiceCapabilitiesResponse", []string{"ProfileCapabilities", "StreamingCapabilities"}}
+	w = requestService(t, onvif.MediaNamespace, "GetServiceCapabilities")
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, media, readAnswer(t, w.Body.Bytes()))
+
+	// without a namespace, the answer it always got
+	w = requestService(t, "", "GetServiceCapabilities")
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, media, readAnswer(t, w.Body.Bytes()))
+
+	// a service the server doesn't have
+	w = requestService(t, imaging, "GetServiceCapabilities")
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	require.Equal(t, "Fault", readAnswer(t, w.Body.Bytes()).action)
+}
+
+// An action the server doesn't have got "unsupported operation" as plain
+// text, no XML: a client failed to read it ("empty document") instead of
+// seeing the fault the ONVIF core spec names for it. Restarting go2rtc is not
+// up to an ONVIF client either, the ONVIF server has no login: anyone who
+// reached it stopped every stream and recording.
+func TestUnsupportedActions(t *testing.T) {
+	for _, operation := range []string{"GetUsers", "SystemReboot", "CreateUsers"} {
+		w := requestService(t, onvif.DeviceNamespace, operation)
+		require.Equal(t, http.StatusInternalServerError, w.Code, operation)
+		require.Equal(t, "application/soap+xml; charset=utf-8", w.Header().Get("Content-Type"), operation)
+
+		var fault struct {
+			Code    string `xml:"Body>Fault>Code>Value"`
+			Subcode string `xml:"Body>Fault>Code>Subcode>Value"`
+		}
+		require.NoError(t, xml.Unmarshal(w.Body.Bytes(), &fault), "%s", w.Body.Bytes())
+		require.Equal(t, "s:Receiver", fault.Code, operation)
+		require.Equal(t, "ter:ActionNotSupported", fault.Subcode, operation)
+	}
 }
 
 // The ONVIF server is no longer on the API: there it was reachable wherever

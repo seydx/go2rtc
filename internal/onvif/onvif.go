@@ -144,8 +144,18 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 	const protocol = "http" // the listener of the ONVIF server has no TLS
 
 	switch operation {
-	case onvif.ServiceGetServiceCapabilities, // important for Hass
-		onvif.DeviceGetNetworkInterfaces, // important for Hass
+	case onvif.ServiceGetServiceCapabilities: // important for Hass: SnapshotUri of the media service
+		switch onvif.GetRequestNamespace(b) {
+		case onvif.DeviceNamespace:
+			b = onvif.DeviceServiceCapabilitiesResponse()
+		case onvif.MediaNamespace, "":
+			b = onvif.MediaServiceCapabilitiesResponse()
+		default: // a service the server doesn't have
+			notSupported(w, operation)
+			return
+		}
+
+	case onvif.DeviceGetNetworkInterfaces, // important for Hass
 		onvif.DeviceGetSystemDateAndTime, // important for Hass
 		onvif.DeviceSetSystemDateAndTime, // return just OK
 		onvif.DeviceGetDiscoveryMode,
@@ -247,7 +257,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetSnapshotUriResponse(uri)
 
 	default:
-		http.Error(w, "unsupported operation", http.StatusBadRequest)
+		notSupported(w, operation)
 		log.Warn().Msgf("[onvif] unsupported operation: %s", operation)
 		log.Debug().Msgf("[onvif] unsupported request:\n%s", b)
 		return
@@ -266,6 +276,15 @@ func fault(w http.ResponseWriter, subcode, reason string) {
 	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
 	_, _ = w.Write(onvif.FaultResponse(subcode, reason))
+}
+
+// notSupported answers an action the server doesn't have with the fault the
+// ONVIF core spec names for it. A client reads it as a SOAP fault: a plain
+// text answer was no XML at all.
+func notSupported(w http.ResponseWriter, operation string) {
+	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
+	w.WriteHeader(http.StatusInternalServerError) // SOAP 1.2: a fault of the receiver
+	_, _ = w.Write(onvif.NotSupportedResponse(operation + " is not supported"))
 }
 
 // findToken returns the stream name a token of the request stands for
