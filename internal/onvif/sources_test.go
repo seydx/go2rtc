@@ -463,6 +463,69 @@ func TestVideoSourcesOfConfig(t *testing.T) {
 	}
 }
 
+// camera.ui saves the config with its cameras as video sources through the
+// API, go2rtc doesn't restart for it: the profiles follow the saved config
+func TestVideoSourcesFollowTheSavedConfig(t *testing.T) {
+	freshProbes(t)
+	newStub(t, "cam_main", &stubSource{codec: h264Codec(fmtpH264High)})
+	newStub(t, "cam_sub", &stubSource{codec: h264Codec(fmtpH264Base)})
+	newStub(t, "preview", &stubSource{codec: h264Codec(fmtpH264Base)})
+	t.Cleanup(func() { setSourceConfigs(nil) })
+
+	tokens := func() []string {
+		var res struct {
+			Profiles []profileXML `xml:"Body>GetProfilesResponse>Profiles"`
+		}
+		unmarshal(t, request(t, "GetProfiles", ""), &res)
+		var tokens []string
+		for _, p := range res.Profiles {
+			tokens = append(tokens, p.Token)
+		}
+		return tokens
+	}
+
+	camera := []byte("onvif:\n  listen: \":8890\"\n  video_sources:\n    - name: Cam\n      profiles: [cam_main, cam_sub]\n")
+	reloadSourceConfigs(camera)
+	require.Equal(t, []string{"cam_main", "cam_sub"}, tokens())
+
+	// a config that is no YAML changes nothing
+	reloadSourceConfigs([]byte("onvif: ["))
+	require.Equal(t, []string{"cam_main", "cam_sub"}, tokens())
+
+	// no cameras: no profiles, not every stream
+	reloadSourceConfigs([]byte("onvif:\n  video_sources: []\n"))
+	require.Empty(t, tokens())
+	var sources struct {
+		Sources []struct{} `xml:"Body>GetVideoSourcesResponse>VideoSources"`
+	}
+	unmarshal(t, request(t, "GetVideoSources", ""), &sources)
+	require.Empty(t, sources.Sources)
+
+	// without video sources: every stream
+	reloadSourceConfigs([]byte("streams: {}\n"))
+	require.Subset(t, tokens(), []string{"cam_main", "cam_sub", "preview"})
+
+	// the requests read the video sources while a save replaces them
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				requestStatus(t, "GetProfiles", "")
+			}
+		}
+	})
+	for range 50 {
+		reloadSourceConfigs(camera)
+		reloadSourceConfigs([]byte("onvif:\n  video_sources: []\n"))
+	}
+	close(stop)
+	wg.Wait()
+}
+
 func unmarshal(t *testing.T, b []byte, v any) {
 	t.Helper()
 	require.NoError(t, xml.Unmarshal(b, v), "%s", b)

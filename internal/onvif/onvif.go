@@ -33,6 +33,7 @@ func Init() {
 	log = app.GetLogger("onvif")
 
 	setSourceConfigs(cfg.Mod.VideoSources)
+	api.OnConfigSave(reloadSourceConfigs)
 
 	streams.HandleFunc("onvif", streamOnvif)
 

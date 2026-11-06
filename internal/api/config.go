@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/pkg/creds"
@@ -55,7 +56,26 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		configSavedMu.Lock()
+		handlers := configSaved
+		configSavedMu.Unlock()
+		for _, handler := range handlers {
+			handler(data)
+		}
 	}
+}
+
+var configSaved []func(data []byte)
+var configSavedMu sync.Mutex
+
+// OnConfigSave calls handler with the config file the API saved (POST or
+// PATCH api/config): a module takes over what it can change without a
+// restart. The config file is the main one, not the others of the command line.
+func OnConfigSave(handler func(data []byte)) {
+	configSavedMu.Lock()
+	configSaved = append(configSaved, handler)
+	configSavedMu.Unlock()
 }
 
 func mergeYAML(file1 string, yaml2 []byte) ([]byte, error) {

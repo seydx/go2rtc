@@ -9,6 +9,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/onvif"
+	"github.com/AlexxIT/go2rtc/pkg/yaml"
 )
 
 // sourceConfig is a video source of the config: the input of a camera, its
@@ -19,14 +20,19 @@ type sourceConfig struct {
 	Profiles []string `yaml:"profiles"`
 }
 
-// sourceConfigs are the video sources of the config, set by Init: only their
-// streams are profiles, in their order
+// sourceConfigs are the video sources of the config: only their streams are
+// profiles, in their order. Nil without video_sources in the config, then
+// every stream is a profile. Never changed, only replaced.
 var sourceConfigs []sourceConfig
+var sourceConfigsMu sync.Mutex
 
-// setSourceConfigs takes the video sources of the config. A stream is the
-// profile of one source only: the client asks for it by its name.
+// setSourceConfigs takes the video sources of the config, nil without any. A
+// stream is the profile of one source only: the client asks for it by its name.
 func setSourceConfigs(configs []sourceConfig) {
-	sourceConfigs = nil
+	var list []sourceConfig
+	if configs != nil {
+		list = []sourceConfig{} // an empty list: no profiles at all
+	}
 	seen := map[string]bool{}
 	for _, cfg := range configs {
 		var profiles []string
@@ -45,16 +51,39 @@ func setSourceConfigs(configs []sourceConfig) {
 		if cfg.Token == "" {
 			cfg.Token = profiles[0]
 		}
-		sourceConfigs = append(sourceConfigs, cfg)
+		list = append(list, cfg)
 	}
+
+	sourceConfigsMu.Lock()
+	sourceConfigs = list
+	sourceConfigsMu.Unlock()
+}
+
+// reloadSourceConfigs takes the video sources of the config the API saved:
+// camera.ui adds and removes its cameras without a restart. The other settings
+// of the ONVIF server take effect with the next start.
+func reloadSourceConfigs(data []byte) {
+	var cfg struct {
+		Mod struct {
+			VideoSources []sourceConfig `yaml:"video_sources"`
+		} `yaml:"onvif"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Warn().Err(err).Msg("[onvif] video sources of the saved config")
+		return
+	}
+	setSourceConfigs(cfg.Mod.VideoSources)
 }
 
 // configs returns the video sources the server offers: the ones of the config,
 // or one per stream, in a stable order (clients take the cameras by their
 // position, ex. Dahua its channels)
 func configs() []sourceConfig {
-	if sourceConfigs != nil {
-		return sourceConfigs
+	sourceConfigsMu.Lock()
+	list := sourceConfigs
+	sourceConfigsMu.Unlock()
+	if list != nil {
+		return list
 	}
 	names := streams.GetAllNames()
 	slices.Sort(names)
