@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
@@ -12,24 +13,13 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/webrtc"
+	"github.com/AlexxIT/go2rtc/pkg/yaml"
 	pion "github.com/pion/webrtc/v4"
 	"github.com/rs/zerolog"
 )
 
 func Init() {
-	var cfg struct {
-		Mod struct {
-			Listen     string           `yaml:"listen"`
-			Candidates []string         `yaml:"candidates"`
-			IceServers []pion.ICEServer `yaml:"ice_servers"`
-			Filters    webrtc.Filters   `yaml:"filters"`
-		} `yaml:"webrtc"`
-	}
-
-	cfg.Mod.Listen = ":8555"
-	cfg.Mod.IceServers = []pion.ICEServer{
-		{URLs: []string{"stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"}},
-	}
+	cfg := defaultConfig()
 
 	app.LoadConfig(&cfg)
 
@@ -44,21 +34,7 @@ func Init() {
 	}
 
 	filters = cfg.Mod.Filters
-
-	address, network, _ := strings.Cut(cfg.Mod.Listen, "/")
-	for _, candidate := range cfg.Mod.Candidates {
-		AddCandidate(network, candidate)
-
-		if strings.HasPrefix(candidate, "stun:") && stuns == nil {
-			for _, ice := range cfg.Mod.IceServers {
-				for _, url := range ice.URLs {
-					if strings.HasPrefix(url, "stun:") {
-						stuns = append(stuns, url[5:])
-					}
-				}
-			}
-		}
-	}
+	setPeerConfig(&cfg)
 
 	webrtc.OnNewListener = func(ln any) {
 		switch ln := ln.(type) {
@@ -72,6 +48,7 @@ func Init() {
 	var err error
 
 	// create pionAPI with custom codecs list and custom network settings
+	address, network, _ := strings.Cut(cfg.Mod.Listen, "/")
 	serverAPI, err = webrtc.NewServerAPI(network, address, &cfg.Mod.Filters)
 	if err != nil {
 		log.Error().Err(err).Caller().Send()
@@ -85,17 +62,13 @@ func Init() {
 		clientAPI, _ = webrtc.NewAPI()
 	}
 
-	pionConf := pion.Configuration{
-		ICEServers:   cfg.Mod.IceServers,
-		SDPSemantics: pion.SDPSemanticsUnifiedPlanWithFallback,
-	}
-
 	PeerConnection = func(active bool) (*pion.PeerConnection, error) {
+		conf := *pionConf.Load()
 		// active - client, passive - server
 		if active {
-			return clientAPI.NewPeerConnection(pionConf)
+			return clientAPI.NewPeerConnection(conf)
 		} else {
-			return serverAPI.NewPeerConnection(pionConf)
+			return serverAPI.NewPeerConnection(conf)
 		}
 	}
 
@@ -109,6 +82,52 @@ func Init() {
 
 	// WebRTC client
 	streams.HandleFunc("webrtc", streamsHandler)
+
+	api.OnConfigSave(reloadPeerConfig)
+}
+
+type config struct {
+	Mod struct {
+		Listen     string           `yaml:"listen"`
+		Candidates []string         `yaml:"candidates"`
+		IceServers []pion.ICEServer `yaml:"ice_servers"`
+		Filters    webrtc.Filters   `yaml:"filters"`
+	} `yaml:"webrtc"`
+}
+
+func defaultConfig() config {
+	var cfg config
+	cfg.Mod.Listen = ":8555"
+	cfg.Mod.IceServers = []pion.ICEServer{
+		{URLs: []string{"stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"}},
+	}
+	return cfg
+}
+
+var pionConf atomic.Pointer[pion.Configuration]
+
+// setPeerConfig sets what the next connections get: the ICE servers, the
+// candidates and the filter of the host candidates
+func setPeerConfig(cfg *config) {
+	pionConf.Store(&pion.Configuration{
+		ICEServers:   cfg.Mod.IceServers,
+		SDPSemantics: pion.SDPSemanticsUnifiedPlanWithFallback,
+	})
+
+	_, network, _ := strings.Cut(cfg.Mod.Listen, "/")
+	setCandidates(network, cfg.Mod.Candidates, cfg.Mod.IceServers, cfg.Mod.Filters.Candidates)
+}
+
+// reloadPeerConfig takes the ICE servers, the candidates and the filter of the
+// host candidates of the config the API saved. The listener and the other
+// filters take a restart.
+func reloadPeerConfig(data []byte) {
+	cfg := defaultConfig()
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Warn().Err(err).Msg("[webrtc] settings of the saved config")
+		return
+	}
+	setPeerConfig(&cfg)
 }
 
 var serverAPI, clientAPI *pion.API

@@ -3,6 +3,7 @@ package webrtc
 import (
 	"net"
 	"strings"
+	"sync"
 
 	"github.com/AlexxIT/go2rtc/internal/api/ws"
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -18,11 +19,12 @@ type Address struct {
 	Priority uint32
 }
 
-var stuns []string
-
 func (a *Address) Host() string {
 	if a.host == "stun" {
-		ip, err := webrtc.GetCachedPublicIP(stuns...)
+		candidatesMu.Lock()
+		servers := stuns
+		candidatesMu.Unlock()
+		ip, err := webrtc.GetCachedPublicIP(servers...)
 		if err != nil {
 			return ""
 		}
@@ -38,13 +40,22 @@ func (a *Address) Marshal() string {
 	return ""
 }
 
+var candidatesMu sync.Mutex
 var addresses []*Address
+var configured int // the first addresses, the ones of the config
+var stuns []string
 var filters webrtc.Filters
 
 func AddCandidate(network, address string) {
+	candidatesMu.Lock()
+	addCandidate(network, address)
+	candidatesMu.Unlock()
+}
+
+func addCandidate(network, address string) {
 	if network == "" {
-		AddCandidate("tcp", address)
-		AddCandidate("udp", address)
+		addCandidate("tcp", address)
+		addCandidate("udp", address)
 		return
 	}
 
@@ -61,8 +72,45 @@ func AddCandidate(network, address string) {
 	addresses = append(addresses, &Address{host, port, network, priority})
 }
 
+// setCandidates replaces the candidates of the config, the ones added at
+// runtime (ngrok) stay after them
+func setCandidates(network string, candidates []string, iceServers []pion.ICEServer, hosts []string) {
+	candidatesMu.Lock()
+	defer candidatesMu.Unlock()
+
+	added := addresses[configured:]
+	addresses = nil
+	stuns = nil
+
+	for _, candidate := range candidates {
+		addCandidate(network, candidate)
+
+		if strings.HasPrefix(candidate, "stun:") && stuns == nil {
+			for _, ice := range iceServers {
+				for _, url := range ice.URLs {
+					if strings.HasPrefix(url, "stun:") {
+						stuns = append(stuns, url[5:])
+					}
+				}
+			}
+		}
+	}
+
+	configured = len(addresses)
+
+	for _, address := range added {
+		addCandidate(address.Network, net.JoinHostPort(address.host, address.Port))
+	}
+
+	filters.Candidates = hosts
+}
+
 func GetCandidates() (candidates []string) {
-	for _, address := range addresses {
+	candidatesMu.Lock()
+	list := addresses
+	candidatesMu.Unlock()
+
+	for _, address := range list {
 		if candidate := address.Marshal(); candidate != "" {
 			candidates = append(candidates, candidate)
 		}
@@ -80,6 +128,10 @@ func FilterCandidate(candidate *pion.ICECandidate) bool {
 	if ip := net.ParseIP(candidate.Address); ip != nil && xnet.IsContainerIP(ip) {
 		return false
 	}
+
+	candidatesMu.Lock()
+	filters := filters
+	candidatesMu.Unlock()
 
 	// host candidate should be in the hosts list
 	if candidate.Typ == pion.ICECandidateTypeHost && filters.Candidates != nil {

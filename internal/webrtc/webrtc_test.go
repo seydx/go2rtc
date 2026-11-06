@@ -2,6 +2,7 @@ package webrtc
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -507,4 +508,58 @@ func TestViewerAddressReadWhileConnecting(t *testing.T) {
 	require.Len(t, state.Consumers, 1)
 	require.Contains(t, state.Consumers[0].Protocol, "+udp", "the protocol of the selected pair")
 	require.NotEmpty(t, state.Consumers[0].RemoteAddr)
+}
+
+// A saved config changes the candidates, the ICE servers and the filter of the
+// host candidates for the next connections. A candidate added at runtime
+// (ngrok) stays, after the ones of the config.
+func TestPeerConfigOfSavedConfig(t *testing.T) {
+	candidatesMu.Lock()
+	before := struct {
+		addresses  []*Address
+		configured int
+		stuns      []string
+		filters    webrtc.Filters
+	}{addresses, configured, stuns, filters}
+	candidatesMu.Unlock()
+	conf := pionConf.Load()
+	t.Cleanup(func() {
+		candidatesMu.Lock()
+		addresses, configured, stuns, filters = before.addresses, before.configured, before.stuns, before.filters
+		candidatesMu.Unlock()
+		pionConf.Store(conf)
+	})
+
+	candidates := func() (list []string) {
+		candidatesMu.Lock()
+		defer candidatesMu.Unlock()
+		for _, address := range addresses {
+			list = append(list, address.Network+" "+net.JoinHostPort(address.host, address.Port))
+		}
+		return
+	}
+	host := func(address string) *pion.ICECandidate {
+		return &pion.ICECandidate{Typ: pion.ICECandidateTypeHost, Address: address, Protocol: pion.ICEProtocolUDP}
+	}
+
+	reloadPeerConfig([]byte("webrtc:\n  candidates: [192.168.1.10:8555]\n"))
+	AddCandidate("tcp", "1.2.3.4:443")
+	require.Equal(t, []string{"tcp 192.168.1.10:8555", "udp 192.168.1.10:8555", "tcp 1.2.3.4:443"}, candidates())
+
+	reloadPeerConfig([]byte("webrtc:\n  listen: :8555/udp\n  candidates: [10.0.0.2:8555]\n" +
+		"  ice_servers:\n    - urls: [turn:turn.example.com]\n  filters:\n    candidates: [10.0.0.2]\n"))
+	require.Equal(t, []string{"udp 10.0.0.2:8555", "tcp 1.2.3.4:443"}, candidates())
+	require.Equal(t, []pion.ICEServer{{URLs: []string{"turn:turn.example.com"}}}, pionConf.Load().ICEServers)
+	require.False(t, FilterCandidate(host("192.168.1.10")))
+	require.True(t, FilterCandidate(host("10.0.0.2")))
+
+	// without the block: the defaults of go2rtc
+	reloadPeerConfig([]byte("streams: {}\n"))
+	require.Equal(t, []string{"tcp 1.2.3.4:443"}, candidates())
+	require.Equal(t, defaultConfig().Mod.IceServers, pionConf.Load().ICEServers)
+	require.True(t, FilterCandidate(host("192.168.1.10")))
+
+	// a config that is no YAML for the module changes nothing
+	reloadPeerConfig([]byte("webrtc:\n  candidates: 1\n"))
+	require.Equal(t, []string{"tcp 1.2.3.4:443"}, candidates())
 }
