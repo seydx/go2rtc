@@ -261,3 +261,29 @@ func TestDescribeAgainAttachesOnce(t *testing.T) {
 		return consumersOf(t, "describe") == 0
 	}, 2*time.Second, 10*time.Millisecond, "an attachment outlived the client")
 }
+
+// A saved config changes the login, the packet size and the default query for
+// the next client of the server, without a restart of go2rtc
+func TestServerConfigOfSavedConfig(t *testing.T) {
+	before := serverConfig.Load()
+	t.Cleanup(func() { serverConfig.Store(before) })
+
+	reloadServerConfig([]byte("rtsp:\n  username: cam\n  password: secret\n  pkt_size: 1200\n  default_query: video\n"))
+	conf := serverConfig.Load()
+	require.Equal(t, "cam", conf.username)
+	require.Equal(t, "secret", conf.password)
+	require.Equal(t, uint16(1200), conf.packetSize)
+	require.Len(t, conf.medias, 1)
+	require.Equal(t, core.KindVideo, conf.medias[0].Kind)
+
+	// without the block: no login, the default query of go2rtc
+	reloadServerConfig([]byte("streams: {}\n"))
+	conf = serverConfig.Load()
+	require.Empty(t, conf.username)
+	require.Zero(t, conf.packetSize)
+	require.Len(t, conf.medias, 2)
+
+	// a config that is no YAML for the module changes nothing
+	reloadServerConfig([]byte("rtsp:\n  username: [cam]\n"))
+	require.Same(t, conf, serverConfig.Load())
+}

@@ -6,29 +6,24 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync/atomic"
 
+	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/rtsp"
 	"github.com/AlexxIT/go2rtc/pkg/tcp"
+	"github.com/AlexxIT/go2rtc/pkg/yaml"
 	"github.com/rs/zerolog"
 )
 
 func Init() {
 	var conf struct {
-		Mod struct {
-			Listen       string `yaml:"listen" json:"listen"`
-			Username     string `yaml:"username" json:"-"`
-			Password     string `yaml:"password" json:"-"`
-			DefaultQuery string `yaml:"default_query" json:"default_query"`
-			PacketSize   uint16 `yaml:"pkt_size" json:"pkt_size,omitempty"`
-		} `yaml:"rtsp"`
+		Mod config `yaml:"rtsp"`
 	}
 
-	// default config
-	conf.Mod.Listen = ":8554"
-	conf.Mod.DefaultQuery = "video&audio"
+	conf.Mod = defaultConfig()
 
 	app.LoadConfig(&conf)
 	app.Info["rtsp"] = conf.Mod
@@ -56,9 +51,8 @@ func Init() {
 
 	log.Info().Str("addr", address).Msg("[rtsp] listen")
 
-	if query, err := url.ParseQuery(conf.Mod.DefaultQuery); err == nil {
-		defaultMedias = ParseQuery(query)
-	}
+	setServerConfig(conf.Mod)
+	api.OnConfigSave(reloadServerConfig)
 
 	go func() {
 		for {
@@ -67,15 +61,59 @@ func Init() {
 				return
 			}
 
+			conf := serverConfig.Load()
 			c := rtsp.NewServer(conn)
-			c.PacketSize = conf.Mod.PacketSize
+			c.PacketSize = conf.packetSize
 			// skip check auth for localhost
-			if conf.Mod.Username != "" && !conn.RemoteAddr().(*net.TCPAddr).IP.IsLoopback() {
-				c.Auth(conf.Mod.Username, conf.Mod.Password)
+			if conf.username != "" && !conn.RemoteAddr().(*net.TCPAddr).IP.IsLoopback() {
+				c.Auth(conf.username, conf.password)
 			}
 			go tcpHandler(c)
 		}
 	}()
+}
+
+type config struct {
+	Listen       string `yaml:"listen" json:"listen"`
+	Username     string `yaml:"username" json:"-"`
+	Password     string `yaml:"password" json:"-"`
+	DefaultQuery string `yaml:"default_query" json:"default_query"`
+	PacketSize   uint16 `yaml:"pkt_size" json:"pkt_size,omitempty"`
+}
+
+func defaultConfig() config {
+	return config{Listen: ":8554", DefaultQuery: "video&audio"}
+}
+
+// what a new connection to the server gets, a saved config changes it without a restart
+type server struct {
+	username, password string
+	packetSize         uint16
+	medias             []*core.Media
+}
+
+var serverConfig atomic.Pointer[server]
+
+func setServerConfig(conf config) {
+	s := &server{username: conf.Username, password: conf.Password, packetSize: conf.PacketSize}
+	if query, err := url.ParseQuery(conf.DefaultQuery); err == nil {
+		s.medias = ParseQuery(query)
+	}
+	serverConfig.Store(s)
+}
+
+// reloadServerConfig takes the login, the packet size and the default query
+// of the config the API saved. The listener changes with the next start.
+func reloadServerConfig(data []byte) {
+	var conf struct {
+		Mod config `yaml:"rtsp"`
+	}
+	conf.Mod = defaultConfig()
+	if err := yaml.Unmarshal(data, &conf); err != nil {
+		log.Warn().Err(err).Msg("[rtsp] server settings of the saved config")
+		return
+	}
+	setServerConfig(conf.Mod)
 }
 
 type Handler func(conn *rtsp.Conn) bool
@@ -90,7 +128,6 @@ var Port string
 
 var log zerolog.Logger
 var handlers []Handler
-var defaultMedias []*core.Media
 
 func rtspHandler(rawURL string) (core.Producer, error) {
 	rawURL, rawQuery, _ := strings.Cut(rawURL, "#")
@@ -216,7 +253,7 @@ func tcpHandler(conn *rtsp.Conn) {
 			query := conn.URL.Query()
 			conn.Medias = ParseQuery(query)
 			if conn.Medias == nil {
-				for _, media := range defaultMedias {
+				for _, media := range serverConfig.Load().medias {
 					conn.Medias = append(conn.Medias, media.Clone())
 				}
 			}
