@@ -96,6 +96,56 @@ func TestUSB(t *testing.T) {
 	require.Equal(t, []byte{0x41}, n)
 }
 
+func TestH264SPSWithNalRefIDC2(t *testing.T) {
+	// H.264 SPS with nal_ref_idc = 2: 0x47 is also an HEVC AUD header, but this
+	// NAL unit is much longer than the three bytes of an HEVC AUD.
+	s := "00000001474d401e99a05825a100000303e800009c4084 0000000148ee3c80"
+	b := EncodeToAVCC(decode(s))
+	n := naluTypes(b)
+	require.Equal(t, []byte{0x47, 0x48}, n)
+}
+
+func TestH264SEIWithNalRefIDC2(t *testing.T) {
+	// H.264 SEI with nal_ref_idc = 2: 0x46 matches the HEVC AUD mask as well.
+	s := "0000000146060050a1b2c3d4e5f60718293a4b5c6d7e8f90 00000001674d401e99a05825a100000303e800009c4084 0000000168ee3c80"
+	b := EncodeToAVCC(decode(s))
+	n := naluTypes(b)
+	require.Equal(t, []byte{0x46, 0x67, 0x68}, n)
+}
+
+func TestHEVCAUDIsStillDropped(t *testing.T) {
+	// HEVC AUD is exactly three bytes: two header bytes and the picture type.
+	s := "00000001460150 0000000140010c01ffff01600000030090000003000003005dba0240 0000000142010101600000030090000003000003005da00280802d165bab930bc05a7080000003008000000c04"
+	b := EncodeToAVCC(decode(s))
+	n := naluTypes(b)
+	require.Equal(t, []byte{0x40, 0x42}, n)
+}
+
+// An MPEG-TS source with nal_ref_idc = 2 (the issue upstream): its H.264 AUD is
+// dropped, its SPS and PPS reach the SDP
+func TestMPEGTSH264WithNalRefIDC2(t *testing.T) {
+	s := "00000001 09f0 00000001474d401e99a05825a100000303e800009c4084 0000000148ee3c80 0000000145888080033ffef5f8"
+	b := EncodeToAVCC(decode(s))
+	n := naluTypes(b)
+	require.Equal(t, []byte{0x47, 0x48, 0x45}, n)
+}
+
+// A unit that only looks like an HEVC AUD stays, which does no harm. Dropping a
+// unit that is something else can break the stream.
+func TestHEVCAUDLookalikeStays(t *testing.T) {
+	for name, aud := range map[string]string{
+		"trailing zero byte":         "46015000", // no longer three bytes
+		"nuh_temporal_id_plus1 is 0": "460050",   // never 0 in HEVC
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := "00000001" + aud + "0000000140010c01ffff01600000030090000003000003005dba0240"
+			b := EncodeToAVCC(decode(s))
+			n := naluTypes(b)
+			require.Equal(t, []byte{0x46, 0x40}, n)
+		})
+	}
+}
+
 func TestDecodeAVCC(t *testing.T) {
 	avcc := decode("00000002 6764 00000001 68 00000003 650102")
 	annexb := decode("00000001 6764 00000001 68 00000001 650102")
