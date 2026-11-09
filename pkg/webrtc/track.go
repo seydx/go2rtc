@@ -75,6 +75,10 @@ func (t *Track) WriteRTP(payloadType uint8, packet *rtp.Packet) (err error) {
 		header.SSRC = t.ssrc
 		header.PayloadType = payloadType
 		header.SequenceNumber = t.sequence
+		// extension IDs are negotiated per session, the source's IDs mean something else to this peer
+		header.Extension = false
+		header.ExtensionProfile = 0
+		header.Extensions = nil
 		_, err = t.writer.WriteRTP(&header, packet.Payload)
 	}
 
