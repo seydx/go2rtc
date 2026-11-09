@@ -58,22 +58,19 @@ func (c *Conn) CreateCompleteOffer(medias []*core.Media) (string, error) {
 }
 
 func (c *Conn) SetAnswer(answer string) (err error) {
-	desc := webrtc.SessionDescription{
-		Type: webrtc.SDPTypeAnswer,
-		SDP:  fakeFormatsInAnswer(c.pc.LocalDescription().SDP, answer),
-	}
-	if err = c.pc.SetRemoteDescription(desc); err != nil {
-		return err
-	}
-
 	sd := &sdp.SessionDescription{}
 	if err = sd.Unmarshal([]byte(answer)); err != nil {
 		return err
 	}
 
+	// before SetRemoteDescription: it starts the track readers, and OnTrack reads the medias
 	c.Medias = UnmarshalMedias(sd.MediaDescriptions)
 
-	return nil
+	desc := webrtc.SessionDescription{
+		Type: webrtc.SDPTypeAnswer,
+		SDP:  fakeFormatsInAnswer(c.pc.LocalDescription().SDP, answer),
+	}
+	return c.pc.SetRemoteDescription(desc)
 }
 
 // fakeFormatsInAnswer - fix pion bug with remote SDP parsing:
