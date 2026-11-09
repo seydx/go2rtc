@@ -300,6 +300,10 @@ func (c *Client) onWSMessage(msg WSMessage) {
 		c.Stop()
 		c.connected.Done(errors.New("ring: close"))
 
+	case "ping":
+		// ring closes the session with "Timeout waiting for ping" after ~30 s without a pong
+		_ = c.wsClient.sendSessionMessage("pong", nil)
+
 	case "pong":
 		// Ignore
 	}
