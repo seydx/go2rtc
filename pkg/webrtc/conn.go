@@ -25,6 +25,9 @@ type Conn struct {
 
 	UseGOP bool
 
+	// an active producer asks its source for a keyframe at the first video packet and then at this interval
+	KeyframeInterval time.Duration
+
 	pc *webrtc.PeerConnection
 
 	offer           string
@@ -105,15 +108,13 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 			}
 		}
 
-		if c.Mode == core.ModePassiveProducer && remote.Kind() == webrtc.RTPCodecTypeVideo {
-			go func() {
-				pkts := []rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(remote.SSRC())}}
-				for range time.NewTicker(time.Second * 2).C {
-					if err := pc.WriteRTCP(pkts); err != nil {
-						return
-					}
-				}
-			}()
+		if remote.Kind() == webrtc.RTPCodecTypeVideo {
+			switch {
+			case c.Mode == core.ModePassiveProducer:
+				go requestKeyframes(pc, remote.SSRC(), 2*time.Second)
+			case c.KeyframeInterval > 0:
+				go requestKeyframes(pc, remote.SSRC(), c.KeyframeInterval)
+			}
 		}
 
 		// WebRTC SDPs carry profile-level-id but no sprop-parameter-sets —
@@ -369,6 +370,19 @@ func (c *Conn) getMediaCodec(remote *webrtc.TrackRemote) (*core.Media, *core.Cod
 	panic(core.Caller())
 
 	// return nil, nil
+}
+
+func requestKeyframes(pc *webrtc.PeerConnection, ssrc webrtc.SSRC, interval time.Duration) {
+	pkts := []rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(ssrc)}}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		if err := pc.WriteRTCP(pkts); err != nil {
+			return
+		}
+		<-ticker.C
+	}
 }
 
 func sanitizeIP6(host string) string {

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/webrtc"
@@ -115,6 +116,8 @@ func Dial(rawURL string) (*Client, error) {
 	prod := webrtc.NewConn(pc)
 	prod.FormatName = "ring/webrtc"
 	prod.Mode = core.ModeActiveProducer
+	// like ring-client-api: a picture right away instead of at the camera's next own keyframe
+	prod.KeyframeInterval = 4 * time.Second
 	prod.Protocol = "ws"
 	prod.URL = rawURL
 
