@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/webrtc"
@@ -20,7 +21,7 @@ type Client struct {
 	cameraID  int
 	dialogID  string
 	connected core.Waiter
-	closed    bool
+	closed    atomic.Bool
 }
 
 func Dial(rawURL string) (*Client, error) {
@@ -337,11 +338,9 @@ func (c *Client) Start() error {
 }
 
 func (c *Client) Stop() error {
-	if c.closed {
+	if c.closed.Swap(true) {
 		return nil
 	}
-
-	c.closed = true
 
 	if c.prod != nil {
 		_ = c.prod.Stop()
@@ -367,7 +366,7 @@ func (c *Client) Interrupt() error {
 }
 
 func (c *Client) IsClosed() bool {
-	return c.closed
+	return c.closed.Load()
 }
 
 func (c *Client) MarshalJSON() ([]byte, error) {

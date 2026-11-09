@@ -90,7 +90,8 @@ type WSClient struct {
 	onError   func(err error)
 	onClose   func()
 
-	closed chan struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 const (
@@ -134,24 +135,23 @@ func StartWebsocket(cameraID int, api *RingApi) (*WSClient, error) {
 	return client, nil
 }
 
-func (c *WSClient) Close() error {
-	select {
-	case <-c.closed:
-		return nil
-	default:
+func (c *WSClient) Close() (err error) {
+	c.closeOnce.Do(func() {
+		closePayload := map[string]interface{}{
+			"reason": map[string]interface{}{
+				"code": CloseReasonNormalClose,
+				"text": "",
+			},
+		}
+
+		// before closed is closed, sendSessionMessage drops everything after
+		_ = c.sendSessionMessage("close", closePayload)
+
 		close(c.closed)
-	}
+		err = c.ws.Close()
+	})
 
-	closePayload := map[string]interface{}{
-		"reason": map[string]interface{}{
-			"code": CloseReasonNormalClose,
-			"text": "",
-		},
-	}
-
-	_ = c.sendSessionMessage("close", closePayload)
-
-	return c.ws.Close()
+	return err
 }
 
 func (c *WSClient) startPingLoop() {

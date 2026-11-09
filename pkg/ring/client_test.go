@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,8 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestServerPingGetsPong(t *testing.T) {
-	received := make(chan map[string]any, 1)
+func newTestSocket(t *testing.T) (*WSClient, <-chan map[string]any) {
+	t.Helper()
+
+	received := make(chan map[string]any, 16)
 	upgrader := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -20,30 +23,72 @@ func TestServerPingGetsPong(t *testing.T) {
 			return
 		}
 		defer conn.Close()
+		defer close(received)
 
-		var msg map[string]any
-		if conn.ReadJSON(&msg) == nil {
+		for {
+			var msg map[string]any
+			if conn.ReadJSON(&msg) != nil {
+				return
+			}
 			received <- msg
 		}
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
 	require.NoError(t, err)
-	defer ws.Close()
+	t.Cleanup(func() { _ = ws.Close() })
 
-	client := &Client{
-		cameraID: 42,
-		wsClient: &WSClient{ws: ws, cameraID: 42, dialogID: "dialog", sessionID: "session", closed: make(chan struct{})},
-	}
-	client.onWSMessage(WSMessage{Method: "ping", Body: map[string]any{"doorbot_id": float64(42), "session_id": "session"}})
+	return &WSClient{ws: ws, cameraID: 42, dialogID: "dialog", sessionID: "session", closed: make(chan struct{})}, received
+}
+
+func nextMessage(t *testing.T, received <-chan map[string]any) (map[string]any, bool) {
+	t.Helper()
 
 	select {
-	case msg := <-received:
-		require.Equal(t, "pong", msg["method"])
-		require.Equal(t, "dialog", msg["dialog_id"])
-		require.Equal(t, map[string]any{"doorbot_id": float64(42), "session_id": "session"}, msg["body"])
+	case msg, ok := <-received:
+		return msg, ok
 	case <-time.After(2 * time.Second):
-		t.Fatal("no pong sent")
+		t.Fatal("socket neither sent nor closed")
+		return nil, false
 	}
 }
+
+func TestServerPingGetsPong(t *testing.T) {
+	ws, received := newTestSocket(t)
+	client := &Client{cameraID: 42, wsClient: ws}
+
+	client.onWSMessage(WSMessage{Method: "ping", Body: map[string]any{"doorbot_id": float64(42), "session_id": "session"}})
+
+	msg, ok := nextMessage(t, received)
+	require.True(t, ok)
+	require.Equal(t, "pong", msg["method"])
+	require.Equal(t, "dialog", msg["dialog_id"])
+	require.Equal(t, map[string]any{"doorbot_id": float64(42), "session_id": "session"}, msg["body"])
+}
+
+func TestConcurrentStopSendsOneClose(t *testing.T) {
+	ws, received := newTestSocket(t)
+	client := &Client{cameraID: 42, wsClient: ws}
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			_ = client.Stop()
+		})
+	}
+	wg.Wait()
+
+	require.True(t, client.IsClosed())
+
+	var methods []string
+	for {
+		msg, ok := nextMessage(t, received)
+		if !ok {
+			break
+		}
+		methods = append(methods, msg["method"].(string))
+	}
+	require.Equal(t, []string{"close"}, methods)
+}
+
