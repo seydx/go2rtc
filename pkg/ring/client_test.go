@@ -67,6 +67,24 @@ func TestServerPingGetsPong(t *testing.T) {
 	require.Equal(t, map[string]any{"doorbot_id": float64(42), "session_id": "session"}, msg["body"])
 }
 
+func TestSessionIDArrivesWhileSending(t *testing.T) {
+	ws, received := newTestSocket(t)
+	ws.sessionID = ""
+	client := &Client{cameraID: 42, wsClient: ws}
+
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		_ = ws.sendSessionMessage("ping", nil)
+	}()
+	client.onWSMessage(WSMessage{Method: "session_created", Body: map[string]any{"doorbot_id": float64(42), "session_id": "new"}})
+	<-sent
+
+	_, ok := nextMessage(t, received)
+	require.True(t, ok)
+	require.Equal(t, "new", ws.sessionID)
+}
+
 func TestConcurrentStopSendsOneClose(t *testing.T) {
 	ws, received := newTestSocket(t)
 	client := &Client{cameraID: 42, wsClient: ws}

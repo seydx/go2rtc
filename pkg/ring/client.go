@@ -241,7 +241,7 @@ func (c *Client) onWSMessage(msg WSMessage) {
 
 	if msg.Method == "session_created" || msg.Method == "session_started" {
 		if _, ok := msg.Body["session_id"]; ok && c.wsClient.sessionID == "" {
-			c.wsClient.sessionID = msg.Body["session_id"].(string)
+			c.wsClient.setSessionID(msg.Body["session_id"].(string))
 		}
 	}
 

@@ -210,6 +210,12 @@ func (c *WSClient) activateSession() error {
 	return nil
 }
 
+func (c *WSClient) setSessionID(sessionID string) {
+	c.wsMutex.Lock()
+	c.sessionID = sessionID
+	c.wsMutex.Unlock()
+}
+
 func (c *WSClient) sendSessionMessage(method string, payload map[string]interface{}) error {
 	select {
 	case <-c.closed:
