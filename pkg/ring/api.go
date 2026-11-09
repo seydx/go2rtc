@@ -27,6 +27,11 @@ type EmailAuth struct {
 	Password string
 }
 
+type AccessTokenAuth struct {
+	AccessToken string
+	HardwareID  string
+}
+
 type AuthConfig struct {
 	RT  string `json:"rt"`  // Refresh Token
 	HID string `json:"hid"` // Hardware ID
@@ -78,6 +83,7 @@ type RingApi struct {
 	sessionExpiry  time.Time
 	sessionMutex   sync.Mutex
 	cacheKey       string
+	externalAuth   bool
 }
 
 type CameraKind string
@@ -168,6 +174,17 @@ func NewRestClient(auth interface{}, onTokenRefresh func(string)) (*RingApi, err
 			return nil, fmt.Errorf("email and password are required")
 		}
 		cacheKey = "email:" + a.Email + ":" + a.Password
+	case AccessTokenAuth:
+		if a.AccessToken == "" || a.HardwareID == "" {
+			return nil, fmt.Errorf("access token and hardware id are required")
+		}
+		return &RingApi{
+			httpClient:   &http.Client{Timeout: defaultTimeout},
+			hardwareID:   a.HardwareID,
+			authToken:    &AuthTokenResponse{AccessToken: a.AccessToken},
+			auth:         auth,
+			externalAuth: true,
+		}, nil
 	default:
 		return nil, fmt.Errorf("invalid auth type")
 	}
@@ -449,7 +466,7 @@ func (c *RingApi) Request(method, url string, body interface{}) ([]byte, error) 
 		}
 
 		// Handle 401 by refreshing auth and retrying
-		if resp.StatusCode == http.StatusUnauthorized {
+		if resp.StatusCode == http.StatusUnauthorized && !c.externalAuth {
 			// Reset token to force refresh
 			c.authMutex.Lock()
 			c.authToken = nil
@@ -475,7 +492,7 @@ func (c *RingApi) Request(method, url string, body interface{}) ([]byte, error) 
 		}
 
 		// Handle 404 error with hardware_id reference - session issue
-		if resp.StatusCode == 404 && strings.Contains(url, clientAPIBaseURL) {
+		if resp.StatusCode == 404 && !c.externalAuth && strings.Contains(url, clientAPIBaseURL) {
 			var errorBody map[string]interface{}
 			if err := json.Unmarshal(responseBody, &errorBody); err == nil {
 				if errorStr, ok := errorBody["error"].(string); ok && strings.Contains(errorStr, c.hardwareID) {
@@ -510,6 +527,11 @@ func (c *RingApi) Request(method, url string, body interface{}) ([]byte, error) 
 }
 
 func (c *RingApi) ensureSession() error {
+	// the token's owner keeps the session, a new one on its hardware id drops the owner's push registration
+	if c.externalAuth {
+		return nil
+	}
+
 	c.sessionMutex.Lock()
 	defer c.sessionMutex.Unlock()
 

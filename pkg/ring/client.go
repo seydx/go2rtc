@@ -32,11 +32,12 @@ func Dial(rawURL string) (*Client, error) {
 
 	query := u.Query()
 	encodedToken := query.Get("refresh_token")
+	accessToken := query.Get("access_token")
 	cameraID := query.Get("camera_id")
 	deviceID := query.Get("device_id")
 	_, isSnapshot := query["snapshot"]
 
-	if encodedToken == "" || deviceID == "" || cameraID == "" {
+	if (encodedToken == "" && accessToken == "") || deviceID == "" || cameraID == "" {
 		return nil, errors.New("ring: wrong query")
 	}
 
@@ -49,12 +50,16 @@ func Dial(rawURL string) (*Client, error) {
 		return nil, fmt.Errorf("ring: invalid camera_id: %w", err)
 	}
 
-	refreshToken, err := url.QueryUnescape(encodedToken)
-	if err != nil {
-		return nil, fmt.Errorf("ring: invalid refresh token encoding: %w", err)
+	var auth any = AccessTokenAuth{AccessToken: accessToken, HardwareID: query.Get("hardware_id")}
+	if accessToken == "" {
+		refreshToken, err := url.QueryUnescape(encodedToken)
+		if err != nil {
+			return nil, fmt.Errorf("ring: invalid refresh token encoding: %w", err)
+		}
+		auth = RefreshTokenAuth{RefreshToken: refreshToken}
 	}
 
-	client.api, err = NewRestClient(RefreshTokenAuth{RefreshToken: refreshToken}, nil)
+	client.api, err = NewRestClient(auth, nil)
 	if err != nil {
 		return nil, err
 	}

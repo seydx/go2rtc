@@ -110,3 +110,13 @@ func TestConcurrentStopSendsOneClose(t *testing.T) {
 	require.Equal(t, []string{"close"}, methods)
 }
 
+func TestDialWithAccessToken(t *testing.T) {
+	client, err := Dial("ring:?camera_id=42&device_id=abc&access_token=ab%2Bc%2Fd%3D%3D&hardware_id=hid&snapshot=")
+	require.NoError(t, err)
+	require.Equal(t, "ab+c/d==", client.api.authToken.AccessToken)
+	require.Equal(t, "hid", client.api.hardwareID)
+	require.True(t, client.api.externalAuth)
+
+	_, err = Dial("ring:?camera_id=42&device_id=abc&access_token=token&snapshot")
+	require.Error(t, err, "without the hardware id ring can't match the token to its session")
+}
