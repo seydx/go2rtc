@@ -146,6 +146,15 @@ const (
 	lastSeqKey  ctxKey = "webrtc/seq"
 )
 
+func sessionPeerConnection(iceServers []pion.ICEServer) (*pion.PeerConnection, error) {
+	if iceServers == nil {
+		return PeerConnection(false)
+	}
+	conf := *pionConf.Load()
+	conf.ICEServers = iceServers
+	return serverAPI.NewPeerConnection(conf)
+}
+
 func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 	var stream *streams.Stream
 	var mode core.Mode
@@ -180,15 +189,10 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 		}
 	} else {
 		offer.SDP = msg.String()
+		offer.ICEServers = msg.ICEServers
 	}
 
-	// create new PeerConnection instance
-	var pc *pion.PeerConnection
-	if offer.ICEServers == nil {
-		pc, err = PeerConnection(false)
-	} else {
-		pc, err = serverAPI.NewPeerConnection(pion.Configuration{ICEServers: offer.ICEServers})
-	}
+	pc, err := sessionPeerConnection(offer.ICEServers)
 	if err != nil {
 		log.Error().Err(err).Caller().Send()
 		return err

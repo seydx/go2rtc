@@ -47,6 +47,19 @@ func TestWebRTCAPIv2(t *testing.T) {
 	require.Equal(t, "stun:stun.l.google.com:19302", offer.ICEServers[0].URLs[0])
 }
 
+func TestWebRTCAPIv1ICEServers(t *testing.T) {
+	raw := `{"type":"webrtc/offer","value":"v=0\n...","ice_servers":[{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]}`
+	msg := new(ws.Message)
+	require.NoError(t, json.Unmarshal([]byte(raw), msg))
+
+	require.Equal(t, "v=0\n...", msg.String())
+	require.Equal(t, []pion.ICEServer{{URLs: []string{"turn:turn.example.com:3478"}, Username: "user", Credential: "pass"}}, msg.ICEServers)
+
+	answer, err := json.Marshal(&ws.Message{Type: "webrtc/answer", Value: "v=0"})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"webrtc/answer","value":"v=0"}`, string(answer))
+}
+
 func TestCrealitySDP(t *testing.T) {
 	sdp := `v=0
 o=- 1495799811084970 1495799811084970 IN IP4 0.0.0.0
@@ -562,4 +575,67 @@ func TestPeerConfigOfSavedConfig(t *testing.T) {
 	// a config that is no YAML for the module changes nothing
 	reloadPeerConfig([]byte("webrtc:\n  candidates: 1\n"))
 	require.Equal(t, []string{"tcp 1.2.3.4:443"}, candidates())
+}
+
+var (
+	globalICEServers  = []pion.ICEServer{{URLs: []string{"stun:stun.example.com:3478"}}}
+	sessionICEServers = []pion.ICEServer{{URLs: []string{"turn:127.0.0.1:9?transport=tcp"}, Username: "user", Credential: "pass"}}
+)
+
+func useConfiguredAPI(t *testing.T) {
+	api, err := webrtc.NewAPI()
+	require.NoError(t, err)
+
+	oldAPI, oldPC, oldConf := serverAPI, PeerConnection, pionConf.Load()
+	serverAPI = api
+	pionConf.Store(&pion.Configuration{ICEServers: globalICEServers, SDPSemantics: pion.SDPSemanticsUnifiedPlanWithFallback})
+	PeerConnection = func(bool) (*pion.PeerConnection, error) {
+		return serverAPI.NewPeerConnection(*pionConf.Load())
+	}
+	t.Cleanup(func() {
+		serverAPI, PeerConnection = oldAPI, oldPC
+		pionConf.Store(oldConf)
+	})
+}
+
+func offerWithICEServers(t *testing.T, name string, iceServers []pion.ICEServer) (*pion.Configuration, error) {
+	newStubStream(t, name)
+	tr := wsTransport(name)
+	t.Cleanup(tr.Close)
+
+	err := asyncHandler(tr, &ws.Message{Type: "webrtc/offer", Value: viewerOffer(t), ICEServers: iceServers})
+	var conn *webrtc.Conn
+	tr.WithContext(func(ctx map[any]any) { conn, _ = ctx[lastConnKey].(*webrtc.Conn) })
+	if conn == nil {
+		return nil, err
+	}
+	conf := conn.Transport.(*pion.PeerConnection).GetConfiguration()
+	return &conf, err
+}
+
+// The relay comes with the offer of a remote viewer and replaces the
+// configured ICE servers for that peer only.
+func TestOfferICEServersReplaceConfiguredOnes(t *testing.T) {
+	useConfiguredAPI(t)
+
+	conf, err := offerWithICEServers(t, "webrtc_session_ice", sessionICEServers)
+	require.NoError(t, err)
+	require.Equal(t, sessionICEServers, conf.ICEServers)
+	require.Equal(t, pion.SDPSemanticsUnifiedPlanWithFallback, conf.SDPSemantics)
+}
+
+func TestOfferWithoutICEServersUsesConfiguredOnes(t *testing.T) {
+	useConfiguredAPI(t)
+
+	conf, err := offerWithICEServers(t, "webrtc_configured_ice", nil)
+	require.NoError(t, err)
+	require.Equal(t, globalICEServers, conf.ICEServers)
+}
+
+func TestOfferTURNWithoutCredentialsIsRefused(t *testing.T) {
+	useConfiguredAPI(t)
+
+	conf, err := offerWithICEServers(t, "webrtc_session_ice_no_credentials", []pion.ICEServer{{URLs: []string{"turn:127.0.0.1:9"}}})
+	require.Error(t, err)
+	require.Nil(t, conf)
 }

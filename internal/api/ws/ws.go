@@ -14,6 +14,7 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/pkg/creds"
 	"github.com/gorilla/websocket"
+	pion "github.com/pion/webrtc/v4"
 	"github.com/rs/zerolog"
 )
 
@@ -39,6 +40,9 @@ var log zerolog.Logger
 type Message struct {
 	Type  string `json:"type"`
 	Value any    `json:"value,omitempty"`
+
+	// ICEServers replaces the configured ICE servers for the peer of a V1 webrtc/offer
+	ICEServers []pion.ICEServer `json:"ice_servers,omitempty"`
 
 	// Seq numbers the messages of one websocket in the order the client sent
 	// them. Handlers run concurrently, so one may finish after a later one.
