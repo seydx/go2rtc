@@ -19,6 +19,8 @@ type peerOpts struct {
 	// be verified without relying on random packet loss. Production is unchanged.
 	noReplayProtection bool
 	onTrack            func(*pion.TrackRemote, *pion.RTPReceiver)
+	api                *pion.API // go2rtc's side, a loopback server API when nil
+	remote             func(*pion.SettingEngine)
 }
 
 // newLocalPeers connects a go2rtc Conn to a plain pion peer over loopback ICE.
@@ -26,8 +28,12 @@ type peerOpts struct {
 func newLocalPeers(t *testing.T, opts peerOpts) (*Conn, []*Track, *pion.PeerConnection) {
 	t.Helper()
 
-	api, err := NewServerAPI("", "", &Filters{Loopback: true, Networks: []string{"udp4"}})
-	require.NoError(t, err)
+	api := opts.api
+	if api == nil {
+		var err error
+		api, err = NewServerAPI("", "", &Filters{Loopback: true, Networks: []string{"udp4"}})
+		require.NoError(t, err)
+	}
 	pc, err := api.NewPeerConnection(pion.Configuration{})
 	require.NoError(t, err)
 	conn := NewConn(pc)
@@ -37,6 +43,9 @@ func newLocalPeers(t *testing.T, opts peerOpts) (*Conn, []*Track, *pion.PeerConn
 	settings.SetNetworkTypes([]pion.NetworkType{pion.NetworkTypeUDP4})
 	if opts.noReplayProtection {
 		settings.DisableSRTPReplayProtection(true)
+	}
+	if opts.remote != nil {
+		opts.remote(&settings)
 	}
 	remoteAPI := pion.NewAPI(pion.WithSettingEngine(settings))
 	remote, err := remoteAPI.NewPeerConnection(pion.Configuration{})

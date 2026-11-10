@@ -17,6 +17,9 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+// a short Wi-Fi drop or a cellular handover comes back within this, a viewer that left does not
+var disconnectGrace = 8 * time.Second
+
 type Conn struct {
 	core.Connection
 	core.Listener
@@ -37,6 +40,7 @@ type Conn struct {
 
 	connected atomic.Bool
 	deadline  atomic.Pointer[time.Timer]
+	grace     atomic.Pointer[time.Timer]
 
 	// the selected candidate pair rewrites Protocol and RemoteAddr while the API marshals them
 	infoMu sync.Mutex
@@ -204,6 +208,7 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 		case webrtc.PeerConnectionStateConnected:
 			c.connected.Store(true)
 			c.stopDeadline()
+			c.stopGrace()
 
 			// Pion's NACK responder only runs while RTCP is read. Without this,
 			// receivers ask for missing RTP packets and never get them, so the
@@ -225,9 +230,10 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 			for _, sender := range c.Senders {
 				sender.Start()
 			}
-		case webrtc.PeerConnectionStateDisconnected, webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
-			// disconnect event comes earlier, than failed
-			// but it comes only for success connections
+		case webrtc.PeerConnectionStateDisconnected:
+			// pion waits 25 s before it gives up, the grace closes earlier
+			c.closeUnlessReconnected()
+		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			_ = c.Close()
 		}
 	})
@@ -251,6 +257,7 @@ func (c *Conn) Endpoint() (protocol, remoteAddr string) {
 
 func (c *Conn) Close() error {
 	c.stopDeadline()
+	c.stopGrace()
 
 	// Close all senders to remove them from parent receivers
 	for _, sender := range c.Senders {
@@ -312,6 +319,23 @@ func (c *Conn) CloseUnlessConnected(timeout time.Duration) {
 
 func (c *Conn) stopDeadline() {
 	if timer := c.deadline.Swap(nil); timer != nil {
+		timer.Stop()
+	}
+}
+
+func (c *Conn) closeUnlessReconnected() {
+	timer := time.AfterFunc(disconnectGrace, func() {
+		if c.pc.ConnectionState() != webrtc.PeerConnectionStateConnected {
+			_ = c.Close()
+		}
+	})
+	if old := c.grace.Swap(timer); old != nil {
+		old.Stop()
+	}
+}
+
+func (c *Conn) stopGrace() {
+	if timer := c.grace.Swap(nil); timer != nil {
 		timer.Stop()
 	}
 }
