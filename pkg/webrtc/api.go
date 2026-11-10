@@ -1,7 +1,6 @@
 package webrtc
 
 import (
-	"fmt"
 	"net"
 	"slices"
 
@@ -211,7 +210,7 @@ func newUDPMux(address string, filters *Filters) ice.UDPMux {
 	var addrs []string
 	if host == "" {
 		for _, ip := range filters.NetIPs() {
-			addrs = append(addrs, fmt.Sprintf("%s:%s", ip, port))
+			addrs = append(addrs, net.JoinHostPort(ip.String(), port))
 		}
 	} else {
 		addrs = []string{address}

@@ -1,6 +1,7 @@
 package webrtc
 
 import (
+	"net"
 	"strings"
 	"testing"
 
@@ -45,4 +46,20 @@ func TestRegisterDefaultCodecsVideoFeedback(t *testing.T) {
 			require.True(t, valid[typ], "payload type %s: feedback %q", pt, fb)
 		}
 	}
+}
+
+func TestUDPMuxListensOnIPv6(t *testing.T) {
+	ln, err := net.ListenPacket("udp6", "[::1]:0")
+	if err != nil {
+		t.Skip("no IPv6 loopback")
+	}
+	_ = ln.Close()
+
+	mux := newUDPMux(":0", &Filters{Loopback: true, IPs: []string{"::1"}})
+	require.NotNil(t, mux)
+	t.Cleanup(func() { _ = mux.Close() })
+
+	addrs := mux.GetListenAddresses()
+	require.Len(t, addrs, 1)
+	require.Equal(t, "::1", addrs[0].(*net.UDPAddr).IP.String())
 }
