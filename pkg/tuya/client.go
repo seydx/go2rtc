@@ -67,8 +67,8 @@ type RecvMessage struct {
 }
 
 func Dial(rawURL string) (core.Producer, error) {
-	escapedURL := strings.ReplaceAll(rawURL, "#", "%23")
-	u, err := url.Parse(escapedURL)
+	rawURL, _, _ = strings.Cut(rawURL, "#")
+	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
 	}

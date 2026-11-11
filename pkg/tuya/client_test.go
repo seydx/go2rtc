@@ -22,6 +22,18 @@ func TestDialLeavesAFullCameraAlone(t *testing.T) {
 	require.ErrorIs(t, err, errNoFreeStream)
 }
 
+func TestDialIgnoresSourceOptions(t *testing.T) {
+	setBusy("full-camera")
+	t.Cleanup(func() {
+		busyMu.Lock()
+		delete(busyUntil, "full-camera")
+		busyMu.Unlock()
+	})
+
+	_, err := Dial("tuya://example.invalid?email=a@example.com&password=b&device_id=full-camera#backchannel=1#timeout=10")
+	require.ErrorIs(t, err, errNoFreeStream)
+}
+
 func TestDTLSCertificateIsRSAAndReused(t *testing.T) {
 	first, err := dtlsCertificate()
 	require.NoError(t, err)
