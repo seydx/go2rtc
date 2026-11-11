@@ -1,9 +1,6 @@
 package tuya
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -47,23 +44,13 @@ func apiTuya(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpClient := tuya.CreateHTTPClientWithSession()
-
-	_, err := login(httpClient, tuyaRegion.Host, email, password, tuyaRegion.Continent)
+	tuyaAPI, err := tuya.NewTuyaSmartApiClient(tuyaRegion.Host, email, password, "")
 	if err != nil {
-		http.Error(w, fmt.Sprintf("login failed: %v", err), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	tuyaAPI, err := tuya.NewTuyaSmartApiClient(
-		httpClient,
-		tuyaRegion.Host,
-		email,
-		password,
-		"",
-	)
-
-	if err != nil {
+	if err = tuyaAPI.Login(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -119,123 +106,6 @@ func apiTuya(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.ResponseSources(w, items)
-}
-
-func login(client *http.Client, serverHost, email, password, countryCode string) (*tuya.LoginResult, error) {
-	tokenResp, err := getLoginToken(client, serverHost, email, countryCode)
-	if err != nil {
-		return nil, err
-	}
-
-	encryptedPassword, err := tuya.EncryptPassword(password, tokenResp.Result.PbKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt password: %v", err)
-	}
-
-	var loginResp *tuya.PasswordLoginResponse
-	var url string
-
-	loginReq := tuya.PasswordLoginRequest{
-		CountryCode: countryCode,
-		Passwd:      encryptedPassword,
-		Token:       tokenResp.Result.Token,
-		IfEncrypt:   1,
-		Options:     `{"group":1}`,
-	}
-
-	if tuya.IsEmailAddress(email) {
-		url = fmt.Sprintf("https://%s/api/private/email/login", serverHost)
-		loginReq.Email = email
-	} else {
-		url = fmt.Sprintf("https://%s/api/private/phone/login", serverHost)
-		loginReq.Mobile = email
-	}
-
-	loginResp, err = performLogin(client, url, loginReq, serverHost)
-
-	if err != nil {
-		return nil, err
-	}
-
-	if !loginResp.Success {
-		return nil, errors.New(loginResp.ErrorMsg)
-	}
-
-	return &loginResp.Result, nil
-}
-
-func getLoginToken(client *http.Client, serverHost, username, countryCode string) (*tuya.LoginTokenResponse, error) {
-	url := fmt.Sprintf("https://%s/api/login/token", serverHost)
-
-	tokenReq := tuya.LoginTokenRequest{
-		CountryCode: countryCode,
-		Username:    username,
-		IsUid:       false,
-	}
-
-	jsonData, err := json.Marshal(tokenReq)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Origin", fmt.Sprintf("https://%s", serverHost))
-	req.Header.Set("Referer", fmt.Sprintf("https://%s/login", serverHost))
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var tokenResp tuya.LoginTokenResponse
-	if err = json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return nil, err
-	}
-
-	if !tokenResp.Success {
-		return nil, errors.New("tuya: " + tokenResp.Msg)
-	}
-
-	return &tokenResp, nil
-}
-
-func performLogin(client *http.Client, url string, loginReq tuya.PasswordLoginRequest, serverHost string) (*tuya.PasswordLoginResponse, error) {
-	jsonData, err := json.Marshal(loginReq)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Origin", fmt.Sprintf("https://%s", serverHost))
-	req.Header.Set("Referer", fmt.Sprintf("https://%s/login", serverHost))
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var loginResp tuya.PasswordLoginResponse
-	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
-		return nil, err
-	}
-
-	return &loginResp, nil
 }
 
 func containsDevice(devices []tuya.Device, deviceID string) bool {

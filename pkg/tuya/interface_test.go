@@ -24,3 +24,18 @@ func TestVideoCodecsUseTheRTPClock(t *testing.T) {
 		require.Equal(t, uint32(90000), codecs[i].ClockRate)
 	}
 }
+
+// The web app asks for the main stream in HD and the sub stream in SD, also
+// when the camera's skill lists no videos.
+func TestStreamTypeWithoutVideos(t *testing.T) {
+	c := &TuyaClient{skill: &Skill{WebRTC: 3}}
+	require.Equal(t, 2, c.GetStreamType("hd"))
+	require.Equal(t, 4, c.GetStreamType("sd"))
+
+	c.skill.Videos = []VideoSkill{
+		{StreamType: 4, Width: 640, Height: 360},
+		{StreamType: 2, Width: 1920, Height: 1080},
+	}
+	require.Equal(t, 2, c.GetStreamType("hd"))
+	require.Equal(t, 4, c.GetStreamType("sd"))
+}

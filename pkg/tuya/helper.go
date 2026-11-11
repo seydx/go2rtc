@@ -11,8 +11,10 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"regexp"
+	"sync"
 	"time"
 
+	pion "github.com/pion/webrtc/v4"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -66,4 +68,32 @@ func CreateHTTPClientWithSession() *http.Client {
 		Timeout: 30 * time.Second,
 		Jar:     jar,
 	}
+}
+
+var (
+	dtlsCertMu sync.Mutex
+	dtlsCert   *pion.Certificate
+)
+
+// the cameras check an RSA signature much faster than the default ECDSA one, the DTLS handshake gets up to a second shorter
+func dtlsCertificate() (*pion.Certificate, error) {
+	dtlsCertMu.Lock()
+	defer dtlsCertMu.Unlock()
+
+	if dtlsCert != nil && time.Until(dtlsCert.Expires()) > 24*time.Hour {
+		return dtlsCert, nil
+	}
+
+	key, err := rsa.GenerateKey(cryptoRand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
+
+	cert, err := pion.GenerateCertificate(key)
+	if err != nil {
+		return nil, err
+	}
+
+	dtlsCert = cert
+	return cert, nil
 }

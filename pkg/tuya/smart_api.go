@@ -8,7 +8,6 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
-	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/webrtc"
 )
@@ -123,6 +122,7 @@ type AppInfo struct {
 type MQTTConfigResponse struct {
 	Result  SmartApiMQTTConfig `json:"result"`
 	Success bool               `json:"success"`
+	Code    string             `json:"errorCode,omitempty"`
 	Msg     string             `json:"errorMsg,omitempty"`
 }
 
@@ -211,6 +211,7 @@ type SmartApiWebRTCConfigRequest struct {
 type SmartApiWebRTCConfigResponse struct {
 	Result  SmartApiWebRTCConfig `json:"result"`
 	Success bool                 `json:"success"`
+	Code    string               `json:"errorCode,omitempty"`
 	Msg     string               `json:"errorMsg,omitempty"`
 }
 
@@ -240,7 +241,7 @@ type TuyaSmartApiClient struct {
 	email       string
 	password    string
 	countryCode string
-	mqttsUrl    string
+	session     *smartSession
 }
 
 type Region struct {
@@ -260,7 +261,7 @@ var AvailableRegions = []Region{
 	{"singapore", "protect-sg.ismartlife.me", "Singapore", "SG"},
 }
 
-func NewTuyaSmartApiClient(httpClient *http.Client, baseUrl, email, password, deviceId string) (*TuyaSmartApiClient, error) {
+func NewTuyaSmartApiClient(baseUrl, email, password, deviceId string) (*TuyaSmartApiClient, error) {
 	var region *Region
 	for _, r := range AvailableRegions {
 		if r.Host == baseUrl {
@@ -273,16 +274,12 @@ func NewTuyaSmartApiClient(httpClient *http.Client, baseUrl, email, password, de
 		return nil, fmt.Errorf("invalid region: %s", baseUrl)
 	}
 
-	if httpClient == nil {
-		httpClient = CreateHTTPClientWithSession()
-	}
-
-	mqttClient := NewTuyaMqttClient(deviceId)
+	session := getSmartSession(baseUrl, email, password)
 
 	client := &TuyaSmartApiClient{
 		TuyaClient: TuyaClient{
-			httpClient: httpClient,
-			mqtt:       mqttClient,
+			httpClient: session.client,
+			mqtt:       NewTuyaMqttClient(deviceId),
 			deviceId:   deviceId,
 			expireTime: 0,
 			baseUrl:    baseUrl,
@@ -290,25 +287,26 @@ func NewTuyaSmartApiClient(httpClient *http.Client, baseUrl, email, password, de
 		email:       email,
 		password:    password,
 		countryCode: region.Continent,
+		session:     session,
 	}
 
 	return client, nil
 }
 
+// Login logs in again, every stream of the same account shares the session
+func (c *TuyaSmartApiClient) Login() error {
+	seen, _ := c.session.state()
+	if err := c.session.login(seen, c.passwordLogin); err != nil {
+		return fmt.Errorf("failed to login: %w", err)
+	}
+	return nil
+}
+
 // WebRTC Flow
 func (c *TuyaSmartApiClient) Init() error {
-	if err := c.initToken(); err != nil {
-		return fmt.Errorf("failed to initialize token: %w", err)
-	}
-
-	webrtcConfig, err := c.loadWebrtcConfig()
+	webrtcConfig, hubConfig, err := c.loadConfigs()
 	if err != nil {
-		return fmt.Errorf("failed to load webrtc config: %w", err)
-	}
-
-	hubConfig, err := c.loadHubConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load hub config: %w", err)
+		return err
 	}
 
 	if err := c.mqtt.Start(hubConfig, webrtcConfig, c.skill.WebRTC); err != nil {
@@ -410,7 +408,39 @@ func (c *TuyaSmartApiClient) GetRoomList(homeId string) (*RoomListResponse, erro
 	return &roomListResponse, nil
 }
 
-func (c *TuyaSmartApiClient) initToken() error {
+func (c *TuyaSmartApiClient) loadConfigs() (*WebRTCConfig, *MQTTConfig, error) {
+	seen, _ := c.session.state()
+	if seen == 0 {
+		if err := c.session.login(seen, c.passwordLogin); err != nil {
+			return nil, nil, fmt.Errorf("failed to login: %w", err)
+		}
+	}
+
+	webrtcConfig, hubConfig, err := c.loadSessionConfigs()
+	if seen > 0 && errors.Is(err, errSessionLost) {
+		if err = c.session.login(seen, c.passwordLogin); err != nil {
+			return nil, nil, fmt.Errorf("failed to login: %w", err)
+		}
+		webrtcConfig, hubConfig, err = c.loadSessionConfigs()
+	}
+	return webrtcConfig, hubConfig, err
+}
+
+func (c *TuyaSmartApiClient) loadSessionConfigs() (*WebRTCConfig, *MQTTConfig, error) {
+	webrtcConfig, err := c.loadWebrtcConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load webrtc config: %w", err)
+	}
+
+	hubConfig, err := c.loadHubConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load hub config: %w", err)
+	}
+
+	return webrtcConfig, hubConfig, nil
+}
+
+func (c *TuyaSmartApiClient) passwordLogin() (mqttsUrl string, err error) {
 	tokenUrl := fmt.Sprintf("https://%s/api/login/token", c.baseUrl)
 
 	tokenReq := LoginTokenRequest{
@@ -421,21 +451,21 @@ func (c *TuyaSmartApiClient) initToken() error {
 
 	body, err := c.request("POST", tokenUrl, tokenReq)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	var tokenResp LoginTokenResponse
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return err
+		return "", err
 	}
 
 	if !tokenResp.Success {
-		return errors.New(tokenResp.Msg)
+		return "", errors.New(tokenResp.Msg)
 	}
 
 	encryptedPassword, err := EncryptPassword(c.password, tokenResp.Result.PbKey)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt password: %v", err)
+		return "", fmt.Errorf("failed to encrypt password: %v", err)
 	}
 	var loginUrl string
 
@@ -457,22 +487,19 @@ func (c *TuyaSmartApiClient) initToken() error {
 
 	body, err = c.request("POST", loginUrl, loginReq)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	var loginResp *PasswordLoginResponse
 	if err := json.Unmarshal(body, &loginResp); err != nil {
-		return err
+		return "", err
 	}
 
 	if !loginResp.Success {
-		return errors.New(loginResp.ErrorMsg)
+		return "", errors.New(loginResp.ErrorMsg)
 	}
 
-	c.mqttsUrl = fmt.Sprintf("ssl://%s:%d", loginResp.Result.Domain.MobileMqttsUrl, loginResp.Result.Domain.MqttsPort)
-	c.expireTime = time.Now().Unix() + 2*24*60*60 // 2 days in seconds
-
-	return nil
+	return fmt.Sprintf("ssl://%s:%d", loginResp.Result.Domain.MobileMqttsUrl, loginResp.Result.Domain.MqttsPort), nil
 }
 
 func (c *TuyaSmartApiClient) loadWebrtcConfig() (*WebRTCConfig, error) {
@@ -495,7 +522,7 @@ func (c *TuyaSmartApiClient) loadWebrtcConfig() (*WebRTCConfig, error) {
 	}
 
 	if !webRTCConfigResponse.Success {
-		return nil, errors.New(webRTCConfigResponse.Msg)
+		return nil, smartApiError(webRTCConfigResponse.Code, webRTCConfigResponse.Msg)
 	}
 
 	err = json.Unmarshal([]byte(webRTCConfigResponse.Result.Skill), &c.skill)
@@ -516,7 +543,14 @@ func (c *TuyaSmartApiClient) loadWebrtcConfig() (*WebRTCConfig, error) {
 		return nil, err
 	}
 
+	var gatewayID, nodeID string
+	if r := webRTCConfigResponse.Result; r.Sub && r.GatewayId != "" && r.NodeId != "" {
+		gatewayID, nodeID = r.GatewayId, r.NodeId
+	}
+
 	return &WebRTCConfig{
+		GatewayID:            gatewayID,
+		NodeID:               nodeID,
 		AudioAttributes:      webRTCConfigResponse.Result.AudioAttributes,
 		Auth:                 webRTCConfigResponse.Result.Auth,
 		ID:                   webRTCConfigResponse.Result.Id,
@@ -547,11 +581,13 @@ func (c *TuyaSmartApiClient) loadHubConfig() (config *MQTTConfig, err error) {
 	}
 
 	if !mqttConfigResponse.Success {
-		return nil, errors.New(mqttConfigResponse.Msg)
+		return nil, smartApiError(mqttConfigResponse.Code, mqttConfigResponse.Msg)
 	}
 
+	_, mqttsUrl := c.session.state()
+
 	return &MQTTConfig{
-		Url:            c.mqttsUrl,
+		Url:            mqttsUrl,
 		ClientID:       fmt.Sprintf("web_%s", mqttConfigResponse.Result.Msid),
 		Username:       fmt.Sprintf("web_%s", mqttConfigResponse.Result.Msid),
 		Password:       mqttConfigResponse.Result.Password,
@@ -578,6 +614,8 @@ func (c *TuyaSmartApiClient) request(method string, url string, body any) ([]byt
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Origin", fmt.Sprintf("https://%s", c.baseUrl))
+	// without it the server answers a lost session with its login page instead of 401
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 	response, err := c.httpClient.Do(req)
 	if err != nil {
@@ -590,9 +628,12 @@ func (c *TuyaSmartApiClient) request(method string, url string, body any) ([]byt
 		return nil, err
 	}
 
-	if response.StatusCode != http.StatusOK {
-		return nil, err
+	switch response.StatusCode {
+	case http.StatusOK:
+		return res, nil
+	case http.StatusUnauthorized:
+		return nil, errSessionLost
+	default:
+		return nil, fmt.Errorf("http status %d", response.StatusCode)
 	}
-
-	return res, nil
 }

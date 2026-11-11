@@ -1,6 +1,7 @@
 package tuya
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -132,3 +133,64 @@ func TestSignalingWithBroker(t *testing.T) {
 	c.onConnect(c.client)
 	require.ErrorIs(t, c.waiter.Wait(), refused)
 }
+
+// recorder is a broker that keeps what was published
+type recorder struct {
+	broker
+	topics   []string
+	payloads [][]byte
+}
+
+func (r *recorder) Publish(topic string, _ byte, _ bool, payload any) mqtt.Token {
+	r.topics = append(r.topics, topic)
+	r.payloads = append(r.payloads, payload.([]byte))
+	return acked(nil)
+}
+
+// A camera behind a hub is addressed through the hub, with its node id.
+func TestSubDeviceIsReachedThroughTheHub(t *testing.T) {
+	rec := &recorder{}
+	c := &TuyaMqttClient{client: rec, deviceId: "camera", gatewayId: "hub", nodeId: "node", publishTopic: "/av/moto/moto/u/hub"}
+	require.NoError(t, c.SendDisconnect())
+
+	var msg MqttMessage
+	require.NoError(t, json.Unmarshal(rec.payloads[0], &msg))
+	require.Equal(t, "hub", msg.Data.Header.To)
+	require.Equal(t, "node", msg.Data.Header.SubDevID)
+
+	c = &TuyaMqttClient{client: &recorder{}, deviceId: "camera"}
+	require.Equal(t, "camera", c.target())
+}
+
+func TestRefusedSessionIsReported(t *testing.T) {
+	for msg, want := range map[string]error{
+		`{"mode":"webrtc","sdk_code":12}`:      errNoFreeStream,
+		`{"mode":"webrtc","info":"refused"}`:   errNoFreeStream,
+		`{"mode":"webrtc","close_reason":100}`: nil,
+	} {
+		var got error
+		c := &TuyaMqttClient{handleDisconnect: func(err error) { got = err }}
+		c.onMqttDisconnect(&MqttMessage{Data: MqttFrame{Message: json.RawMessage(msg)}})
+		require.Error(t, got, msg)
+		if want != nil {
+			require.ErrorIs(t, got, want, msg)
+		} else {
+			require.NotErrorIs(t, got, errNoFreeStream, msg)
+		}
+	}
+}
+
+func TestWakeUpSignalIsPassedOn(t *testing.T) {
+	var woken int
+	c := &TuyaMqttClient{handleWakeUp: func() { woken++ }}
+	c.onLowPowerMessage(nil, &message{payload: []byte(`{"protocol":4,"data":{"dps":{"149":true}}}`)})
+	c.onLowPowerMessage(nil, &message{payload: []byte(`{"protocol":4,"data":{"dps":{"149":false}}}`)})
+	require.Equal(t, 1, woken)
+}
+
+type message struct {
+	mqtt.Message
+	payload []byte
+}
+
+func (m *message) Payload() []byte { return m.payload }

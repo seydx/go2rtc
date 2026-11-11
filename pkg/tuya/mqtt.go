@@ -16,7 +16,6 @@ import (
 type TuyaMqttClient struct {
 	client           mqtt.Client
 	waiter           core.Waiter
-	wakeupWaiter     core.Waiter
 	speakerWaiter    core.Waiter
 	publishTopic     string
 	subscribeTopic   string
@@ -25,13 +24,16 @@ type TuyaMqttClient struct {
 	uid              string
 	motoId           string
 	deviceId         string
+	gatewayId        string
+	nodeId           string
 	sessionId        string
 	closed           bool
 	webrtcVersion    int
 	handleAnswer     func(answer AnswerFrame)
 	handleCandidate  func(candidate CandidateFrame)
-	handleDisconnect func()
+	handleDisconnect func(err error)
 	handleError      func(err error)
+	handleWakeUp     func()
 }
 
 type MqttFrameHeader struct {
@@ -82,6 +84,11 @@ type DisconnectFrame struct {
 	Mode string `json:"mode"`
 }
 
+type RemoteDisconnectFrame struct {
+	SdkCode int    `json:"sdk_code"`
+	Info    string `json:"info"`
+}
+
 type MqttLowPowerMessage struct {
 	Protocol int    `json:"protocol"`
 	T        int    `json:"t"`
@@ -106,10 +113,9 @@ type MqttMessage struct {
 
 func NewTuyaMqttClient(deviceId string) *TuyaMqttClient {
 	return &TuyaMqttClient{
-		deviceId:     deviceId,
-		sessionId:    core.RandString(6, 62),
-		waiter:       core.Waiter{},
-		wakeupWaiter: core.Waiter{},
+		deviceId:  deviceId,
+		sessionId: core.RandString(6, 62),
+		waiter:    core.Waiter{},
 	}
 }
 
@@ -118,12 +124,14 @@ func (c *TuyaMqttClient) Start(hubConfig *MQTTConfig, webrtcConfig *WebRTCConfig
 	c.motoId = webrtcConfig.MotoID
 	c.auth = webrtcConfig.Auth
 	c.iceServers = webrtcConfig.P2PConfig.Ices
+	c.gatewayId = webrtcConfig.GatewayID
+	c.nodeId = webrtcConfig.NodeID
 
 	c.publishTopic = hubConfig.PublishTopic
 	c.subscribeTopic = hubConfig.SubscribeTopic
 
 	c.publishTopic = strings.Replace(c.publishTopic, "moto_id", c.motoId, 1)
-	c.publishTopic = strings.Replace(c.publishTopic, "{device_id}", c.deviceId, 1)
+	c.publishTopic = strings.Replace(c.publishTopic, "{device_id}", c.target(), 1)
 
 	parts := strings.Split(c.subscribeTopic, "/")
 	c.uid = parts[3]
@@ -154,7 +162,6 @@ func (c *TuyaMqttClient) Start(hubConfig *MQTTConfig, webrtcConfig *WebRTCConfig
 
 func (c *TuyaMqttClient) Stop() {
 	c.waiter.Done(errors.New("mqtt: stopped"))
-	c.wakeupWaiter.Done(errors.New("mqtt: stopped"))
 	c.speakerWaiter.Done(errors.New("mqtt: stopped"))
 
 	if c.client != nil {
@@ -191,9 +198,8 @@ func (c *TuyaMqttClient) WakeUp(localKey string) error {
 		return fmt.Errorf("failed to publish wake-up message: %w", err)
 	}
 
-	// Subscribe to lowPower topic to receive dps[149] status updates
-	// (we don't wait for this signal - camera responds immediately)
-	lowPowerTopic := fmt.Sprintf("smart/decrypt/in/%s", c.deviceId)
+	// dps[149] tells when the camera is awake
+	lowPowerTopic := fmt.Sprintf("smart/decrypt/in/%s", c.target())
 	if err := waitAck(c.client.Subscribe(lowPowerTopic, 1, c.onLowPowerMessage)); err != nil {
 		return fmt.Errorf("failed to subscribe to lowPower topic: %w", err)
 	}
@@ -298,7 +304,7 @@ func (c *TuyaMqttClient) onMessage(client mqtt.Client, msg mqtt.Message) {
 	case "candidate":
 		c.onMqttCandidate(&rmqtt)
 	case "disconnect":
-		c.onMqttDisconnect()
+		c.onMqttDisconnect(&rmqtt)
 	case "speaker":
 		c.onMqttSpeaker(&rmqtt)
 	}
@@ -314,13 +320,8 @@ func (c *TuyaMqttClient) onLowPowerMessage(client mqtt.Client, msg mqtt.Message)
 	// https://developer.tuya.com/en/docs/iot-device-dev/doorbell_solution?id=Kayamyivh15ox#title-2-Battery
 	if message.Protocol == 4 {
 		if val, ok := message.Data.Dps["149"]; ok {
-			if ready, ok := val.(bool); ok && ready {
-				// Camera is now ready after wake-up (dps[149]:true received).
-				// However, we don't wait for this signal (like ismartlife.me doesn't either).
-				// The camera starts responding immediately after WakeUp() is called,
-				// so we proceed with the connection without blocking.
-				// This waiter is kept for potential future use.
-				c.wakeupWaiter.Done(nil)
+			if ready, ok := val.(bool); ok && ready && c.handleWakeUp != nil {
+				c.handleWakeUp()
 			}
 		}
 	}
@@ -350,9 +351,16 @@ func (c *TuyaMqttClient) onMqttCandidate(msg *MqttMessage) {
 	c.onCandidate(candidateFrame)
 }
 
-func (c *TuyaMqttClient) onMqttDisconnect() {
+func (c *TuyaMqttClient) onMqttDisconnect(msg *MqttMessage) {
 	c.closed = true
-	c.onDisconnect()
+
+	var frame RemoteDisconnectFrame
+	_ = json.Unmarshal(msg.Data.Message, &frame)
+	if frame.SdkCode == 12 || frame.Info == "refused" {
+		c.onDisconnect(errNoFreeStream)
+		return
+	}
+	c.onDisconnect(errors.New("mqtt: disconnect"))
 }
 
 func (c *TuyaMqttClient) onMqttSpeaker(msg *MqttMessage) {
@@ -382,9 +390,9 @@ func (c *TuyaMqttClient) onCandidate(candidate CandidateFrame) {
 	}
 }
 
-func (c *TuyaMqttClient) onDisconnect() {
+func (c *TuyaMqttClient) onDisconnect(err error) {
 	if c.handleDisconnect != nil {
-		c.handleDisconnect()
+		c.handleDisconnect(err)
 	}
 }
 
@@ -412,7 +420,8 @@ func (c *TuyaMqttClient) sendMqttMessage(messageType string, protocol int, trans
 			Header: MqttFrameHeader{
 				Type:          messageType,
 				From:          c.uid,
-				To:            c.deviceId,
+				To:            c.target(),
+				SubDevID:      c.nodeId,
 				SessionID:     c.sessionId,
 				MotoID:        c.motoId,
 				TransactionID: transactionID,
@@ -427,6 +436,14 @@ func (c *TuyaMqttClient) sendMqttMessage(messageType string, protocol int, trans
 	}
 
 	return waitAck(c.client.Publish(c.publishTopic, 1, false, payload))
+}
+
+// a camera behind a hub is reached through the hub
+func (c *TuyaMqttClient) target() string {
+	if c.gatewayId != "" {
+		return c.gatewayId
+	}
+	return c.deviceId
 }
 
 // mqttAckTimeout bounds the wait for the broker's acknowledgement. While the

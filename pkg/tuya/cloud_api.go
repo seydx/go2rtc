@@ -308,7 +308,7 @@ func (c *TuyaCloudApiClient) request(method string, url string, body any) ([]byt
 	}
 
 	if response.StatusCode != http.StatusOK {
-		return nil, err
+		return nil, fmt.Errorf("http status %d", response.StatusCode)
 	}
 
 	return res, nil

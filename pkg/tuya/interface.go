@@ -95,6 +95,8 @@ type WebRTCConfig struct {
 	VedioClaritiy        int             `json:"vedio_clarity"`
 	VideoClaritiy        int             `json:"video_clarity"`
 	VideoClarities       []int           `json:"video_clarities"`
+	GatewayID            string          `json:"-"`
+	NodeID               string          `json:"-"`
 }
 
 type MQTTConfig struct {
@@ -137,17 +139,18 @@ func (c *TuyaClient) GetMqtt() *TuyaMqttClient {
 // - streamType 2 → MQTT stream_type 0
 // - streamType 4 → MQTT stream_type 1
 func (c *TuyaClient) GetStreamType(streamResolution string) int {
-	// Default streamType if nothing is found
-	defaultStreamType := 1
+	// main and sub stream, also for a skill without videos, like the web app
+	highestResType, lowestResType := 2, 4
 
 	if c.skill == nil || len(c.skill.Videos) == 0 {
-		return defaultStreamType
+		if streamResolution == "sd" {
+			return lowestResType
+		}
+		return highestResType
 	}
 
 	// Find the highest and lowest resolution based on pixel count
-	var highestResType = defaultStreamType
 	var highestRes = 0
-	var lowestResType = defaultStreamType
 	var lowestRes = 0
 
 	for _, video := range c.skill.Videos {
@@ -166,15 +169,10 @@ func (c *TuyaClient) GetStreamType(streamResolution string) int {
 		}
 	}
 
-	// Return the streamType based on the selection
-	switch streamResolution {
-	case "hd":
-		return highestResType
-	case "sd":
+	if streamResolution == "sd" {
 		return lowestResType
-	default:
-		return defaultStreamType
 	}
+	return highestResType
 }
 
 // IsHEVC checks if the given streamType uses H265 (HEVC) codec

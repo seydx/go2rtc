@@ -6,13 +6,32 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/pcm"
 	"github.com/AlexxIT/go2rtc/pkg/webrtc"
 	"github.com/pion/rtp"
 	pion "github.com/pion/webrtc/v4"
+)
+
+const (
+	offerResendInterval = 3 * time.Second
+	offerResends        = 5
+	connectTimeout      = 30 * time.Second
+	firstMediaTimeout   = 6 * time.Second
+	// every handshake freezes the streams the camera already serves for seconds, a full camera is left alone
+	busyBackoff = 30 * time.Second
+)
+
+var errNoFreeStream = errors.New("camera serves no further stream, too many viewers")
+
+var (
+	busyMu    sync.Mutex
+	busyUntil = map[string]time.Time{}
 )
 
 type Client struct {
@@ -82,12 +101,21 @@ func Dial(rawURL string) (core.Producer, error) {
 		return nil, errors.New("tuya: wrong query params")
 	}
 
+	if isBusy(deviceId) {
+		return nil, fmt.Errorf("tuya: %w", errNoFreeStream)
+	}
+
+	cert, err := dtlsCertificate()
+	if err != nil {
+		return nil, fmt.Errorf("tuya: %w", err)
+	}
+
 	client := &Client{
 		handlers: make(map[uint32]func(*rtp.Packet)),
 	}
 
 	if useSmartApi {
-		if client.api, err = NewTuyaSmartApiClient(nil, u.Hostname(), email, password, deviceId); err != nil {
+		if client.api, err = NewTuyaSmartApiClient(u.Hostname(), email, password, deviceId); err != nil {
 			return nil, fmt.Errorf("tuya: %w", err)
 		}
 	} else {
@@ -108,6 +136,7 @@ func Dial(rawURL string) (core.Producer, error) {
 		ICEServers:         client.api.GetICEServers(),
 		ICETransportPolicy: pion.ICETransportPolicyAll,
 		BundlePolicy:       pion.BundlePolicyMaxBundle,
+		Certificates:       []pion.Certificate{*cert},
 	}
 
 	api, err := webrtc.NewAPI()
@@ -141,21 +170,35 @@ func Dial(rawURL string) (core.Producer, error) {
 		return nil, err
 	}
 
+	answered := make(chan struct{})
+	var answerOnce sync.Once
+
 	// Set up MQTT handlers
 	mqttClient.handleAnswer = func(answer AnswerFrame) {
 		// fmt.Printf("tuya: answer: %s\n", answer.Sdp)
 
+		// a resent offer can be answered twice
+		first := false
+		answerOnce.Do(func() {
+			first = true
+			close(answered)
+		})
+		if !first {
+			return
+		}
+
+		// pranswer starts ICE as controlled, the camera acts as the controlling agent
 		desc := pion.SessionDescription{
 			Type: pion.SDPTypePranswer,
 			SDP:  answer.Sdp,
 		}
 
-		if err = client.pc.SetRemoteDescription(desc); err != nil {
+		if err := client.pc.SetRemoteDescription(desc); err != nil {
 			client.Close(err)
 			return
 		}
 
-		if err = client.conn.SetAnswer(answer.Sdp); err != nil {
+		if err := client.conn.SetAnswer(answer.Sdp); err != nil {
 			client.Close(err)
 			return
 		}
@@ -183,6 +226,17 @@ func Dial(rawURL string) (core.Producer, error) {
 					}
 				}
 			}
+
+			// HEVC cameras send mic audio as RTP over the DataChannel, but the
+			// answer marks m=audio recvonly (talk path only), so SetAnswer gives
+			// us no recvonly audio media for consumers to subscribe to.
+			if codecs := client.api.GetAudioCodecs(); len(codecs) > 0 && !client.hasRecvAudio() {
+				client.conn.Medias = append(client.conn.Medias, &core.Media{
+					Kind:      core.KindAudio,
+					Direction: core.DirectionRecvonly,
+					Codecs:    codecs,
+				})
+			}
 		}
 	}
 
@@ -197,9 +251,19 @@ func Dial(rawURL string) (core.Producer, error) {
 		}
 	}
 
-	mqttClient.handleDisconnect = func() {
-		// fmt.Println("tuya: disconnect")
-		client.Close(errors.New("mqtt: disconnect"))
+	mqttClient.handleDisconnect = func(err error) {
+		if errors.Is(err, errNoFreeStream) {
+			setBusy(deviceId)
+		}
+		client.Close(err)
+	}
+
+	wake := make(chan struct{}, 1)
+	mqttClient.handleWakeUp = func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 	}
 
 	mqttClient.handleError = func(err error) {
@@ -264,12 +328,19 @@ func Dial(rawURL string) (core.Producer, error) {
 		})
 	}
 
+	var candidatesMu sync.Mutex
+	var candidates []string
+
 	// Set up pc handler
 	client.conn.Listen(func(msg any) {
 		switch msg := msg.(type) {
 		case *pion.ICECandidate:
 			_ = sendOffer.Wait()
-			if err := mqttClient.SendCandidate("a=" + msg.ToJSON().Candidate); err != nil {
+			candidate := "a=" + msg.ToJSON().Candidate
+			candidatesMu.Lock()
+			candidates = append(candidates, candidate)
+			candidatesMu.Unlock()
+			if err := mqttClient.SendCandidate(candidate); err != nil {
 				client.Close(err)
 			}
 
@@ -322,6 +393,43 @@ func Dial(rawURL string) (core.Producer, error) {
 
 	sendOffer.Done(nil)
 
+	// the offer gets lost while a camera sleeps or its link drops, the web app sends it again too
+	stopResend := make(chan struct{})
+	defer close(stopResend)
+	go func() {
+		ticker := time.NewTicker(offerResendInterval)
+		defer ticker.Stop()
+		for range offerResends {
+			select {
+			case <-answered:
+				return
+			case <-stopResend:
+				return
+			case <-ticker.C:
+			case <-wake:
+			}
+			if err := mqttClient.SendOffer(offer, streamResolution, client.streamType, client.isHEVC); err != nil {
+				return
+			}
+			candidatesMu.Lock()
+			resend := slices.Clone(candidates)
+			candidatesMu.Unlock()
+			for _, candidate := range resend {
+				_ = mqttClient.SendCandidate(candidate)
+			}
+		}
+	}()
+
+	timeout := time.AfterFunc(connectTimeout, func() {
+		select {
+		case <-answered:
+			client.connected.Done(errors.New("connection to the camera timed out"))
+		default:
+			client.connected.Done(errors.New("camera did not answer, it may be offline"))
+		}
+	})
+	defer timeout.Stop()
+
 	// Wait for connection
 	if err = client.connected.Wait(); err != nil {
 		err = fmt.Errorf("tuya: %w", err)
@@ -329,7 +437,32 @@ func Dial(rawURL string) (core.Producer, error) {
 		return nil, err
 	}
 
+	// HEVC media arrives over the data channel, which already answered
+	if !client.isHEVC && !client.waitForMedia() {
+		setBusy(deviceId)
+		err = fmt.Errorf("tuya: %w", errNoFreeStream)
+		client.Close(err)
+		return nil, err
+	}
+
 	return client, nil
+}
+
+// the camera serves a limited number of streams, a further viewer connects and then gets no media or a disconnect
+func (c *Client) waitForMedia() bool {
+	deadline := time.Now().Add(firstMediaTimeout)
+	for time.Now().Before(deadline) {
+		if c.pc.ConnectionState() == pion.PeerConnectionStateClosed {
+			return false
+		}
+		for _, stats := range c.pc.GetStats() {
+			if inbound, ok := stats.(pion.InboundRTPStreamStats); ok && inbound.PacketsReceived > 0 {
+				return true
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
 }
 
 func (c *Client) GetMedias() []*core.Media {
@@ -411,6 +544,38 @@ func (c *Client) AddTrack(media *core.Media, codec *core.Codec, track *core.Rece
 	return nil
 }
 
+func (c *Client) hasRecvAudio() bool {
+	for _, media := range c.conn.Medias {
+		if media.Kind == core.KindAudio && media.Direction == core.DirectionRecvonly {
+			return true
+		}
+	}
+	return false
+}
+
+// reclockPCM - rebuild PCM RTP timestamps from the payload size
+// Tuya HEVC cameras stamp mic audio with a clock half the sample rate
+// (160 ticks per 320-sample 16kHz frame). Non-PCM codecs pass through.
+func reclockPCM(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
+	bpf := pcm.BytesPerFrame(codec)
+	if bpf == 0 {
+		return handler
+	}
+
+	var ts uint32
+	var init bool
+
+	return func(packet *rtp.Packet) {
+		if init {
+			ts += uint32(len(packet.Payload) / bpf)
+		} else {
+			ts, init = packet.Timestamp, true
+		}
+		packet.Timestamp = ts
+		handler(packet)
+	}
+}
+
 func (c *Client) Start() error {
 	if len(c.conn.Receivers) == 0 {
 		return errors.New("tuya: no receivers")
@@ -433,12 +598,8 @@ func (c *Client) Start() error {
 		})
 	}
 
-	if c.audioSSRC != nil {
-		c.setHandler(*c.audioSSRC, func(packet *rtp.Packet) {
-			if audio != nil {
-				audio.WriteRTP(packet)
-			}
-		})
+	if c.audioSSRC != nil && audio != nil {
+		c.setHandler(*c.audioSSRC, reclockPCM(audio.Codec, audio.WriteRTP))
 	}
 
 	return c.conn.Start()
@@ -566,4 +727,16 @@ func (c *Client) sendMessageToDataChannel(message []byte) error {
 	}
 
 	return nil
+}
+
+func setBusy(deviceID string) {
+	busyMu.Lock()
+	defer busyMu.Unlock()
+	busyUntil[deviceID] = time.Now().Add(busyBackoff)
+}
+
+func isBusy(deviceID string) bool {
+	busyMu.Lock()
+	defer busyMu.Unlock()
+	return time.Now().Before(busyUntil[deviceID])
 }
