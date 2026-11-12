@@ -778,7 +778,7 @@ func TestCompanionDialLeavesOutTheCameraAudio(t *testing.T) {
 		return nil, errors.New("stub companion")
 	})
 	var have []*core.Codec
-	HandleTrim("stubtrim", func(url string, codecs []*core.Codec) string {
+	HandleTrim("stubtrim", func(url string, _ *Stream, codecs []*core.Codec) string {
 		have = codecs
 		return strings.Replace(url, "#audio=aac", "", 1)
 	})
@@ -835,7 +835,7 @@ func TestTrimmedCompanionSkipsItsOwnInput(t *testing.T) {
 		dialed <- url
 		return newFakeCompanionConn(), nil
 	})
-	HandleTrim("trimself", func(url string, _ []*core.Codec) string {
+	HandleTrim("trimself", func(url string, _ *Stream, _ []*core.Codec) string {
 		return strings.Replace(url, "#audio=aac", "", 1)
 	})
 

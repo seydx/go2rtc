@@ -24,9 +24,9 @@ func HandleFunc(scheme string, handler Handler) {
 	redirectsMu.Unlock()
 }
 
-// Trim fits url to have, the audio the stream's earlier sources send, e.g.
+// Trim fits url to have, the audio the earlier sources of stream send, e.g.
 // leaves out the outputs that would only repeat a codec in have.
-type Trim func(url string, have []*core.Codec) string
+type Trim func(url string, stream *Stream, have []*core.Codec) string
 
 var trims = map[string]Trim{}
 

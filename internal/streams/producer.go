@@ -248,7 +248,7 @@ func (p *Producer) dialURL(url string) string {
 		scheme, _, _ := strings.Cut(url, ":")
 		if trim := getTrim(scheme); trim != nil {
 			if have := stream.audioBefore(p); len(have) > 0 {
-				dialed = trim(url, have)
+				dialed = trim(url, stream, have)
 			}
 		}
 	}

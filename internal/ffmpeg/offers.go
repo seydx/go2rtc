@@ -94,11 +94,11 @@ func offerAudioCodec(value string) *core.Codec {
 	return codec
 }
 
-// a source reading the stream gets the earlier sources' Opus as Opus, and
+// a source reading its own stream gets the earlier sources' Opus as Opus, and
 // ffmpeg's own decoder turns its in-band FEC (Ring) into noise
-func fitToEarlierAudio(url string, have []*core.Codec) string {
+func fitToEarlierAudio(url string, stream *streams.Stream, have []*core.Codec) string {
 	url = trimOutputs(url, have)
-	if onlyOpus(have) && readsStream(url) {
+	if onlyOpus(have) && readsStream(url, stream) {
 		url += "#audioDecoder=libopus"
 	}
 	return url
@@ -113,10 +113,12 @@ func onlyOpus(codecs []*core.Codec) bool {
 	return len(codecs) > 0
 }
 
-func readsStream(url string) bool {
+// readsStream tells if ffmpeg reads stream, the one have is of. Another
+// stream, a camera or a file sends audio of its own.
+func readsStream(url string, stream *streams.Stream) bool {
 	base, _, _ := strings.Cut(url, "#")
 	name := strings.TrimPrefix(base, "ffmpeg:")
-	return !strings.Contains(name, "://") && streams.Get(name) != nil
+	return stream != nil && streams.Get(name) == stream
 }
 
 // two outputs at least stay: with a single one ffmpeg writes a pipe format

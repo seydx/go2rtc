@@ -68,7 +68,7 @@ func TestTrimOutputsTheCameraAlreadySends(t *testing.T) {
 // An Opus camera reaches its companion as Opus, and ffmpeg's own decoder turns
 // in-band FEC into noise.
 func TestCompanionDecodesOpusWithLibopus(t *testing.T) {
-	_, err := streams.New("cui_front_door")
+	stream, err := streams.New("cui_front_door")
 	require.NoError(t, err)
 	t.Cleanup(func() { streams.Delete("cui_front_door") })
 
@@ -76,14 +76,31 @@ func TestCompanionDecodesOpusWithLibopus(t *testing.T) {
 	opus := []*core.Codec{{Name: core.CodecOpus, ClockRate: 48000, Channels: 2}}
 	aac := []*core.Codec{{Name: core.CodecAAC, ClockRate: 16000}}
 
-	got := fitToEarlierAudio(companion, opus)
+	got := fitToEarlierAudio(companion, stream, opus)
 	require.Equal(t, "ffmpeg:cui_front_door#cameraui#audio=pcma#audio=aac#audioDecoder=libopus", got)
 	require.True(t, strings.HasPrefix(parseArgs(got[len("ffmpeg:"):]).Input, "-c:a libopus "))
 
-	require.Equal(t, trimOutputs(companion, aac), fitToEarlierAudio(companion, aac))
-	require.NotContains(t, fitToEarlierAudio(companion, append(opus, aac...)), "audioDecoder")
-	require.NotContains(t, fitToEarlierAudio("ffmpeg:rtsp://camera/stream#audio=pcma#audio=aac", opus), "audioDecoder",
+	require.Equal(t, trimOutputs(companion, aac), fitToEarlierAudio(companion, stream, aac))
+	require.NotContains(t, fitToEarlierAudio(companion, stream, append(opus, aac...)), "audioDecoder")
+	require.NotContains(t, fitToEarlierAudio("ffmpeg:rtsp://camera/stream#audio=pcma#audio=aac", stream, opus), "audioDecoder",
 		"another camera's audio is not the stream's")
-	require.NotContains(t, fitToEarlierAudio("ffmpeg:/media/doorbell.mkv#audio=pcma#audio=aac", opus), "audioDecoder",
+	require.NotContains(t, fitToEarlierAudio("ffmpeg:/media/doorbell.mkv#audio=pcma#audio=aac", stream, opus), "audioDecoder",
 		"a file's audio is not the stream's")
+	require.NotContains(t, fitToEarlierAudio("ffmpeg:/media/doorbell.mkv#audio=pcma#audio=aac", nil, opus), "audioDecoder",
+		"without a stream nothing reads it")
+}
+
+// A source a user adds to a stream can convert another stream: the Opus of
+// this one's camera says nothing about the audio it reads (AAC, say).
+func TestSourceReadingAnotherStreamKeepsItsDecoder(t *testing.T) {
+	sub, err := streams.New("cui_yard_sub")
+	require.NoError(t, err)
+	t.Cleanup(func() { streams.Delete("cui_yard_sub") })
+	_, err = streams.New("cui_yard_main")
+	require.NoError(t, err)
+	t.Cleanup(func() { streams.Delete("cui_yard_main") })
+
+	opus := []*core.Codec{{Name: core.CodecOpus, ClockRate: 48000, Channels: 2}}
+	require.Equal(t, "ffmpeg:cui_yard_main#audio=pcma#audio=aac",
+		fitToEarlierAudio("ffmpeg:cui_yard_main#audio=pcma#audio=aac", sub, opus))
 }
