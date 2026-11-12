@@ -320,8 +320,8 @@ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
 	return nil
 }
 
-func ExchangeSDP(stream *streams.Stream, offer, desc, userAgent, tag string) (answer string, err error) {
-	pc, err := PeerConnection(false)
+func ExchangeSDP(stream *streams.Stream, offer, desc, userAgent, tag string, iceServers []pion.ICEServer) (answer string, err error) {
+	pc, err := sessionPeerConnection(iceServers)
 	if err != nil {
 		log.Error().Err(err).Caller().Send()
 		return
@@ -332,6 +332,7 @@ func ExchangeSDP(stream *streams.Stream, offer, desc, userAgent, tag string) (an
 	conn.FormatName = desc
 	conn.UserAgent = userAgent
 	conn.Tag = tag
+	conn.UseGOP = true
 	conn.Protocol = "http"
 	conn.Listen(func(msg any) {
 		switch msg := msg.(type) {

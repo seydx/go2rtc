@@ -1,6 +1,11 @@
 package webrtc
 
 import (
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
@@ -82,17 +87,36 @@ transeivers:
 	return c.pc.LocalDescription().SDP, nil
 }
 
+const (
+	// a STUN request from an address without a route out (ULA, link-local) only ends at pion's 5 s timeout
+	gatherTimeout = 1500 * time.Millisecond
+	// answers of the servers that are reachable come in a burst, what is still missing after this waits on a dead route
+	gatherQuiet = 250 * time.Millisecond
+)
+
 // GetCompleteAnswer - get SDP answer with candidates inside
 func (c *Conn) GetCompleteAnswer(candidates []string, filter func(*webrtc.ICECandidate) bool) (string, error) {
+	var mu sync.Mutex
+	var once sync.Once
+	var quiet *time.Timer
 	var done = make(chan struct{})
+	finish := func() { once.Do(func() { close(done) }) }
+	slowest := slowestCandidateType(c.pc.GetConfiguration().ICEServers)
 
 	c.pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
-		if candidate != nil {
-			if filter == nil || filter(candidate) {
-				candidates = append(candidates, candidate.ToJSON().Candidate)
-			}
-		} else {
-			done <- struct{}{}
+		if candidate == nil {
+			finish()
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if filter == nil || filter(candidate) {
+			candidates = append(candidates, candidate.ToJSON().Candidate)
+		}
+		if quiet != nil {
+			quiet.Reset(gatherQuiet)
+		} else if candidate.Typ == slowest {
+			quiet = time.AfterFunc(gatherQuiet, finish)
 		}
 	})
 
@@ -101,7 +125,15 @@ func (c *Conn) GetCompleteAnswer(candidates []string, filter func(*webrtc.ICECan
 		return "", err
 	}
 
-	<-done
+	select {
+	case <-done:
+	case <-time.After(gatherTimeout):
+	}
+
+	// candidates that come in later don't touch the answer
+	mu.Lock()
+	gathered := slices.Clone(candidates)
+	mu.Unlock()
 
 	sd := &sdp.SessionDescription{}
 	if err = sd.Unmarshal([]byte(answer)); err != nil {
@@ -110,8 +142,15 @@ func (c *Conn) GetCompleteAnswer(candidates []string, filter func(*webrtc.ICECan
 
 	md := sd.MediaDescriptions[0]
 
-	for _, candidate := range candidates {
+	for _, candidate := range gathered {
 		md.WithPropertyAttribute(candidate)
+	}
+
+	// pion dials out from its active TCP candidates by itself, the far side cannot connect to them
+	for _, md := range sd.MediaDescriptions {
+		md.Attributes = slices.DeleteFunc(md.Attributes, func(attr sdp.Attribute) bool {
+			return strings.HasPrefix(attr.Key, "candidate") && strings.Contains(attr.Key+attr.Value, "tcptype active")
+		})
 	}
 
 	b, err := sd.Marshal()
@@ -120,4 +159,19 @@ func (c *Conn) GetCompleteAnswer(candidates []string, filter func(*webrtc.ICECan
 	}
 
 	return string(b), nil
+}
+
+func slowestCandidateType(servers []webrtc.ICEServer) webrtc.ICECandidateType {
+	typ := webrtc.ICECandidateTypeHost
+	for _, server := range servers {
+		for _, url := range server.URLs {
+			if strings.HasPrefix(url, "turn") {
+				return webrtc.ICECandidateTypeRelay
+			}
+			if strings.HasPrefix(url, "stun") {
+				typ = webrtc.ICECandidateTypeSrflx
+			}
+		}
+	}
+	return typ
 }

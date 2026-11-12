@@ -59,7 +59,8 @@ func syncHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // outputWebRTC support API depending on Content-Type:
-// 1. application/json - receive {"type":"offer","sdp":"v=0\r\n..."} and response {"type":"answer","sdp":"v=0\r\n..."}
+// 1. application/json - receive {"type":"offer","sdp":"v=0\r\n..."} and response {"type":"answer","sdp":"v=0\r\n..."},
+// the offer can bring the viewer's "ice_servers" along
 // 2. application/sdp - receive/response SDP via WebRTC-HTTP Egress Protocol (WHEP)
 // 3. other - receive/response raw SDP
 func outputWebRTC(w http.ResponseWriter, r *http.Request) {
@@ -77,16 +78,21 @@ func outputWebRTC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var offer string
+	var iceServers []pion.ICEServer
 
 	switch mediaType {
 	case "application/json":
-		var desc pion.SessionDescription
+		var desc struct {
+			SDP        string           `json:"sdp"`
+			ICEServers []pion.ICEServer `json:"ice_servers"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&desc); err != nil {
 			log.Error().Err(err).Caller().Send()
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		offer = desc.SDP
+		iceServers = desc.ICEServers
 
 	case "application/x-www-form-urlencoded":
 		if err := r.ParseForm(); err != nil {
@@ -124,7 +130,7 @@ func outputWebRTC(w http.ResponseWriter, r *http.Request) {
 		desc = "webrtc/post"
 	}
 
-	answer, err := ExchangeSDP(stream, offer, desc, r.UserAgent(), r.URL.Query().Get("tag"))
+	answer, err := ExchangeSDP(stream, offer, desc, r.UserAgent(), r.URL.Query().Get("tag"), iceServers)
 	if err != nil {
 		log.Error().Err(err).Caller().Send()
 		http.Error(w, err.Error(), http.StatusInternalServerError)

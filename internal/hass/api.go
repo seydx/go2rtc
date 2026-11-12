@@ -63,7 +63,7 @@ func apiStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s, err = webrtc.ExchangeSDP(stream, string(offer), "hass/webrtc", r.UserAgent(), r.URL.Query().Get("tag"))
+		s, err = webrtc.ExchangeSDP(stream, string(offer), "hass/webrtc", r.UserAgent(), r.URL.Query().Get("tag"), nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

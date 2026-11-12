@@ -15,6 +15,7 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/webrtc"
 	"github.com/gorilla/websocket"
+	"github.com/pion/stun/v3"
 	pion "github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -184,7 +185,7 @@ func TestUnconnectedViewerIsDroppedAfterDeadline(t *testing.T) {
 	usePionAPI(t, 300*time.Millisecond)
 	stream := newStubStream(t, "webrtc_unconnected_http")
 
-	_, err := ExchangeSDP(stream, viewerOffer(t), "webrtc/test", "", "")
+	_, err := ExchangeSDP(stream, viewerOffer(t), "webrtc/test", "", "", nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, consumerCount(t, stream))
 
@@ -289,7 +290,7 @@ func TestConnectedViewerOutlivesDeadline(t *testing.T) {
 
 	viewer, offer := connectingViewer(t)
 	start := time.Now()
-	answer, err := ExchangeSDP(stream, offer, "webrtc/test", "", "")
+	answer, err := ExchangeSDP(stream, offer, "webrtc/test", "", "", nil)
 	require.NoError(t, err)
 	require.NoError(t, viewer.SetRemoteDescription(pion.SessionDescription{Type: pion.SDPTypeAnswer, SDP: answer}))
 	require.Eventually(t, viewerConnected(viewer), deadline, 10*time.Millisecond)
@@ -492,7 +493,7 @@ func TestViewerAddressReadWhileConnecting(t *testing.T) {
 	stream := newStubStream(t, name)
 
 	viewer, offer := connectingViewer(t)
-	answer, err := ExchangeSDP(stream, offer, "webrtc/test", "", "")
+	answer, err := ExchangeSDP(stream, offer, "webrtc/test", "", "", nil)
 	require.NoError(t, err)
 
 	// the pair is selected once the viewer has the answer
@@ -638,4 +639,144 @@ func TestOfferTURNWithoutCredentialsIsRefused(t *testing.T) {
 	conf, err := offerWithICEServers(t, "webrtc_session_ice_no_credentials", []pion.ICEServer{{URLs: []string{"turn:127.0.0.1:9"}}})
 	require.Error(t, err)
 	require.Nil(t, conf)
+}
+
+// A STUN server that never answers must not hold the complete answer back
+// until pion gives up on it.
+func TestCompleteAnswerDoesNotWaitForSilentSTUN(t *testing.T) {
+	useConfiguredAPI(t)
+	stream := newStubStream(t, "webrtc_silent_stun")
+
+	silent, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = silent.Close() })
+
+	start := time.Now()
+	iceServers := []pion.ICEServer{{URLs: []string{"stun:" + silent.LocalAddr().String()}}}
+	answer, err := ExchangeSDP(stream, viewerOffer(t), "webrtc/test", "", "", iceServers)
+	require.NoError(t, err)
+	require.Less(t, time.Since(start), 3*time.Second)
+	require.Contains(t, answer, "typ host")
+}
+
+// A viewer that offers passive TCP candidates makes pion create an active one
+// per local address. They do not belong into the answer.
+func TestCompleteAnswerLeavesOutActiveTCP(t *testing.T) {
+	useConfiguredAPI(t)
+	stream := newStubStream(t, "webrtc_active_tcp")
+
+	offer := viewerOffer(t) + "a=candidate:1 1 tcp 1518280447 192.0.2.10 50000 typ host tcptype passive\r\n"
+	answer, err := ExchangeSDP(stream, offer, "webrtc/test", "", "", []pion.ICEServer{})
+	require.NoError(t, err)
+	require.Contains(t, answer, "typ host")
+	require.NotContains(t, answer, "tcptype active")
+}
+
+// One answering STUN server is enough: the answer leaves once its candidates
+// are in, not when the silent server next to it times out.
+func TestCompleteAnswerLeavesAfterReachableSTUN(t *testing.T) {
+	useConfiguredAPI(t)
+	stream := newStubStream(t, "webrtc_quiet_stun")
+
+	silent, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = silent.Close() })
+
+	server, _ := stunServer(t, 0)
+
+	start := time.Now()
+	iceServers := []pion.ICEServer{{URLs: []string{"stun:" + server, "stun:" + silent.LocalAddr().String()}}}
+	answer, err := ExchangeSDP(stream, viewerOffer(t), "webrtc/test", "", "", iceServers)
+	require.NoError(t, err)
+	require.Less(t, time.Since(start), time.Second)
+	require.Contains(t, answer, "203.0.113.7")
+}
+
+// A STUN server farther away than the pause between the host candidates still
+// gets its candidate into the answer
+func TestCompleteAnswerWaitsForSlowSTUN(t *testing.T) {
+	useConfiguredAPI(t)
+	stream := newStubStream(t, "webrtc_slow_stun")
+
+	server, _ := stunServer(t, 500*time.Millisecond)
+
+	iceServers := []pion.ICEServer{{URLs: []string{"stun:" + server}}}
+	answer, err := ExchangeSDP(stream, viewerOffer(t), "webrtc/test", "", "", iceServers)
+	require.NoError(t, err)
+	require.Contains(t, answer, "203.0.113.7")
+}
+
+// A candidate that comes in after the answer left doesn't touch the answer
+// while it is written (go test -race).
+func TestCompleteAnswerIgnoresLateCandidate(t *testing.T) {
+	useConfiguredAPI(t)
+	stream := newStubStream(t, "webrtc_late_stun")
+
+	server, answered := stunServer(t, 2*time.Second)
+
+	iceServers := []pion.ICEServer{{URLs: []string{"stun:" + server}}}
+	answer, err := ExchangeSDP(stream, viewerOffer(t), "webrtc/test", "", "", iceServers)
+	require.NoError(t, err)
+	require.NotContains(t, answer, "203.0.113.7")
+
+	// the late candidate reaches the gatherer
+	<-answered
+	time.Sleep(200 * time.Millisecond)
+}
+
+// A JSON offer brings the viewer's ICE servers along, like one over the
+// websocket
+func TestPostedOfferWithICEServers(t *testing.T) {
+	useConfiguredAPI(t)
+	newStubStream(t, "webrtc_post_ice")
+	server, _ := stunServer(t, 0)
+
+	body, err := json.Marshal(map[string]any{
+		"type": "offer", "sdp": viewerOffer(t),
+		"ice_servers": []pion.ICEServer{{URLs: []string{"stun:" + server}}},
+	})
+	require.NoError(t, err)
+	r := httptest.NewRequest("POST", "/api/webrtc?src=webrtc_post_ice", strings.NewReader(string(body)))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	outputWebRTC(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var answer pion.SessionDescription
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &answer))
+	require.Contains(t, answer.SDP, "203.0.113.7")
+}
+
+// stunServer answers binding requests after delay, with 203.0.113.7 as the
+// address the client is seen from. Answered is closed with the first answer.
+func stunServer(t *testing.T, delay time.Duration) (addr string, answered <-chan struct{}) {
+	server, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = server.Close() })
+
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, addr, err := server.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			request := &stun.Message{Raw: append([]byte{}, buf[:n]...)}
+			if request.Decode() != nil {
+				continue
+			}
+			from := addr.(*net.UDPAddr)
+			response, err := stun.Build(request, stun.BindingSuccess, &stun.XORMappedAddress{IP: net.IPv4(203, 0, 113, 7), Port: from.Port})
+			if err != nil {
+				continue
+			}
+			time.AfterFunc(delay, func() {
+				_, _ = server.WriteTo(response.Raw, addr)
+				once.Do(func() { close(done) })
+			})
+		}
+	}()
+	return server.LocalAddr().String(), done
 }
