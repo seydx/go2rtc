@@ -18,11 +18,16 @@ const (
 
 // AMF spec: http://download.macromedia.com/pub/labs/amf/amf0_spec_121207.pdf
 type AMF struct {
-	buf []byte
-	pos int
+	buf   []byte
+	pos   int
+	depth int
 }
 
 var ErrRead = errors.New("amf: read error")
+
+// real metadata nests two or three levels, without a limit a crafted
+// message overflows the stack
+const maxDepth = 32
 
 func NewReader(b []byte) *AMF {
 	return &AMF{buf: b}
@@ -112,6 +117,12 @@ func (a *AMF) ReadString() (string, error) {
 }
 
 func (a *AMF) ReadObject() (map[string]any, error) {
+	if a.depth >= maxDepth {
+		return nil, ErrRead
+	}
+	a.depth++
+	defer func() { a.depth-- }()
+
 	obj := make(map[string]any)
 
 	for {

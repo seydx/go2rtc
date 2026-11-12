@@ -279,3 +279,31 @@ func TestNewReader(t *testing.T) {
 		})
 	}
 }
+
+func TestNestedObjectsAreLimited(t *testing.T) {
+	// an object whose only value is the next object, a million levels deep
+	level := []byte{TypeObject, 0x00, 0x01, 'a'}
+	buf := make([]byte, 0, len(level)*1_000_000)
+	for range 1_000_000 {
+		buf = append(buf, level...)
+	}
+
+	_, err := NewReader(buf).ReadItems()
+	require.ErrorIs(t, err, ErrRead)
+}
+
+func TestNestedObjectsWithinTheLimit(t *testing.T) {
+	// {"a": {"a": {"a": 1}}}
+	buf := []byte{TypeObject, 0, 1, 'a', TypeObject, 0, 1, 'a', TypeObject, 0, 1, 'a', TypeNumber, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0, 0, 0, TypeObjectEnd, 0, 0, TypeObjectEnd, 0, 0, TypeObjectEnd}
+	items, err := NewReader(buf).ReadItems()
+	require.NoError(t, err)
+	require.Equal(t, []any{map[string]any{"a": map[string]any{"a": map[string]any{"a": float64(1)}}}}, items)
+}
+
+func FuzzReadItems(f *testing.F) {
+	f.Add([]byte{TypeObject, 0, 1, 'a', TypeObject, 0, 1, 'a', TypeNumber, 0, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{TypeString, 0, 2, 'o', 'k', TypeEcmaArray, 0, 0, 0, 1, 0, 1, 'a', TypeBoolean, 1, 0, 0, TypeObjectEnd})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = NewReader(data).ReadItems()
+	})
+}

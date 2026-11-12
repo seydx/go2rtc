@@ -14,6 +14,31 @@ import (
 
 const EndLine = "\r\n"
 
+// bodies are SDP or parameter lists, the limit only stops a peer from
+// making us allocate what it names in Content-Length
+const maxBodySize = 1 << 20
+
+func readBody(r *bufio.Reader, header textproto.MIMEHeader) ([]byte, error) {
+	val := header.Get("Content-Length")
+	if val == "" {
+		return nil, nil
+	}
+
+	size, err := strconv.Atoi(val)
+	if err != nil {
+		return nil, err
+	}
+	if size < 0 || size > maxBodySize {
+		return nil, fmt.Errorf("wrong content length: %s", val)
+	}
+
+	body := make([]byte, size)
+	if _, err = io.ReadFull(r, body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
 // headerString writes CSeq first and the other headers sorted: some servers
 // (ex. Google Nest, Wowza) ignore a request unless CSeq is the first header.
 // https://github.com/AlexxIT/go2rtc/issues/2622
@@ -92,16 +117,8 @@ func ReadResponse(r *bufio.Reader) (*Response, error) {
 		return nil, err
 	}
 
-	if val := res.Header.Get("Content-Length"); val != "" {
-		var i int
-		i, err = strconv.Atoi(val)
-		if err != nil {
-			return nil, err
-		}
-		res.Body = make([]byte, i)
-		if _, err = io.ReadAtLeast(r, res.Body, i); err != nil {
-			return nil, err
-		}
+	if res.Body, err = readBody(r, res.Header); err != nil {
+		return nil, err
 	}
 
 	return res, nil
@@ -159,16 +176,8 @@ func ReadRequest(r *bufio.Reader) (*Request, error) {
 		return nil, err
 	}
 
-	if val := req.Header.Get("Content-Length"); val != "" {
-		var i int
-		i, err = strconv.Atoi(val)
-		if err != nil {
-			return nil, err
-		}
-		req.Body = make([]byte, i)
-		if _, err = io.ReadAtLeast(r, req.Body, i); err != nil {
-			return nil, err
-		}
+	if req.Body, err = readBody(r, req.Header); err != nil {
+		return nil, err
 	}
 
 	return req, nil

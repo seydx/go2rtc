@@ -98,3 +98,37 @@ func TestStringSkipsHeaderWithoutValue(t *testing.T) {
 	res := Response{Proto: "RTSP/1.0", Status: "200 OK", Header: header}
 	assert(t, res.String(), "RTSP/1.0 200 OK\r\nAccept: application/sdp\r\n\r\n")
 }
+
+func TestContentLengthBounds(t *testing.T) {
+	for _, length := range []string{"-1", "1048577", "9223372036854775807"} {
+		req := "OPTIONS rtsp://x/ RTSP/1.0\r\nCSeq: 1\r\nContent-Length: " + length + "\r\n\r\n"
+		if _, err := ReadRequest(bufio.NewReader(bytes.NewBufferString(req))); err == nil {
+			t.Fatalf("request with Content-Length %s accepted", length)
+		}
+
+		res := "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: " + length + "\r\n\r\n"
+		if _, err := ReadResponse(bufio.NewReader(bytes.NewBufferString(res))); err == nil {
+			t.Fatalf("response with Content-Length %s accepted", length)
+		}
+	}
+
+	req, err := ReadRequest(bufio.NewReader(bytes.NewBufferString("ANNOUNCE rtsp://x/ RTSP/1.0\r\nCSeq: 1\r\nContent-Length: 4\r\n\r\nv=0\n")))
+	assert(t, err, nil)
+	assert(t, string(req.Body), "v=0\n")
+}
+
+func FuzzReadRequest(f *testing.F) {
+	f.Add([]byte("OPTIONS rtsp://x/ RTSP/1.0\r\nCSeq: 1\r\nContent-Length: -1\r\n\r\n"))
+	f.Add([]byte("ANNOUNCE rtsp://x/ RTSP/1.0\r\nCSeq: 1\r\nContent-Length: 4\r\n\r\nv=0\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = ReadRequest(bufio.NewReader(bytes.NewReader(data)))
+	})
+}
+
+func FuzzReadResponse(f *testing.F) {
+	f.Add([]byte("RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: 4\r\n\r\nv=0\n"))
+	f.Add([]byte("RTSP/1.0 401 Unauthorized\r\nWWW-Authenticate: Digest realm=\"a\",\r\n  nonce=\"b\"\r\n\r\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = ReadResponse(bufio.NewReader(bytes.NewReader(data)))
+	})
+}
