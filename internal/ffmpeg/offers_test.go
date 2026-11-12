@@ -1,8 +1,10 @@
 package ffmpeg
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/stretchr/testify/require"
 )
@@ -61,4 +63,27 @@ func TestTrimOutputsTheCameraAlreadySends(t *testing.T) {
 	require.Equal(t, "ffmpeg:cam#audio=pcma#audio=opus#audio=aac/16000",
 		trimOutputs("ffmpeg:cam#audio=pcma#audio=opus#audio=aac/16000", []*core.Codec{{Name: core.CodecAAC, ClockRate: 48000}}))
 	require.Equal(t, "ffmpeg:cam", trimOutputs("ffmpeg:cam", aac))
+}
+
+// An Opus camera reaches its companion as Opus, and ffmpeg's own decoder turns
+// in-band FEC into noise.
+func TestCompanionDecodesOpusWithLibopus(t *testing.T) {
+	_, err := streams.New("cui_front_door")
+	require.NoError(t, err)
+	t.Cleanup(func() { streams.Delete("cui_front_door") })
+
+	const companion = "ffmpeg:cui_front_door#cameraui#audio=pcma#audio=opus#audio=aac"
+	opus := []*core.Codec{{Name: core.CodecOpus, ClockRate: 48000, Channels: 2}}
+	aac := []*core.Codec{{Name: core.CodecAAC, ClockRate: 16000}}
+
+	got := fitToEarlierAudio(companion, opus)
+	require.Equal(t, "ffmpeg:cui_front_door#cameraui#audio=pcma#audio=aac#audioDecoder=libopus", got)
+	require.True(t, strings.HasPrefix(parseArgs(got[len("ffmpeg:"):]).Input, "-c:a libopus "))
+
+	require.Equal(t, trimOutputs(companion, aac), fitToEarlierAudio(companion, aac))
+	require.NotContains(t, fitToEarlierAudio(companion, append(opus, aac...)), "audioDecoder")
+	require.NotContains(t, fitToEarlierAudio("ffmpeg:rtsp://camera/stream#audio=pcma#audio=aac", opus), "audioDecoder",
+		"another camera's audio is not the stream's")
+	require.NotContains(t, fitToEarlierAudio("ffmpeg:/media/doorbell.mkv#audio=pcma#audio=aac", opus), "audioDecoder",
+		"a file's audio is not the stream's")
 }

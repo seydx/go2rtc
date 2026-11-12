@@ -53,7 +53,7 @@ func Init() {
 	streams.HandleFunc("ffmpeg", NewProducer)
 	streams.HandleFunc("ffaudio", NewAudioProducer)
 	streams.HandleOffers("ffmpeg", offerMedias)
-	streams.HandleTrim("ffmpeg", trimOutputs)
+	streams.HandleTrim("ffmpeg", fitToEarlierAudio)
 
 	api.HandleFunc("api/ffmpeg", apiFFmpeg)
 
@@ -256,6 +256,10 @@ func parseArgs(s string) *ffmpeg.Args {
 
 	if query["async"] != nil {
 		args.Input = "-use_wallclock_as_timestamps 1 -async 1 " + args.Input
+	}
+
+	if decoder := query.Get("audioDecoder"); decoder != "" {
+		args.Input = "-c:a " + decoder + " " + args.Input
 	}
 
 	// Parse query params:

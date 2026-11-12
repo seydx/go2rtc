@@ -94,6 +94,31 @@ func offerAudioCodec(value string) *core.Codec {
 	return codec
 }
 
+// a source reading the stream gets the earlier sources' Opus as Opus, and
+// ffmpeg's own decoder turns its in-band FEC (Ring) into noise
+func fitToEarlierAudio(url string, have []*core.Codec) string {
+	url = trimOutputs(url, have)
+	if onlyOpus(have) && readsStream(url) {
+		url += "#audioDecoder=libopus"
+	}
+	return url
+}
+
+func onlyOpus(codecs []*core.Codec) bool {
+	for _, codec := range codecs {
+		if codec.Name != core.CodecOpus {
+			return false
+		}
+	}
+	return len(codecs) > 0
+}
+
+func readsStream(url string) bool {
+	base, _, _ := strings.Cut(url, "#")
+	name := strings.TrimPrefix(base, "ffmpeg:")
+	return !strings.Contains(name, "://") && streams.Get(name) != nil
+}
+
 // two outputs at least stay: with a single one ffmpeg writes a pipe format
 // instead of RTSP
 func trimOutputs(url string, have []*core.Codec) string {
