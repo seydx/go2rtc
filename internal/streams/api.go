@@ -137,6 +137,20 @@ func apiStreams(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// the tracks of a preload request the way they were sent, so a config that
+// holds this preload already is not written again
+func preloadQuery(rawQuery string) string {
+	var tracks []string
+	for _, part := range strings.Split(rawQuery, "&") {
+		key, _, _ := strings.Cut(part, "=")
+		switch key {
+		case core.KindVideo, core.KindAudio, "microphone":
+			tracks = append(tracks, part)
+		}
+	}
+	return strings.Join(tracks, "&")
+}
+
 func apiConsumer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "DELETE" && r.Method != "POST" {
 		http.Error(w, "", http.StatusMethodNotAllowed)
@@ -233,16 +247,7 @@ func apiPreload(w http.ResponseWriter, r *http.Request) {
 
 		api.ResponseJSON(w, response)
 	case "PUT":
-		// it's safe to delete from map while iterating
-		for k := range query {
-			switch k {
-			case core.KindVideo, core.KindAudio, "microphone":
-			default:
-				delete(query, k)
-			}
-		}
-
-		rawQuery := query.Encode()
+		rawQuery := preloadQuery(r.URL.RawQuery)
 
 		if err := AddPreload(src, rawQuery); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

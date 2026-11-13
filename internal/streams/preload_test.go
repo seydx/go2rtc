@@ -450,3 +450,32 @@ func TestPreloadHealsAfterAudioCodecChange(t *testing.T) {
 	require.True(t, videoOnly.IsActive(), "an unrelated video consumer must not be disturbed")
 	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
 }
+
+// camera.ui sends the preloads of its config again when it starts. A preload
+// that is registered with these tracks keeps its camera session.
+func TestPreloadAgainKeepsTheSession(t *testing.T) {
+	registerTestRTSPHandler()
+
+	cam := newFakeCamera(t)
+
+	stream, err := New("preload_again", cam.URL())
+	require.NoError(t, err)
+
+	require.NoError(t, AddPreload("preload_again", "video&audio"))
+	t.Cleanup(func() { _ = DelPreload("preload_again") })
+
+	p := GetPreload("preload_again")
+	waitForCodecs(t, p, core.CodecH264, core.CodecPCMU)
+	require.True(t, waitUntil(10*time.Second, func() bool { return receiverActive(stream) }))
+	dials := cam.dialCount.Load()
+
+	// the same tracks, written the other way
+	require.NoError(t, AddPreload("preload_again", "audio=&video="))
+	require.Same(t, p, GetPreload("preload_again"))
+	require.True(t, p.Attached())
+	require.False(t, waitUntil(2*time.Second, func() bool { return cam.dialCount.Load() > dials }), "the camera must not be dialed again")
+
+	// other tracks are a new preload
+	require.NoError(t, AddPreload("preload_again", "video"))
+	require.NotSame(t, p, GetPreload("preload_again"))
+}

@@ -56,6 +56,18 @@ func AddPreload(name, rawQuery string) error {
 		return fmt.Errorf("streams: stream not found: %s", name)
 	}
 
+	preloadsMu.Lock()
+	old := preloads[name]
+	if old != nil && old.stream == stream && old.query.Encode() == query.Encode() {
+		preloadsMu.Unlock()
+
+		// the same preload again keeps its camera session
+		if err = old.tryAttach(); err != nil {
+			log.Warn().Err(err).Str("name", name).Msg("[preload] attach failed, retrying")
+		}
+		return nil
+	}
+
 	p := &Preload{
 		name:   name,
 		stream: stream,
@@ -63,9 +75,6 @@ func AddPreload(name, rawQuery string) error {
 		Query:  rawQuery,
 		stop:   make(chan struct{}),
 	}
-
-	preloadsMu.Lock()
-	old := preloads[name]
 	preloads[name] = p
 	preloadsMu.Unlock()
 
