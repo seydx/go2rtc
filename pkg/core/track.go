@@ -213,8 +213,9 @@ type Sender struct {
 	// UseGOP replays the receiver's GOP cache (if the producer has one) on Start.
 	UseGOP bool `json:"-"`
 
-	buf  chan *Packet
-	done chan struct{}
+	buf    chan *Packet
+	done   chan struct{}
+	replay time.Duration
 
 	keyframeStart func(packet *Packet) bool
 }
@@ -307,6 +308,10 @@ func (s *Sender) Start() {
 		}
 	}
 
+	s.mu.Lock()
+	s.replay = replayLength(len(frames))
+	s.mu.Unlock()
+
 	go func() {
 		// the cached GOP goes first, live packets queue up in buf meanwhile
 		replayGOP(frames, pending, s.writeCached, s.closed)
@@ -316,6 +321,14 @@ func (s *Sender) Start() {
 		}
 		close(s.done)
 	}()
+}
+
+// Replay returns the span of the timeline the cached GOP took when the
+// sender started, zero without one.
+func (s *Sender) Replay() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.replay
 }
 
 func (s *Sender) writeCached(packet *Packet) {

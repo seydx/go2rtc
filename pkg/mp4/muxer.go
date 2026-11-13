@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"encoding/hex"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
@@ -129,6 +130,11 @@ func (m *Muxer) Reset() {
 		m.dts[i] = 0
 		m.pts[i] = 0
 	}
+}
+
+// StartAt places the next sample of a track at offset on its timeline.
+func (m *Muxer) StartAt(trackID byte, offset time.Duration) {
+	m.dts[trackID] = uint64(offset) * uint64(m.codecs[trackID].ClockRate) / uint64(time.Second)
 }
 
 func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {

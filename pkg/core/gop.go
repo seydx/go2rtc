@@ -183,6 +183,23 @@ func (b *gopBuffer) packets() []*Packet {
 	return out
 }
 
+func replayInterval(frames int) time.Duration {
+	interval := gopReplayInterval
+	if d := gopReplayBudget / time.Duration(frames); d < interval {
+		interval = max(d, gopReplayMinInterval)
+	}
+	return interval
+}
+
+// replayLength is the span the replayed frames take on the timeline: the
+// live picture follows that far behind the moment the consumer attached.
+func replayLength(frames int) time.Duration {
+	if frames < 2 {
+		return 0
+	}
+	return time.Duration(frames-1) * replayInterval(frames)
+}
+
 // replayGOP writes a cache snapshot to write, stopping early once closed
 // reports true.
 //
@@ -190,8 +207,9 @@ func (b *gopBuffer) packets() []*Packet {
 // below gopReplayMinInterval) so the burst doesn't overrun UDP transports.
 // Their timestamps are rewritten to that same pacing, ending at the original
 // timestamp of the last cached frame: the client fast-forwards through the
-// GOP while its media clock advances at wall-clock speed, so audio (which is
-// never cached) stays in sync and the live stream continues seamlessly.
+// GOP while its media clock advances at wall-clock speed and the live stream
+// continues seamlessly. Audio is never cached, a consumer that builds its own
+// timeline per track moves it by Sender.Replay.
 // Pending fragments keep their timestamp, the rest of that frame arrives live.
 func replayGOP(frames, pending []*Packet, write HandlerFunc, closed func() bool) {
 	n := len(frames)
@@ -199,10 +217,7 @@ func replayGOP(frames, pending []*Packet, write HandlerFunc, closed func() bool)
 		return
 	}
 
-	interval := gopReplayInterval
-	if d := gopReplayBudget / time.Duration(n); d < interval {
-		interval = max(d, gopReplayMinInterval)
-	}
+	interval := replayInterval(n)
 	step := uint32(interval * videoClockRate / time.Second)
 
 	ts := frames[n-1].Timestamp - uint32(n-1)*step

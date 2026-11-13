@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/aac"
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -20,6 +21,11 @@ type Consumer struct {
 	muxer *Muxer
 	mu    sync.Mutex
 	start bool
+
+	// when the first picture went out and how far the live picture follows
+	// behind it on the timeline
+	pictureStart time.Time
+	pictureLead  time.Duration
 
 	UseGOP bool
 
@@ -77,7 +83,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 				if !h264.IsKeyframe(packet.Payload) {
 					return
 				}
-				c.start = true
+				c.begin(handler)
 			}
 
 			// important to use Mutex because right fragment order
@@ -101,7 +107,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 				if !h265.IsKeyframe(packet.Payload) {
 					return
 				}
-				c.start = true
+				c.begin(handler)
 			}
 
 			// important to use Mutex because right fragment order
@@ -122,7 +128,9 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 	case core.CodecJPEG:
 		// every picture is a keyframe, the first one starts the fragments
 		handler.Handler = func(packet *rtp.Packet) {
-			c.start = true
+			if !c.start {
+				c.begin(handler)
+			}
 
 			// important to use Mutex because right fragment order
 			c.mu.Lock()
@@ -138,6 +146,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 		}
 
 	default:
+		placed := false
 		handler.Handler = func(packet *rtp.Packet) {
 			if !c.start {
 				return
@@ -145,6 +154,13 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 
 			// important to use Mutex because right fragment order
 			c.mu.Lock()
+			if !placed {
+				placed = true
+				// the picture of this moment sits behind the replayed GOP
+				if !c.pictureStart.IsZero() {
+					c.muxer.StartAt(trackID, c.pictureLead+time.Since(c.pictureStart))
+				}
+			}
 			b := c.muxer.GetPayload(trackID, packet)
 			if n, err := c.wr.Write(b); err == nil {
 				c.Send += n
@@ -178,12 +194,23 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 		return errors.New(s)
 	}
 
+	// an earlier track may already be writing its replayed GOP
+	c.mu.Lock()
 	c.muxer.AddTrack(codec)
+	c.mu.Unlock()
 
 	handler.HandleRTP(track)
 	c.Senders = append(c.Senders, handler)
 
 	return nil
+}
+
+func (c *Consumer) begin(picture *core.Sender) {
+	c.mu.Lock()
+	c.pictureStart = time.Now()
+	c.pictureLead = picture.Replay()
+	c.mu.Unlock()
+	c.start = true
 }
 
 func (c *Consumer) WriteTo(wr io.Writer) (int64, error) {
