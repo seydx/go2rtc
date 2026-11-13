@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -30,9 +31,9 @@ func PatchConfig(path []string, value any) error {
 	defer configMu.Unlock()
 
 	// empty config is OK
-	b, _ := os.ReadFile(ConfigPath)
+	old, readErr := os.ReadFile(ConfigPath)
 
-	b, err := yaml.Patch(b, path, value)
+	b, err := yaml.Patch(old, path, value)
 	if err != nil {
 		// deleting a path that doesn't exist is a no-op, not an error
 		if value == nil && errors.Is(err, yaml.ErrPathNotExist) {
@@ -41,7 +42,11 @@ func PatchConfig(path []string, value any) error {
 		return err
 	}
 
-	return os.WriteFile(ConfigPath, b, 0644)
+	if readErr == nil && bytes.Equal(old, b) {
+		return nil
+	}
+
+	return writeConfig(b)
 }
 
 // UpdateConfig writes what update makes of the config file, under the lock of
@@ -55,14 +60,85 @@ func UpdateConfig(update func(data []byte) ([]byte, error)) ([]byte, error) {
 	defer configMu.Unlock()
 
 	// empty config is OK
-	b, _ := os.ReadFile(ConfigPath)
+	old, readErr := os.ReadFile(ConfigPath)
 
-	b, err := update(b)
+	b, err := update(old)
 	if err != nil {
 		return nil, err
 	}
 
-	return b, os.WriteFile(ConfigPath, b, 0644)
+	if readErr == nil && bytes.Equal(old, b) {
+		return b, nil
+	}
+
+	return b, writeConfig(b)
+}
+
+func writeConfig(data []byte) error {
+	path := ConfigPath
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		path = target
+	}
+
+	err := replaceFile(path, data)
+	if errors.Is(err, errReplaceRefused) {
+		return os.WriteFile(path, data, 0644)
+	}
+	return err
+}
+
+var errReplaceRefused = errors.New("config: file can't be replaced")
+
+// a crash leaves the old file or the new one, never an empty one
+func replaceFile(path string, data []byte) error {
+	mode := os.FileMode(0644)
+	old, _ := os.Stat(path)
+	if old != nil {
+		mode = old.Mode().Perm()
+
+		// a file that can't be written in place is not replaced either
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return errReplaceRefused
+		}
+		_ = f.Close()
+	}
+
+	tmp := path + ".tmp"
+	_ = os.Remove(tmp)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		// a folder without write access
+		if errors.Is(err, os.ErrPermission) {
+			return errReplaceRefused
+		}
+		return err
+	}
+
+	if old != nil {
+		// the umask cuts the mode of OpenFile, and the file of another owner stays theirs
+		if f.Chmod(mode) != nil || keepOwner(f, old) != nil {
+			err = errReplaceRefused
+		}
+	}
+
+	if err == nil {
+		_, err = f.Write(data)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	// a file mounted on its own can't be renamed over
+	if err == nil && os.Rename(tmp, path) != nil {
+		err = errReplaceRefused
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }
 
 type flagConfig []string
