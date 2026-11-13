@@ -21,6 +21,13 @@ const (
 	gopReplayBudget = time.Second
 	// videoClockRate is the RTP clock of every video codec.
 	videoClockRate = 90000
+	// gopMaxFrames and gopMaxBytes bound the cache. A GOP beyond them (intra
+	// refresh, keyframes on request only, a frame that never ends) is dropped
+	// and a consumer waits for the next keyframe, as it does without a cache.
+	// 1800 frames are a minute of a 30 fps camera, longer than a replay can
+	// run before the live frames behind it overflow the sender.
+	gopMaxFrames = 1800
+	gopMaxBytes  = 32 << 20
 )
 
 // gopCodec knows how to turn a video track's packets into complete frames.
@@ -113,6 +120,11 @@ func (c *GopCache) Input(packet *Packet) {
 		c.pending.add(packet)
 	}
 	c.input(packet)
+
+	if len(c.frames.ends) > gopMaxFrames || len(c.frames.data)+len(c.pending.data) > gopMaxBytes {
+		c.frames = gopBuffer{}
+		c.pending = gopBuffer{}
+	}
 }
 
 // Snapshot returns the cached frames and pending fragments. The cache never

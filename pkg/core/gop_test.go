@@ -367,3 +367,69 @@ func TestStatsAreConcurrencySafe(t *testing.T) {
 	require.Positive(t, bytes)
 	require.Equal(t, 2000, packets)
 }
+
+// A stream that sends one keyframe and then only P frames (intra refresh,
+// keyframes on request only) must not fill the memory.
+func TestGopCacheDropsAGopWithoutEnd(t *testing.T) {
+	codec := &Codec{Name: CodecH264, ClockRate: 90000, PayloadType: PayloadTypeRAW}
+	c := NewGopCache(codec)
+
+	c.Input(avcFrame("K", 0))
+	for i := 1; i <= gopMaxFrames+50; i++ {
+		c.Input(avcFrame("p", uint32(i)*3000))
+	}
+
+	frames, pending := c.Snapshot()
+	require.Nil(t, frames, "a viewer waits for the next keyframe instead of a replay without a start")
+	require.Nil(t, pending)
+
+	c.Input(avcFrame("K", 9_000_000))
+	c.Input(avcFrame("p", 9_003_000))
+	frames, _ = c.Snapshot()
+	require.Equal(t, []string{"K", "p"}, payloads(frames))
+}
+
+func TestGopCacheDropsAGopThatIsTooLarge(t *testing.T) {
+	codec := &Codec{Name: CodecH264, ClockRate: 90000, PayloadType: PayloadTypeRAW}
+	c := NewGopCache(codec)
+
+	big := make([]byte, 1<<20)
+	big[0] = 'K'
+	c.Input(&Packet{Payload: big})
+	big = make([]byte, 1<<20)
+	for i := 0; i < gopMaxBytes>>20; i++ {
+		c.Input(&Packet{Header: rtp.Header{Timestamp: uint32(i+1) * 3000}, Payload: big})
+	}
+
+	frames, _ := c.Snapshot()
+	require.Nil(t, frames)
+	require.LessOrEqual(t, cap(c.frames.data), 1<<20)
+}
+
+// A camera that never sets the marker bit never completes a frame.
+func TestGopCacheDropsFragmentsOfAFrameWithoutEnd(t *testing.T) {
+	codec := &Codec{Name: CodecH264, ClockRate: 90000, PayloadType: 96}
+	c := NewGopCache(codec)
+
+	fragment := string(make([]byte, 1400))
+	for i := 0; i < 2*gopMaxBytes/1400; i++ {
+		c.Input(rtpFragment(fragment, 3000, uint16(i), false))
+	}
+
+	require.Less(t, len(c.pending.data), gopMaxBytes)
+	require.Less(t, cap(c.pending.data), 2*gopMaxBytes)
+}
+
+// A long GOP stays: a minute of a 25 fps camera.
+func TestGopCacheKeepsALongGop(t *testing.T) {
+	codec := &Codec{Name: CodecH264, ClockRate: 90000, PayloadType: PayloadTypeRAW}
+	c := NewGopCache(codec)
+
+	c.Input(avcFrame("K", 0))
+	for i := 1; i < 1500; i++ {
+		c.Input(avcFrame("p", uint32(i)*3600))
+	}
+
+	frames, _ := c.Snapshot()
+	require.Len(t, frames, 1500)
+}
