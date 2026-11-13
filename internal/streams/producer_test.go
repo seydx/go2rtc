@@ -1101,3 +1101,81 @@ func TestConcurrentTrackRequestsSetUpOnce(t *testing.T) {
 		require.Same(t, tracks[0], track)
 	}
 }
+
+// slowSetupConn holds its track setup until released, like a camera that
+// takes its time with SETUP.
+type slowSetupConn struct {
+	core.Connection
+	entered chan struct{}
+	release chan struct{}
+	stopped atomic.Bool
+}
+
+func (c *slowSetupConn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
+	if c.entered != nil {
+		close(c.entered)
+		<-c.release
+	}
+	return core.NewReceiver(media, codec), nil
+}
+
+func (c *slowSetupConn) Start() error { select {} }
+
+func (c *slowSetupConn) Stop() error {
+	c.stopped.Store(true)
+	return nil
+}
+
+// A producer that is stopped and started again while a reconnect of the old
+// session still sets its tracks up belongs to the new session. The reconnect
+// has to leave without touching it.
+func TestReconnectOfAStoppedSessionLeavesTheNewOne(t *testing.T) {
+	video := func() *core.Media {
+		return &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{{Name: core.CodecH264, ClockRate: 90000}}}
+	}
+	newConn := func() *slowSetupConn {
+		return &slowSetupConn{Connection: core.Connection{Medias: []*core.Media{video()}}}
+	}
+
+	late := newConn()
+	late.entered = make(chan struct{})
+	late.release = make(chan struct{})
+	next := newConn()
+
+	var dials atomic.Int32
+	HandleFunc("slowsetup", func(string) (core.Producer, error) {
+		if dials.Add(1) == 1 {
+			return late, nil
+		}
+		return next, nil
+	})
+
+	old := newConn()
+	media := old.Medias[0]
+	p := &Producer{conn: old, state: stateStart, workerID: 1, url: "slowsetup://cam"}
+	p.receivers = []*core.Receiver{core.NewReceiver(media, media.Codecs[0])}
+
+	done := make(chan struct{})
+	go func() {
+		p.reconnect(1, 0)
+		close(done)
+	}()
+	<-late.entered
+
+	p.stop()
+	require.NoError(t, p.Dial())
+	track, err := p.GetTrack(next.Medias[0], next.Medias[0].Codecs[0])
+	require.NoError(t, err)
+	p.start()
+
+	close(late.release)
+	<-done
+
+	require.True(t, late.stopped.Load(), "the late session must be closed")
+	require.False(t, next.stopped.Load(), "the new session must keep running")
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	require.Equal(t, stateStart, p.state)
+	require.Same(t, core.Producer(next), p.conn)
+	require.Equal(t, []*core.Receiver{track}, p.receivers)
+}

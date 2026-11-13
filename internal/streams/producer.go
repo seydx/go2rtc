@@ -1028,6 +1028,12 @@ func (p *Producer) reconnect(workerID, retry int) {
 	var dropped []*core.Receiver
 
 	p.mu.Lock()
+	if p.workerID != workerID {
+		// stopped during the track setup: p.receivers belong to a newer session
+		p.mu.Unlock()
+		conn.Stop()
+		return
+	}
 	kept := make([]*core.Receiver, 0, len(p.receivers))
 	for _, receiver := range p.receivers {
 		track, ok := replacements[receiver]
