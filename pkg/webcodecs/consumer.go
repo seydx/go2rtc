@@ -90,7 +90,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 
 	switch track.Codec.Name {
 	case core.CodecH264:
-		clockRate := codec.ClockRate
+		clock := rtpClock{rate: codec.ClockRate}
 		handler.Handler = func(packet *rtp.Packet) {
 			keyframe := h264.IsKeyframe(packet.Payload)
 			if !c.start {
@@ -107,7 +107,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 			}
 
 			c.mu.Lock()
-			msg := buildFrame(flags, rtpToMicroseconds(packet.Timestamp, clockRate), payload)
+			msg := buildFrame(flags, clock.microseconds(packet.Timestamp), payload)
 			if n, err := c.wr.Write(msg); err == nil {
 				c.Send += n
 			}
@@ -121,7 +121,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 		}
 
 	case core.CodecH265:
-		clockRate := codec.ClockRate
+		clock := rtpClock{rate: codec.ClockRate}
 		handler.Handler = func(packet *rtp.Packet) {
 			keyframe := h265.IsKeyframe(packet.Payload)
 			if !c.start {
@@ -138,7 +138,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 			}
 
 			c.mu.Lock()
-			msg := buildFrame(flags, rtpToMicroseconds(packet.Timestamp, clockRate), payload)
+			msg := buildFrame(flags, clock.microseconds(packet.Timestamp), payload)
 			if n, err := c.wr.Write(msg); err == nil {
 				c.Send += n
 			}
@@ -152,7 +152,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 		}
 
 	default:
-		clockRate := codec.ClockRate
+		clock := rtpClock{rate: codec.ClockRate}
 		handler.Handler = func(packet *rtp.Packet) {
 			if !c.start {
 				return
@@ -161,7 +161,7 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 			flags := trackID // audio flag (bit7=0)
 
 			c.mu.Lock()
-			msg := buildFrame(flags, rtpToMicroseconds(packet.Timestamp, clockRate), packet.Payload)
+			msg := buildFrame(flags, clock.microseconds(packet.Timestamp), packet.Payload)
 			if n, err := c.wr.Write(msg); err == nil {
 				c.Send += n
 			}
@@ -260,9 +260,25 @@ func buildFrame(flags byte, timestamp uint64, payload []byte) []byte {
 	return msg
 }
 
-func rtpToMicroseconds(timestamp uint32, clockRate uint32) uint64 {
-	if clockRate == 0 {
-		return uint64(timestamp)
+type rtpClock struct {
+	rate    uint32
+	last    uint32
+	ticks   uint64
+	started bool
+}
+
+func (c *rtpClock) microseconds(timestamp uint32) uint64 {
+	if c.started {
+		// the 32-bit timestamp wraps after 13 h at 90 kHz
+		c.ticks += uint64(int64(int32(timestamp - c.last)))
+	} else {
+		c.started = true
+		c.ticks = uint64(timestamp)
 	}
-	return uint64(timestamp) * 1_000_000 / uint64(clockRate)
+	c.last = timestamp
+
+	if c.rate == 0 {
+		return c.ticks
+	}
+	return c.ticks * 1_000_000 / uint64(c.rate)
 }
