@@ -560,6 +560,13 @@
           "examples": [
             ":1935"
           ]
+        },
+        "streams": {
+          "description": "Streams the server plays and takes. Without it every stream",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },

@@ -44,7 +44,7 @@ api:
 `POST /api/config` replaces the main config file, `PATCH /api/config` merges a patch into it. These settings apply right away, without a restart:
 
 - `rtsp`: `username`, `password`, `pkt_size` and `default_query`, for the next clients
-- `rtmp.listen`, `onvif.listen` and `onvif.video_sources`, open connections stay
+- `rtmp.listen`, `rtmp.streams`, `onvif.listen` and `onvif.video_sources`, open connections stay
 - `srtp.listen`, from the first session after the running ones
 - `webrtc`: `candidates`, `ice_servers` and `filters.candidates`, for the next connections
 

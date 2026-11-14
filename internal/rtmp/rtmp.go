@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
@@ -34,14 +35,48 @@ func Init() {
 	streams.HandleConsumerFunc("rtmps", streamsConsumerHandle)
 	streams.HandleConsumerFunc("rtmpx", streamsConsumerHandle)
 
+	setOffered(conf.Mod.Streams)
 	listen(conf.Mod.Listen)
-	api.OnConfigSave(reloadListener)
+	api.OnConfigSave(reloadConfig)
 }
 
 type config struct {
 	Mod struct {
-		Listen string `yaml:"listen" json:"listen"`
+		Listen  string   `yaml:"listen" json:"listen"`
+		Streams []string `yaml:"streams" json:"streams"`
 	} `yaml:"rtmp"`
+}
+
+// offered are the streams the server hands out and takes. Nil without streams
+// in the config, then every stream. Never changed, only replaced.
+var offered map[string]bool
+var offeredMu sync.Mutex
+
+func setOffered(names []string) {
+	var set map[string]bool
+	if names != nil {
+		set = make(map[string]bool, len(names))
+		for _, name := range names {
+			set[name] = true
+		}
+	}
+
+	offeredMu.Lock()
+	offered = set
+	offeredMu.Unlock()
+}
+
+// offeredStream returns nil for a stream the server does not offer, like for
+// one that does not exist
+func offeredStream(name string) *streams.Stream {
+	offeredMu.Lock()
+	set := offered
+	offeredMu.Unlock()
+
+	if set != nil && !set[name] {
+		return nil
+	}
+	return streams.Get(name)
 }
 
 var listener xnet.Listener
@@ -74,14 +109,15 @@ func listen(address string) {
 	}()
 }
 
-// reloadListener moves the server to the address of the config the API saved,
-// open connections stay
-func reloadListener(data []byte) {
+// reloadConfig takes the offered streams and the address of the config the API
+// saved, open connections stay
+func reloadConfig(data []byte) {
 	var conf config
 	if err := yaml.Unmarshal(data, &conf); err != nil {
-		log.Warn().Err(err).Msg("[rtmp] listen of the saved config")
+		log.Warn().Err(err).Msg("[rtmp] settings of the saved config")
 		return
 	}
+	setOffered(conf.Mod.Streams)
 	listen(conf.Mod.Listen)
 }
 
@@ -101,7 +137,7 @@ func tcpHandle(netConn net.Conn) error {
 
 	switch rtmpConn.Intent {
 	case rtmp.CommandPlay:
-		stream := streams.Get(rtmpConn.App)
+		stream := offeredStream(rtmpConn.App)
 		if stream == nil {
 			return errors.New("stream not found: " + rtmpConn.App)
 		}
@@ -122,7 +158,7 @@ func tcpHandle(netConn net.Conn) error {
 		return nil
 
 	case rtmp.CommandPublish:
-		stream := streams.Get(rtmpConn.App)
+		stream := offeredStream(rtmpConn.App)
 		if stream == nil {
 			return errors.New("stream not found: " + rtmpConn.App)
 		}

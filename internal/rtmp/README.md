@@ -42,6 +42,16 @@ rtmp:
   listen: ":1935"  # by default - disabled!
 ```
 
+By default the server plays and takes every stream. With `streams` only the listed ones, any other name is answered like a stream that does not exist:
+
+```yaml
+rtmp:
+  listen: ":1935"
+  streams: [camera1, camera2]
+```
+
+`streams: []` offers none. The `streams` and the `listen` of a config saved through the API (`POST` or `PATCH /api/config`) apply right away, without a restart, open connections stay.
+
 ## FLV Server
 
 Streaming output in `flv` format.
