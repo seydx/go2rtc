@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -81,8 +82,7 @@ func (cam *testCamera) serve(conn net.Conn, n int32, sdps []string) {
 	for {
 		req, err := tcp.ReadRequest(r)
 		if err != nil {
-			// the client closed it, not the test
-			if errors.Is(err, io.EOF) {
+			if closedByClient(err) {
 				cam.closed <- n
 			}
 			return
@@ -100,9 +100,19 @@ func (cam *testCamera) serve(conn net.Conn, n int32, sdps []string) {
 			res += "\r\n"
 		}
 		if _, err = conn.Write([]byte(res)); err != nil {
+			if closedByClient(err) {
+				cam.closed <- n
+			}
 			return
 		}
 	}
+}
+
+// The client sends TEARDOWN and closes without waiting for the answer. That
+// answer then meets a closed socket, so the camera sees the end either as EOF
+// or as a reset. The test closing the connection is neither.
+func closedByClient(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
 }
 
 func (cam *testCamera) url(query string) string {
