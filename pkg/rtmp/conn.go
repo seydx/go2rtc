@@ -28,6 +28,7 @@ type Conn struct {
 
 	rdPacketSize uint32
 	wrPacketSize uint32
+	rdMaxSize    uint32 // 0 - any size
 
 	chunks   map[byte]*chunk
 	streamID byte
@@ -163,6 +164,10 @@ func (c *Conn) readData(ch *chunk) ([]byte, error) {
 	// 1. Response zero size
 	if ch.dataSize == 0 {
 		return nil, nil
+	}
+
+	if c.rdMaxSize != 0 && ch.dataSize > c.rdMaxSize {
+		return nil, fmt.Errorf("rtmp: message too large: %d", ch.dataSize)
 	}
 
 	data := make([]byte, ch.dataSize)

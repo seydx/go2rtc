@@ -88,7 +88,19 @@ func (c *Conn) serverHandshake() error {
 	return nil
 }
 
+// a client sends its commands right after the handshake and none of them is
+// large, so until it asks for a stream it gets little time and little memory
+const maxCommandSize = 64 * 1024
+
 func (c *Conn) ReadCommands() error {
+	_ = c.conn.SetReadDeadline(time.Now().Add(core.ConnDeadline))
+	c.rdMaxSize = maxCommandSize
+
+	defer func() {
+		_ = c.conn.SetReadDeadline(time.Time{})
+		c.rdMaxSize = 0
+	}()
+
 	for {
 		msgType, _, b, err := c.readMessage()
 		if err != nil {

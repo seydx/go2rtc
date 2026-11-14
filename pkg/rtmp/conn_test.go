@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -38,7 +39,9 @@ func (p *peer) setChunkSize(size uint32) *peer {
 }
 
 func (p *peer) reader() *Conn {
-	return &Conn{rd: &p.buf, wr: io.Discard, chunks: map[uint8]*chunk{}, rdPacketSize: 128}
+	// the server sets a deadline on the connection while it reads the commands
+	conn, _ := net.Pipe()
+	return &Conn{conn: conn, rd: &p.buf, wr: io.Discard, chunks: map[uint8]*chunk{}, rdPacketSize: 128}
 }
 
 func payload(size int, seed byte) []byte {
