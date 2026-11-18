@@ -79,16 +79,7 @@ func probe(client *Client) ([]*core.Media, error) {
 		switch codec := hdr[0]; codec {
 		case tutk.CodecH264, tutk.CodecH265:
 			if vcodec == nil {
-				avcc := annexb.EncodeToAVCC(payload)
-				if codec == tutk.CodecH264 {
-					if h264.NALUType(avcc) == h264.NALUTypeSPS {
-						vcodec = h264.AVCCToCodec(avcc)
-					}
-				} else {
-					if h265.NALUType(avcc) == h265.NALUTypeVPS {
-						vcodec = h265.AVCCToCodec(avcc)
-					}
-				}
+				vcodec = videoCodec(codec, payload)
 			}
 		case tutk.CodecPCMA, codecXiaobaiPCMA:
 			if acodec == nil {
@@ -125,6 +116,23 @@ func probe(client *Client) ([]*core.Media, error) {
 		},
 	}
 	return medias, nil
+}
+
+// videoCodec reads the codec of a frame that starts with its parameter sets.
+// A frame without an Annex B start code converts to no unit at all.
+func videoCodec(codec byte, payload []byte) *core.Codec {
+	avcc := annexb.EncodeToAVCC(payload)
+	if len(avcc) < 5 {
+		return nil
+	}
+	if codec == tutk.CodecH264 {
+		if h264.NALUType(avcc) == h264.NALUTypeSPS {
+			return h264.AVCCToCodec(avcc)
+		}
+	} else if h265.NALUType(avcc) == h265.NALUTypeVPS {
+		return h265.AVCCToCodec(avcc)
+	}
+	return nil
 }
 
 func (c *Producer) Protocol() string {

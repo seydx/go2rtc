@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/xiaomi/crypto"
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,10 @@ func (c *camera) ReadPacket() (hdr, payload []byte, err error) {
 	p := c.packets[0]
 	c.packets = c.packets[1:]
 	return p[0], p[1], nil
+}
+
+func (c *camera) SetDeadline(time.Time) error {
+	return nil
 }
 
 // A payload shorter than its nonce took the whole process down. The packet is

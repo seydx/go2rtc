@@ -71,15 +71,16 @@ func probe(client *Client, audio bool) ([]*core.Media, error) {
 		switch pkt.CodecID {
 		case codecH264:
 			if vcodec == nil {
+				// a frame without an Annex B start code converts to no unit
 				buf := annexb.EncodeToAVCC(pkt.Payload)
-				if h264.NALUType(buf) == h264.NALUTypeSPS {
+				if len(buf) >= 5 && h264.NALUType(buf) == h264.NALUTypeSPS {
 					vcodec = h264.AVCCToCodec(buf)
 				}
 			}
 		case codecH265:
 			if vcodec == nil {
 				buf := annexb.EncodeToAVCC(pkt.Payload)
-				if h265.NALUType(buf) == h265.NALUTypeVPS {
+				if len(buf) >= 5 && h265.NALUType(buf) == h265.NALUTypeVPS {
 					vcodec = h265.AVCCToCodec(buf)
 				}
 			}
