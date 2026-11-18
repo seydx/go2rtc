@@ -28,6 +28,12 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 		defer c.stateMu.Unlock()
 
 		if c.state.Load() == StatePlay {
+			// try a separate session first, so the running session is not interrupted
+			if err = c.addBackchannel(media, codec, track); err == nil {
+				return
+			}
+			c.Fire("RTSP backchannel session failed: " + err.Error())
+
 			if err = c.Reconnect(); err != nil {
 				return
 			}
@@ -59,16 +65,7 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 	sender.Handler = c.packetWriter(track.Codec, channel, codec.PayloadType)
 
 	if c.mode == core.ModeActiveProducer {
-		// Fix Reolink Doorbell https://github.com/AlexxIT/go2rtc/issues/331
-		switch track.Codec.Name {
-		case core.CodecPCMA:
-			sender.Handler = pcm.RepackG711(true, sender.Handler)
-		case core.CodecPCMU:
-			// Newer Reolink doorbell firmware negotiates PCMU instead of PCMA.
-			// It needs the same repack, but with monotonic timestamps: with
-			// zeroTS the camera replays frames and the audio doubles.
-			sender.Handler = pcm.RepackG711(false, sender.Handler)
-		}
+		sender.Handler = repackTalk(track.Codec, sender.Handler)
 	}
 
 	// Bind here, start sender after Play
@@ -78,6 +75,21 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 	c.Senders = append(c.Senders, sender)
 	c.infoMu.Unlock()
 	return nil
+}
+
+// repackTalk fixes the G.711 a camera gets on its backchannel
+func repackTalk(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
+	switch codec.Name {
+	case core.CodecPCMA:
+		// Fix Reolink Doorbell https://github.com/AlexxIT/go2rtc/issues/331
+		return pcm.RepackG711(true, handler)
+	case core.CodecPCMU:
+		// Newer Reolink doorbell firmware negotiates PCMU instead of PCMA.
+		// It needs the same repack, but with monotonic timestamps: with
+		// zeroTS the camera replays frames and the audio doubles.
+		return pcm.RepackG711(false, handler)
+	}
+	return handler
 }
 
 const (

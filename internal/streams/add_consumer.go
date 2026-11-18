@@ -2,6 +2,7 @@ package streams
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,18 +20,31 @@ type producerInfo struct {
 }
 
 func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
-	// an OnEvict hook registered ahead of a failed attach must not linger
-	defer func() {
-		if err != nil {
-			s.mu.Lock()
-			s.forget(cons)
-			s.mu.Unlock()
-		}
-	}()
+	return s.addConsumer(cons, cons.GetMedias(), true)
+}
 
-	// a stream with a preload is always negotiated by the preload first
-	if err = ensurePreload(s, cons); err != nil {
-		return err
+// AddConsumerMedias - match new medias of already added consumer.
+// For example, after WebRTC renegotiation (enable two-way audio).
+func (s *Stream) AddConsumerMedias(cons core.Consumer, medias []*core.Media) (err error) {
+	return s.addConsumer(cons, medias, false)
+}
+
+func (s *Stream) addConsumer(cons core.Consumer, consMedias []*core.Media, isNew bool) (err error) {
+	// a renegotiating consumer stays attached with the medias it has
+	if isNew {
+		// an OnEvict hook registered ahead of a failed attach must not linger
+		defer func() {
+			if err != nil {
+				s.mu.Lock()
+				s.forget(cons)
+				s.mu.Unlock()
+			}
+		}()
+
+		// a stream with a preload is always negotiated by the preload first
+		if err = ensurePreload(s, cons); err != nil {
+			return err
+		}
 	}
 
 	// the producer receivers cons gets attached to
@@ -67,7 +81,6 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 	prevHasVideo := false
 
 	// Step 1. Get consumer medias
-	consMedias := cons.GetMedias()
 
 	// Check if consumer requests backchannel (any recvonly media)
 	consumerRequestsBackchannel := false
@@ -615,8 +628,20 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
 		s.stopProducers()
 		return errSourcesChanged
 	}
-	s.consumers = append(s.consumers, cons)
-	s.bind(cons, bound)
+	if isNew {
+		s.consumers = append(s.consumers, cons)
+		s.bind(cons, bound)
+	} else if slices.Contains(s.consumers, cons) {
+		// the tracks of the renegotiation come on top of those it has
+		s.bind(cons, append(slices.Clone(s.bound[cons]), bound...))
+	} else {
+		// removed while it renegotiated: it was stopped before it got the
+		// tracks of the renegotiation, those keep the producers running
+		s.mu.Unlock()
+		_ = cons.Stop()
+		s.stopProducers()
+		return errConsumerGone
+	}
 	s.mu.Unlock()
 	notify(s)
 

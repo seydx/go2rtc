@@ -129,6 +129,9 @@ func (c *Conn) Stop() (err error) {
 		// client would wait on a session nothing feeds: close the connection.
 		err = conn.Close()
 	}
+	if bc := c.backchannel.Swap(nil); bc != nil {
+		_ = bc.Stop()
+	}
 	c.stateMu.Unlock()
 
 	return
@@ -150,6 +153,11 @@ func (c *Conn) Stop() (err error) {
 func (c *Conn) Interrupt() error {
 	if c.OnClose != nil {
 		_ = c.OnClose()
+	}
+	// the talk session goes down with the camera's session: the camera may
+	// have only one backchannel, the new session sets it up again
+	if bc := c.backchannel.Load(); bc != nil {
+		_ = bc.Interrupt()
 	}
 	if conn, _ := c.netIO(); conn != nil {
 		return conn.Close()

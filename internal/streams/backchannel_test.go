@@ -1,6 +1,7 @@
 package streams
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -33,8 +34,12 @@ func talkWired(s *Stream) bool {
 	for _, p := range streamProducers(s) {
 		p.mu.RLock()
 		conn := p.conn
+		mixer := p.mixer
 		p.mu.RUnlock()
 		if rc, ok := conn.(*rtsp.Conn); ok && len(rc.Senders) > 0 {
+			return true
+		}
+		if mixer != nil && mixerFeedsCamera(mixer) {
 			return true
 		}
 	}
@@ -46,16 +51,25 @@ func zombieMixer(s *Stream) bool {
 	for _, p := range streamProducers(s) {
 		p.mu.RLock()
 		mixer := p.mixer
-		conn := p.conn
 		p.mu.RUnlock()
-		if mixer == nil {
-			continue
-		}
-		if rc, ok := conn.(*rtsp.Conn); !ok || len(rc.Senders) == 0 {
+		if mixer != nil && !mixerFeedsCamera(mixer) {
 			return true
 		}
 	}
 	return false
+}
+
+// mixerFeedsCamera: a camera sender reads from the mixer, as the API shows it.
+// A playing session carries it in a session of its own, not in its senders.
+func mixerFeedsCamera(mixer *core.RTPMixer) bool {
+	b, err := mixer.MarshalJSON()
+	if err != nil {
+		return false
+	}
+	var v struct {
+		Childs []uint32 `json:"childs"`
+	}
+	return json.Unmarshal(b, &v) == nil && len(v.Childs) > 0
 }
 
 func streamProducers(s *Stream) []*Producer {

@@ -111,7 +111,14 @@ func StatsOf(s *Stream) *Stats {
 		if c, ok := cons.(interface{ GetConnection() *core.Connection }); ok {
 			conn := c.GetConnection()
 			entry.ID = conn.ID
-			entry.Senders = conn.Senders
+			// a connection that adds tracks while it runs (WebRTC renegotiation) guards them
+			if t, ok := cons.(interface {
+				Tracks() ([]*core.Receiver, []*core.Sender)
+			}); ok {
+				_, entry.Senders = t.Tracks()
+			} else {
+				entry.Senders = conn.Senders
+			}
 		}
 		stats.Consumers = append(stats.Consumers, entry)
 	}

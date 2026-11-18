@@ -45,17 +45,18 @@ type Conn struct {
 
 	// internal
 
-	auth      *tcp.Auth
-	conn      net.Conn
-	keepalive int
-	mode      core.Mode
-	playOK    atomic.Bool // set by the reading side, read by the sender goroutines
-	playErr   error
-	reader    *bufio.Reader
-	ioMu      sync.RWMutex // guards conn and reader, which Dial swaps on reconnect
-	sequence  int
-	session   string
-	uri       string
+	auth        *tcp.Auth
+	backchannel atomic.Pointer[Conn] // separate session for backchannel, added while playing
+	conn        net.Conn
+	keepalive   int
+	mode        core.Mode
+	playOK      atomic.Bool // set by the reading side, read by the sender goroutines
+	playErr     error
+	reader      *bufio.Reader
+	ioMu        sync.RWMutex // guards conn and reader, which Dial swaps on reconnect
+	sequence    int
+	session     string
+	uri         string
 
 	state   atomicState
 	stateMu sync.Mutex // serializes the transitions that depend on state

@@ -8,7 +8,8 @@ import (
 func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
 	core.Assert(media.Direction == core.DirectionRecvonly)
 
-	for _, track := range c.Receivers {
+	receivers, senders := c.Tracks()
+	for _, track := range receivers {
 		if track.Codec.Match(codec) {
 			return track, nil
 		}
@@ -17,18 +18,34 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 	switch c.Mode {
 	case core.ModePassiveConsumer: // backchannel from browser
 		// set codec for consumer recv track so remote peer should send media with this codec
-		params := webrtc.RTPCodecParameters{
+		params := []webrtc.RTPCodecParameters{{
 			RTPCodecCapability: webrtc.RTPCodecCapability{
 				MimeType:  MimeType(codec),
 				ClockRate: codec.ClockRate,
 				Channels:  uint16(codec.Channels),
 			},
 			PayloadType: 0, // don't know if this necessary
+		}}
+
+		// keep codec of the already sending track on this transceiver
+		// (sendonly => sendrecv after renegotiation)
+		for _, sender := range senders {
+			if sender.Media.ID != media.ID || sender.Codec.Match(codec) {
+				continue
+			}
+			params = append(params, webrtc.RTPCodecParameters{
+				RTPCodecCapability: webrtc.RTPCodecCapability{
+					MimeType:  MimeType(sender.Codec),
+					ClockRate: sender.Codec.ClockRate,
+					Channels:  uint16(sender.Codec.Channels),
+				},
+				PayloadType: webrtc.PayloadType(sender.Codec.PayloadType),
+			})
 		}
 
 		tr := c.getTranseiver(media.ID)
 
-		_ = tr.SetCodecPreferences([]webrtc.RTPCodecParameters{params})
+		_ = tr.SetCodecPreferences(params)
 
 	case core.ModePassiveProducer, core.ModeActiveProducer:
 		// Passive producers: OBS Studio via WHIP or Browser
@@ -39,7 +56,9 @@ func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, e
 	}
 
 	track := core.NewReceiver(media, codec)
+	c.infoMu.Lock()
 	c.Receivers = append(c.Receivers, track)
+	c.infoMu.Unlock()
 	return track, nil
 }
 

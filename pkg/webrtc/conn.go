@@ -37,14 +37,18 @@ type Conn struct {
 
 	offer           string
 	closed          core.Waiter
-	rtcpOnce        sync.Once
 	transportClosed bool
+
+	// the senders whose RTCP is read, a renegotiation can add senders
+	rtcpMu   sync.Mutex
+	rtcpRead map[*webrtc.RTPSender]bool
 
 	connected atomic.Bool
 	deadline  atomic.Pointer[time.Timer]
 	grace     atomic.Pointer[time.Timer]
 
-	// the selected candidate pair rewrites Protocol and RemoteAddr while the API marshals them
+	// the selected candidate pair rewrites Protocol and RemoteAddr while the API marshals them,
+	// a renegotiation adds Medias, Receivers and Senders while the connection runs
 	infoMu sync.Mutex
 }
 
@@ -214,15 +218,11 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 
 			// Pion's NACK responder only runs while RTCP is read. Without this,
 			// receivers ask for missing RTP packets and never get them, so the
-			// picture freezes until the next keyframe. Start only once, an ICE
-			// transition must not add competing readers.
-			c.rtcpOnce.Do(func() {
-				for _, sender := range pc.GetSenders() {
-					go c.readSenderRTCP(sender)
-				}
-			})
+			// picture freezes until the next keyframe.
+			c.readRTCP()
 
-			for _, sender := range c.Senders {
+			_, senders := c.Tracks()
+			for _, sender := range senders {
 				sender.Start()
 			}
 		case webrtc.PeerConnectionStateDisconnected:
@@ -254,12 +254,13 @@ func (c *Conn) Close() error {
 	c.stopDeadline()
 	c.stopGrace()
 
+	receivers, senders := c.Tracks()
 	// Close all senders to remove them from parent receivers
-	for _, sender := range c.Senders {
+	for _, sender := range senders {
 		sender.Close()
 	}
 	// Close all receivers
-	for _, receiver := range c.Receivers {
+	for _, receiver := range receivers {
 		receiver.Close()
 	}
 
@@ -368,7 +369,10 @@ func (c *Conn) getMediaCodec(remote *webrtc.TrackRemote) (*core.Media, *core.Cod
 		}
 
 		// search Media for this MID
-		for _, media := range c.Medias {
+		c.infoMu.Lock()
+		medias := c.Medias
+		c.infoMu.Unlock()
+		for _, media := range medias {
 			if media.ID != tr.Mid() || media.Direction != core.DirectionRecvonly {
 				continue
 			}
@@ -383,12 +387,44 @@ func (c *Conn) getMediaCodec(remote *webrtc.TrackRemote) (*core.Media, *core.Cod
 		}
 	}
 
+	// consumer can get unknown track after renegotiation, skip it instead of crashing
+	if c.Mode == core.ModePassiveConsumer {
+		return nil, nil
+	}
+
 	// fix moment when core.ModePassiveProducer or core.ModeActiveProducer
 	// sends new codec with new payload type to same media
 	// check GetTrack
 	panic(core.Caller())
 
 	// return nil, nil
+}
+
+// Tracks returns Receivers and Senders: a renegotiation adds to them while
+// the connection runs. append never touches what an earlier slice header
+// covers, so the caller can range freely.
+func (c *Conn) Tracks() ([]*core.Receiver, []*core.Sender) {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
+	return c.Receivers, c.Senders
+}
+
+// readRTCP reads the RTCP of each sender nobody reads yet: those of the
+// connection once it is up, then those a renegotiation adds. An ICE transition
+// must not add competing readers.
+func (c *Conn) readRTCP() {
+	c.rtcpMu.Lock()
+	defer c.rtcpMu.Unlock()
+	for _, sender := range c.pc.GetSenders() {
+		if c.rtcpRead[sender] {
+			continue
+		}
+		if c.rtcpRead == nil {
+			c.rtcpRead = map[*webrtc.RTPSender]bool{}
+		}
+		c.rtcpRead[sender] = true
+		go c.readSenderRTCP(sender)
+	}
 }
 
 func (c *Conn) readSenderRTCP(sender *webrtc.RTPSender) {

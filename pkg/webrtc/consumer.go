@@ -11,13 +11,17 @@ import (
 )
 
 func (c *Conn) GetMedias() []*core.Media {
-	return WithResampling(c.Medias)
+	c.infoMu.Lock()
+	medias := c.Medias
+	c.infoMu.Unlock()
+	return WithResampling(medias)
 }
 
 func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
 	core.Assert(media.Direction == core.DirectionSendonly)
 
-	for _, sender := range c.Senders {
+	_, senders := c.Tracks()
+	for _, sender := range senders {
 		if sender.Codec == codec {
 			sender.Bind(track)
 			return nil
@@ -86,6 +90,8 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 		sender.HandleRTP(track)
 	}
 
+	c.infoMu.Lock()
 	c.Senders = append(c.Senders, sender)
+	c.infoMu.Unlock()
 	return nil
 }
