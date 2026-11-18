@@ -1,7 +1,6 @@
 package dvrip
 
 import (
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -49,7 +48,12 @@ func (c *Producer) Start() error {
 				payload = b[8:] // pframe
 			}
 
-			c.videoTS += c.videoDT
+			if c.videoDT != 0 {
+				c.videoTS += c.videoDT
+			} else {
+				// no frame rate to space the frames by: the time they come
+				c.videoTS = core.Now90000()
+			}
 
 			packet := &rtp.Packet{
 				Header:  rtp.Header{Timestamp: c.videoTS},
@@ -144,7 +148,9 @@ func (c *Producer) probe() error {
 
 			// the exact value of the start TS does not matter
 			c.videoTS = binary.LittleEndian.Uint32(ts)
-			c.videoDT = 90000 / uint32(fps)
+			if fps != 0 {
+				c.videoDT = 90000 / uint32(fps)
+			}
 
 			payload := annexb.EncodeToAVCC(b[16:])
 			c.addVideoTrack(b[4], payload)
@@ -175,31 +181,8 @@ func (c *Producer) addVideoTrack(mediaCode byte, payload []byte) {
 		}
 
 	case 0x03, 0x13, 0x43, 0x53:
-		codec = &core.Codec{
-			Name:        core.CodecH265,
-			ClockRate:   90000,
-			PayloadType: core.PayloadTypeRAW,
-			FmtpLine:    "profile-id=1",
-		}
-
-		for {
-			size := 4 + int(binary.BigEndian.Uint32(payload))
-
-			switch h265.NALUType(payload) {
-			case h265.NALUTypeVPS:
-				codec.FmtpLine += ";sprop-vps=" + base64.StdEncoding.EncodeToString(payload[4:size])
-			case h265.NALUTypeSPS:
-				codec.FmtpLine += ";sprop-sps=" + base64.StdEncoding.EncodeToString(payload[4:size])
-			case h265.NALUTypePPS:
-				codec.FmtpLine += ";sprop-pps=" + base64.StdEncoding.EncodeToString(payload[4:size])
-			}
-
-			if size < len(payload) {
-				payload = payload[size:]
-			} else {
-				break
-			}
-		}
+		// checks each unit's size against what is left of the frame
+		codec = h265.AVCCToCodec(payload)
 	default:
 		println("[DVRIP] unsupported video codec:", mediaCode)
 		return
@@ -236,7 +219,7 @@ func (c *Producer) addAudioTrack(mediaCode byte, sampleRate byte) {
 		return
 	}
 
-	if sampleRate <= byte(len(sampleRates)) {
+	if sampleRate >= 1 && int(sampleRate) <= len(sampleRates) {
 		codec.ClockRate = sampleRates[sampleRate-1]
 	}
 
