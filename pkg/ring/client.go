@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,6 +24,10 @@ type Client struct {
 	dialogID  string
 	connected core.Waiter
 	closed    atomic.Bool
+
+	speakerMu     sync.Mutex
+	speakerWanted bool
+	cameraJoined  bool
 }
 
 func Dial(rawURL string) (*Client, error) {
@@ -305,6 +310,11 @@ func (c *Client) onWSMessage(msg WSMessage) {
 			}
 		}
 
+	case "notification":
+		if text, _ := msg.Body["text"].(string); text == "camera_connected" {
+			c.cameraConnected()
+		}
+
 	case "close":
 		c.Stop()
 		c.connected.Done(errors.New("ring: close"))
@@ -315,6 +325,30 @@ func (c *Client) onWSMessage(msg WSMessage) {
 
 	case "pong":
 		// Ignore
+	}
+}
+
+func (c *Client) enableSpeaker() {
+	c.speakerMu.Lock()
+	defer c.speakerMu.Unlock()
+
+	c.speakerWanted = true
+	c.sendSpeakerOptions()
+}
+
+func (c *Client) cameraConnected() {
+	c.speakerMu.Lock()
+	defer c.speakerMu.Unlock()
+
+	c.cameraJoined = true
+	c.sendSpeakerOptions()
+}
+
+func (c *Client) sendSpeakerOptions() {
+	// camera_options sent before the camera joined the session can leave its speaker muted,
+	// ring-client-api waits for camera_connected as well
+	if c.speakerWanted && c.cameraJoined {
+		_ = c.wsClient.sendSessionMessage("camera_options", map[string]any{"stealth_mode": false})
 	}
 }
 
@@ -329,11 +363,7 @@ func (c *Client) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver,
 func (c *Client) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
 	if webrtcProd, ok := c.prod.(*webrtc.Conn); ok {
 		if media.Kind == core.KindAudio {
-			// Enable speaker
-			speakerPayload := map[string]interface{}{
-				"stealth_mode": false,
-			}
-			_ = c.wsClient.sendSessionMessage("camera_options", speakerPayload)
+			c.enableSpeaker()
 		}
 		return webrtcProd.AddTrack(media, codec, track)
 	}

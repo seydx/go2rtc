@@ -85,6 +85,33 @@ func TestSessionIDArrivesWhileSending(t *testing.T) {
 	require.Equal(t, "new", ws.sessionID)
 }
 
+func TestSpeakerWaitsForCamera(t *testing.T) {
+	ws, received := newTestSocket(t)
+	client := &Client{cameraID: 42, wsClient: ws}
+
+	client.enableSpeaker()
+	_ = ws.sendSessionMessage("ping", nil)
+	client.onWSMessage(WSMessage{Method: "notification", Body: map[string]any{"doorbot_id": float64(42), "session_id": "session", "text": "camera_connected"}})
+
+	msg, _ := nextMessage(t, received)
+	require.Equal(t, "ping", msg["method"], "no camera_options before the camera joined")
+
+	msg, _ = nextMessage(t, received)
+	require.Equal(t, "camera_options", msg["method"])
+	require.Equal(t, false, msg["body"].(map[string]any)["stealth_mode"])
+}
+
+func TestSpeakerAfterCameraJoined(t *testing.T) {
+	ws, received := newTestSocket(t)
+	client := &Client{cameraID: 42, wsClient: ws}
+
+	client.onWSMessage(WSMessage{Method: "notification", Body: map[string]any{"doorbot_id": float64(42), "session_id": "session", "text": "camera_connected"}})
+	client.enableSpeaker()
+
+	msg, _ := nextMessage(t, received)
+	require.Equal(t, "camera_options", msg["method"])
+}
+
 func TestConcurrentStopSendsOneClose(t *testing.T) {
 	ws, received := newTestSocket(t)
 	client := &Client{cameraID: 42, wsClient: ws}
