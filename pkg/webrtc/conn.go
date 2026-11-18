@@ -31,6 +31,8 @@ type Conn struct {
 	// an active producer asks its source for a keyframe at the first video packet and then at this interval
 	KeyframeInterval time.Duration
 
+	OnSenderRTCP func(packets []rtcp.Packet)
+
 	pc *webrtc.PeerConnection
 
 	offer           string
@@ -216,14 +218,7 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 			// transition must not add competing readers.
 			c.rtcpOnce.Do(func() {
 				for _, sender := range pc.GetSenders() {
-					go func(sender *webrtc.RTPSender) {
-						buf := make([]byte, 1500)
-						for {
-							if _, _, err := sender.Read(buf); err != nil {
-								return
-							}
-						}
-					}(sender)
+					go c.readSenderRTCP(sender)
 				}
 			})
 
@@ -394,6 +389,25 @@ func (c *Conn) getMediaCodec(remote *webrtc.TrackRemote) (*core.Media, *core.Cod
 	panic(core.Caller())
 
 	// return nil, nil
+}
+
+func (c *Conn) readSenderRTCP(sender *webrtc.RTPSender) {
+	if c.OnSenderRTCP == nil {
+		buf := make([]byte, 1500)
+		for {
+			if _, _, err := sender.Read(buf); err != nil {
+				return
+			}
+		}
+	}
+
+	for {
+		packets, _, err := sender.ReadRTCP()
+		if err != nil {
+			return
+		}
+		c.OnSenderRTCP(packets)
+	}
 }
 
 func requestKeyframes(pc *webrtc.PeerConnection, ssrc webrtc.SSRC, interval time.Duration) {
