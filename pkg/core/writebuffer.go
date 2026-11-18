@@ -13,11 +13,10 @@ import (
 // WriteTo will be locked until Write fails or Close will be called.
 type WriteBuffer struct {
 	io.Writer
-	err    error
-	mu     sync.Mutex
-	wg     sync.WaitGroup
-	state  byte
-	closed bool
+	err   error
+	mu    sync.Mutex
+	wg    sync.WaitGroup
+	state byte
 }
 
 func NewWriteBuffer(wr io.Writer) *WriteBuffer {
@@ -48,21 +47,16 @@ func (w *WriteBuffer) WriteTo(wr io.Writer) (n int64, err error) {
 }
 
 func (w *WriteBuffer) Close() error {
-	// read w.Writer under the mutex - Reset may swap it concurrently
+	// I'm not sure that's the best solution. This class needs a complete rewrite.
+	// https://github.com/AlexxIT/go2rtc/pull/2339
 	w.mu.Lock()
 	closer, _ := w.Writer.(io.Closer)
-	if closer == nil {
-		// mark the buffer as closed so that late Write calls from track
-		// senders fail (w.err) instead of writing into the http.ResponseWriter,
-		// whose bufio.Writer net/http recycles after the handler returns (#2339);
-		// w.closed also stops a Close-before-WriteTo from blocking WriteTo (#2327)
-		if w.err == nil {
-			w.err = io.ErrClosedPipe
-		}
-		w.closed = true
-		w.done()
+	if w.err == nil {
+		w.err = io.ErrClosedPipe
 	}
+	w.done()
 	w.mu.Unlock()
+
 	if closer != nil {
 		return closer.Close()
 	}
@@ -89,8 +83,8 @@ const (
 )
 
 func (w *WriteBuffer) add() {
-	// don't Add if Close already ran, or WriteTo would block on a Done that already fired
-	if w.state == none && !w.closed {
+	// after Close WriteTo must not wait for a Done that already fired (#2327)
+	if w.state == none && w.err == nil {
 		w.state = start
 		w.wg.Add(1)
 	}

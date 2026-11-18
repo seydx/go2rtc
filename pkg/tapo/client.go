@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -49,6 +50,9 @@ type Client struct {
 
 	recv int
 	send int
+
+	stateMu sync.Mutex
+	started bool
 }
 
 // block ciphers using cipher block chaining.
@@ -192,8 +196,17 @@ func (c *Client) newDectypter(res *http.Response, brand, username, password stri
 }
 
 func (c *Client) SetupStream() (err error) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+
 	if c.session1 != "" {
 		return
+	}
+
+	// started for the backchannel only: Handle already reads conn1 and
+	// would take the reply, so Request would wait forever
+	if c.started {
+		return errors.New("tapo: can't setup stream after start")
 	}
 
 	// audio: default, disable, enable
