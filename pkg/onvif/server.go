@@ -187,7 +187,31 @@ func GetDeviceInformationResponse(manuf, model, firmware, serial string) []byte 
 	<tds:FirmwareVersion>%s</tds:FirmwareVersion>
 	<tds:SerialNumber>%s</tds:SerialNumber>
 	<tds:HardwareId>1.00</tds:HardwareId>
-</tds:GetDeviceInformationResponse>`, manuf, model, firmware, serial)
+</tds:GetDeviceInformationResponse>`,
+		html.EscapeString(manuf), html.EscapeString(model), html.EscapeString(firmware), html.EscapeString(serial))
+	return e.Bytes()
+}
+
+// GetNetworkInterfacesResponse has one interface, at least one is required.
+// Without a MAC it has no Info: Hass would take the MAC of the host as the ID
+// and join the device with others of that MAC.
+func GetNetworkInterfacesResponse(mac string) []byte {
+	e := NewEnvelope()
+	e.Append(`<tds:GetNetworkInterfacesResponse><tds:NetworkInterfaces token="0"><tt:Enabled>true</tt:Enabled>`)
+	if mac != "" {
+		e.Append(`<tt:Info><tt:HwAddress>`, mac, `</tt:HwAddress></tt:Info>`)
+	}
+	e.Append(`</tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>`)
+	return e.Bytes()
+}
+
+func GetScopesResponse(scopes []string) []byte {
+	e := NewEnvelope()
+	e.Append(`<tds:GetScopesResponse>`)
+	for _, scope := range scopes {
+		e.Append(`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>`, html.EscapeString(scope), `</tt:ScopeItem></tds:Scopes>`)
+	}
+	e.Append(`</tds:GetScopesResponse>`)
 	return e.Bytes()
 }
 
@@ -415,17 +439,7 @@ var responses = map[string]string{
 	DeviceGetNTP:                   `<tds:GetNTPResponse><tds:NTPInformation><tt:FromDHCP>false</tt:FromDHCP></tds:NTPInformation></tds:GetNTPResponse>`,
 	DeviceSetSystemDateAndTime:     `<tds:SetSystemDateAndTimeResponse />`,
 	DeviceSystemReboot:             `<tds:SystemRebootResponse><tds:Message>OK</tds:Message></tds:SystemRebootResponse>`,
-
-	// at least one interface is required. Without its Info: Hass would take the
-	// MAC of the host as the ID and join the device with others of that MAC.
-	DeviceGetNetworkInterfaces: `<tds:GetNetworkInterfacesResponse><tds:NetworkInterfaces token="0"><tt:Enabled>true</tt:Enabled></tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>`,
-	DeviceGetNetworkProtocols:  `<tds:GetNetworkProtocolsResponse />`,
-	DeviceGetScopes: `<tds:GetScopesResponse>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/name/go2rtc</tt:ScopeItem></tds:Scopes>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/location/github</tt:ScopeItem></tds:Scopes>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/Streaming</tt:ScopeItem></tds:Scopes>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/type/Network_Video_Transmitter</tt:ScopeItem></tds:Scopes>
-</tds:GetScopesResponse>`,
+	DeviceGetNetworkProtocols:      `<tds:GetNetworkProtocolsResponse />`,
 
 	MediaGetAudioEncoderConfigurations: `<trt:GetAudioEncoderConfigurationsResponse />`,
 	MediaGetAudioSources:               `<trt:GetAudioSourcesResponse />`,

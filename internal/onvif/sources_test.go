@@ -181,7 +181,7 @@ func requestStatus(t *testing.T, operation, body string) (int, []byte) {
 	))
 	req.Host = "192.168.1.2:1984"
 	w := httptest.NewRecorder()
-	onvifDeviceService(w, req)
+	device{}.service(w, req)
 	return w.Code, w.Body.Bytes()
 }
 

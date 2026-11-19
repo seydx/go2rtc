@@ -40,3 +40,14 @@ func (l *Listener) Listen(address string) (net.Listener, error) {
 	l.ln, l.addr = ln, address
 	return ln, nil
 }
+
+// Addr is the address of the open listener, nil for none
+func (l *Listener) Addr() net.Addr {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.ln == nil {
+		return nil
+	}
+	return l.ln.Addr()
+}

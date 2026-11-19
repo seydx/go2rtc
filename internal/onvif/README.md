@@ -49,6 +49,29 @@ The token of a profile is the name of its stream. A profile tells the codec (H26
 
 The ONVIF integration of Home Assistant takes H.264 profiles only, it leaves out an H.265 stream.
 
+### A device per camera
+
+UniFi Protect takes an ONVIF device as one camera and knows no channels: of a device with several video sources it picks the main stream, the sub stream and the snapshot from any of them. A video source with a `listen` of its own is also a device of its own on that address, with its profiles only:
+
+```yaml
+onvif:
+  listen: ":8888"              # all video sources, as before
+  manufacturer: Home           # optional, the manufacturer the devices tell
+  video_sources:
+    - token: front_door        # stays the same: the MAC and the serial number come from it
+      name: Front Door
+      profiles: [front_door, front_door_sub]
+      listen: ":8889"          # Front Door alone on http://<host>:8889/onvif/device_service
+```
+
+The device of a camera tells the name of the video source as its model and in its `onvif://www.onvif.org/name/` scope, the token as its serial number, and a MAC made from the token in `GetNetworkInterfaces`. Clients tell the devices of a host apart by that MAC: UniFi Protect takes the MAC of the IP otherwise, the same for every port, and joins all devices of the host into one camera. UniFi Protect names a camera `<manufacturer> <model>`.
+
+### Discovery
+
+While a device listens, go2rtc answers WS-Discovery probes on UDP 3702 (multicast `239.255.255.250`), every device with a message of its own. With Docker this needs the network mode host. go2rtc doesn't answer its own probes: the ONVIF search of go2rtc doesn't list its own cameras.
+
+UniFi Protect and Home Assistant list one device per IP in their search, the last one that answered: add the others with `<host>:<port>`. UniFi Protect keeps that entry after the adoption, it knows the found devices by the MAC of the IP only.
+
 ## Tested clients
 
 Go2rtc works as ONVIF server:

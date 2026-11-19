@@ -65,7 +65,7 @@ func requestHost(t *testing.T, host, operation, body string) []byte {
 	))
 	req.Host = host
 	w := httptest.NewRecorder()
-	onvifDeviceService(w, req)
+	device{}.service(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 	return w.Body.Bytes()
 }
@@ -218,7 +218,7 @@ func serveOnvif(t *testing.T) string {
 	require.NoError(t, err)
 	done := make(chan struct{})
 	go func() {
-		serve(ln)
+		serve(ln, device{})
 		close(done)
 	}()
 	// the server is gone before the next test
@@ -283,7 +283,7 @@ func requestService(t *testing.T, namespace, operation string) *httptest.Respons
 	))
 	req.Host = "192.168.1.2:1984"
 	w := httptest.NewRecorder()
-	onvifDeviceService(w, req)
+	device{}.service(w, req)
 	return w
 }
 
@@ -399,15 +399,10 @@ func TestSnapshotOfUnknownSource(t *testing.T) {
 // camera.ui turns the ONVIF server on, moves it to another port and turns it
 // off with a saved config, without a restart of go2rtc
 func TestListenerOfSavedConfig(t *testing.T) {
+	localDiscovery(t)
 	t.Cleanup(func() { reloadConfig([]byte("streams: {}\n")) })
 
-	free := func() string {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		require.NoError(t, ln.Close())
-		return ln.Addr().String()
-	}
-	first, second := free(), free()
+	first, second := freeAddress(t), freeAddress(t)
 
 	reloadConfig([]byte("onvif:\n  listen: " + first + "\n"))
 	require.Equal(t, http.StatusNotFound, get(t, "http://"+first+snapshotPath))

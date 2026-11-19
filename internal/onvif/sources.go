@@ -18,6 +18,7 @@ type sourceConfig struct {
 	Token    string   `yaml:"token"` // the first profile without one
 	Name     string   `yaml:"name"`
 	Profiles []string `yaml:"profiles"`
+	Listen   string   `yaml:"listen"` // a device of its own on this address
 }
 
 // sourceConfigs are the video sources of the config: only their streams are
@@ -25,6 +26,9 @@ type sourceConfig struct {
 // every stream is a profile. Never changed, only replaced.
 var sourceConfigs []sourceConfig
 var sourceConfigsMu sync.Mutex
+
+// manufacturer is the one the devices tell, guarded by sourceConfigsMu
+var manufacturer string
 
 // setSourceConfigs takes the video sources of the config, nil without any. A
 // stream is the profile of one source only: the client asks for it by its name.
@@ -34,6 +38,7 @@ func setSourceConfigs(configs []sourceConfig) {
 		list = []sourceConfig{} // an empty list: no profiles at all
 	}
 	seen := map[string]bool{}
+	listens := map[string]bool{}
 	for _, cfg := range configs {
 		var profiles []string
 		for _, name := range cfg.Profiles {
@@ -51,6 +56,12 @@ func setSourceConfigs(configs []sourceConfig) {
 		if cfg.Token == "" {
 			cfg.Token = profiles[0]
 		}
+		if listens[cfg.Listen] {
+			log.Warn().Str("addr", cfg.Listen).Msg("[onvif] skip a listen of two video sources")
+			cfg.Listen = ""
+		} else if cfg.Listen != "" {
+			listens[cfg.Listen] = true
+		}
 		list = append(list, cfg)
 	}
 
@@ -59,7 +70,19 @@ func setSourceConfigs(configs []sourceConfig) {
 	sourceConfigsMu.Unlock()
 }
 
-// reloadConfig takes the video sources and the listener of the config the API
+func setManufacturer(name string) {
+	sourceConfigsMu.Lock()
+	manufacturer = name
+	sourceConfigsMu.Unlock()
+}
+
+func getManufacturer() string {
+	sourceConfigsMu.Lock()
+	defer sourceConfigsMu.Unlock()
+	return manufacturer
+}
+
+// reloadConfig takes the video sources and the listeners of the config the API
 // saved: camera.ui adds and removes its cameras and moves or stops the server
 // without a restart. Open connections stay.
 func reloadConfig(data []byte) {
@@ -68,8 +91,7 @@ func reloadConfig(data []byte) {
 		log.Warn().Err(err).Msg("[onvif] settings of the saved config")
 		return
 	}
-	setSourceConfigs(cfg.Mod.VideoSources)
-	listen(cfg.Mod.Listen)
+	apply(&cfg)
 }
 
 // configs returns the video sources the server offers: the ones of the config,
@@ -230,8 +252,8 @@ func profilesOf(sources []*onvif.VideoSource) (profiles []*onvif.MediaProfile) {
 }
 
 // findProfile describes the source of the profile with token, only that one
-func findProfile(token string) *onvif.MediaProfile {
-	for _, cfg := range configs() {
+func findProfile(list []sourceConfig, token string) *onvif.MediaProfile {
+	for _, cfg := range list {
 		if !slices.Contains(cfg.Profiles, token) {
 			continue
 		}
@@ -245,8 +267,8 @@ func findProfile(token string) *onvif.MediaProfile {
 	return nil
 }
 
-func findSource(token string) *onvif.VideoSource {
-	for _, cfg := range configs() {
+func findSource(list []sourceConfig, token string) *onvif.VideoSource {
+	for _, cfg := range list {
 		if cfg.Token != token {
 			continue
 		}
@@ -261,10 +283,10 @@ func findSource(token string) *onvif.VideoSource {
 // optionSources are the video sources of the options a client asks for: the one
 // of the configuration, the one of the profile, both have to match. Without a
 // token all of them. Nil with the subcode of the fault.
-func optionSources(configToken, profileToken string) ([]*onvif.VideoSource, string) {
+func optionSources(list []sourceConfig, configToken, profileToken string) ([]*onvif.VideoSource, string) {
 	var source *onvif.VideoSource
 	if profileToken != "" {
-		profile := findProfile(profileToken)
+		profile := findProfile(list, profileToken)
 		if profile == nil {
 			return nil, "NoProfile"
 		}
@@ -272,7 +294,7 @@ func optionSources(configToken, profileToken string) ([]*onvif.VideoSource, stri
 	}
 	if configToken != "" {
 		if source == nil {
-			source = findSource(configToken)
+			source = findSource(list, configToken)
 		}
 		// the token of a source configuration is the one of its source
 		if source == nil || source.Token != configToken {
@@ -282,15 +304,15 @@ func optionSources(configToken, profileToken string) ([]*onvif.VideoSource, stri
 	if source != nil {
 		return []*onvif.VideoSource{source}, ""
 	}
-	if sources := describe(configs()); len(sources) > 0 {
+	if sources := describe(list); len(sources) > 0 {
 		return sources, ""
 	}
 	return nil, "NoConfig"
 }
 
 // isProfile tells if token is a profile, without describing it
-func isProfile(token string) bool {
-	for _, cfg := range configs() {
+func isProfile(list []sourceConfig, token string) bool {
+	for _, cfg := range list {
 		if slices.Contains(cfg.Profiles, token) {
 			return streams.Get(token) != nil
 		}

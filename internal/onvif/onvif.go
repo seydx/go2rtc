@@ -4,11 +4,14 @@ import (
 	"errors"
 	"html"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
@@ -29,8 +32,6 @@ func Init() {
 
 	log = app.GetLogger("onvif")
 
-	setSourceConfigs(cfg.Mod.VideoSources)
-
 	streams.HandleFunc("onvif", streamOnvif)
 
 	// ONVIF client autodiscovery
@@ -38,7 +39,7 @@ func Init() {
 
 	// ONVIF server: plain HTTP on a listener of its own, off without one. On
 	// the API it was wherever the API was, and the API came along with it.
-	listen(cfg.Mod.Listen)
+	apply(&cfg)
 
 	api.OnConfigSave(reloadConfig)
 }
@@ -50,10 +51,20 @@ const snapshotPath = "/onvif/snapshot"
 type config struct {
 	Mod struct {
 		Listen       string         `yaml:"listen"`
+		Manufacturer string         `yaml:"manufacturer"`
 		VideoSources []sourceConfig `yaml:"video_sources"`
 	} `yaml:"onvif"`
 }
 
+func apply(cfg *config) {
+	setManufacturer(cfg.Mod.Manufacturer)
+	setSourceConfigs(cfg.Mod.VideoSources)
+	listen(cfg.Mod.Listen)
+	listenSources(configs())
+	discover(len(listeners()) > 0)
+}
+
+// listener is the one of the device of all sources
 var listener xnet.Listener
 
 func listen(address string) {
@@ -68,13 +79,72 @@ func listen(address string) {
 
 	log.Info().Str("addr", address).Msg("[onvif] listen")
 
-	go serve(ln)
+	go serve(ln, device{})
 }
 
-func serve(ln net.Listener) {
+// sourceListeners are the ones of the sources with a device of their own, by
+// address: a device serves the source with its address of the moment
+var sourceListeners = map[string]net.Listener{}
+var sourceListenersMu sync.Mutex
+
+func listenSources(list []sourceConfig) {
+	addresses := map[string]bool{}
+	for _, cfg := range list {
+		if cfg.Listen != "" {
+			addresses[cfg.Listen] = true
+		}
+	}
+
+	sourceListenersMu.Lock()
+	defer sourceListenersMu.Unlock()
+
+	// closed first, a source may take the address another one left
+	for address, ln := range sourceListeners {
+		if !addresses[address] {
+			_ = ln.Close()
+			delete(sourceListeners, address)
+		}
+	}
+	for address := range addresses {
+		if sourceListeners[address] != nil {
+			continue
+		}
+		ln, err := net.Listen("tcp", address)
+		if err != nil {
+			log.Error().Err(err).Str("addr", address).Msg("[onvif] listen")
+			continue
+		}
+		log.Info().Str("addr", address).Msg("[onvif] listen")
+		sourceListeners[address] = ln
+		go serve(ln, device{listen: address})
+	}
+}
+
+// listeners are the open ones with their devices, the one of all sources first
+func listeners() (list []deviceListener) {
+	if addr := listener.Addr(); addr != nil {
+		list = append(list, deviceListener{addr: addr})
+	}
+
+	sourceListenersMu.Lock()
+	defer sourceListenersMu.Unlock()
+
+	addresses := slices.Sorted(maps.Keys(sourceListeners))
+	for _, address := range addresses {
+		list = append(list, deviceListener{device: device{listen: address}, addr: sourceListeners[address].Addr()})
+	}
+	return
+}
+
+type deviceListener struct {
+	device device
+	addr   net.Addr
+}
+
+func serve(ln net.Listener, d device) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/onvif/", onvifDeviceService) // the services on all suburls
-	mux.HandleFunc(snapshotPath, onvifSnapshot)
+	mux.HandleFunc("/onvif/", d.service) // the services on all suburls
+	mux.HandleFunc(snapshotPath, d.snapshot)
 
 	server := http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	if err := server.Serve(ln); err != nil && !errors.Is(err, net.ErrClosed) {
@@ -82,11 +152,11 @@ func serve(ln net.Listener) {
 	}
 }
 
-// onvifSnapshot serves the snapshot URI for the streams of the config only:
-// for any other src the snapshot handler creates a stream with it as source,
-// and the ONVIF port has no login.
-func onvifSnapshot(w http.ResponseWriter, r *http.Request) {
-	if streams.Get(r.URL.Query().Get("src")) == nil {
+// snapshot serves the snapshot URIs of the profiles of the device only: for
+// any other src the snapshot handler creates a stream with it as source, and
+// the ONVIF port has no login
+func (d device) snapshot(w http.ResponseWriter, r *http.Request) {
+	if !isProfile(d.sources(), r.URL.Query().Get("src")) {
 		http.Error(w, api.StreamNotFound, http.StatusNotFound)
 		return
 	}
@@ -136,7 +206,7 @@ func streamOnvif(rawURL string) (core.Producer, error) {
 	return streams.GetProducer(uri)
 }
 
-func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
+func (d device) service(w http.ResponseWriter, r *http.Request) {
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -153,6 +223,8 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	const protocol = "http" // the listener of the ONVIF server has no TLS
 
+	sources := d.sources()
+
 	switch operation {
 	case onvif.ServiceGetServiceCapabilities: // important for Hass: SnapshotUri of the media service
 		switch onvif.GetRequestNamespace(b) {
@@ -165,8 +237,13 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-	case onvif.DeviceGetNetworkInterfaces, // important for Hass
-		onvif.DeviceGetSystemDateAndTime, // important for Hass
+	case onvif.DeviceGetNetworkInterfaces: // important for Hass and UniFi Protect: the MAC
+		b = onvif.GetNetworkInterfacesResponse(d.identity(r.Host).mac)
+
+	case onvif.DeviceGetScopes:
+		b = onvif.GetScopesResponse(d.identity(r.Host).scopes)
+
+	case onvif.DeviceGetSystemDateAndTime, // important for Hass
 		onvif.DeviceSetSystemDateAndTime, // return just OK
 		onvif.DeviceGetDiscoveryMode,
 		onvif.DeviceGetDNS,
@@ -174,7 +251,6 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		onvif.DeviceGetNetworkDefaultGateway,
 		onvif.DeviceGetNetworkProtocols,
 		onvif.DeviceGetNTP,
-		onvif.DeviceGetScopes,
 		onvif.MediaGetAudioEncoderConfigurations,
 		onvif.MediaGetAudioSources,
 		onvif.MediaGetAudioSourceConfigurations:
@@ -189,17 +265,18 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	case onvif.DeviceGetDeviceInformation:
 		// important for Hass: SerialNumber (unique server ID)
-		b = onvif.GetDeviceInformationResponse("", "go2rtc", app.Version, r.Host)
+		id := d.identity(r.Host)
+		b = onvif.GetDeviceInformationResponse(getManufacturer(), id.model, app.Version, id.serial)
 
 	case onvif.MediaGetVideoSources:
-		b = onvif.GetVideoSourcesResponse(describe(configs()))
+		b = onvif.GetVideoSourcesResponse(describe(sources))
 
 	case onvif.MediaGetProfiles:
 		// important for Hass: H264 codec, width, height
-		b = onvif.GetProfilesResponse(profilesOf(describe(configs())))
+		b = onvif.GetProfilesResponse(profilesOf(describe(sources)))
 
 	case onvif.MediaGetProfile:
-		profile := findProfile(findToken(b, "ProfileToken"))
+		profile := findProfile(sources, findToken(b, "ProfileToken"))
 		if profile == nil {
 			fault(w, "NoProfile", "no such profile")
 			return
@@ -208,10 +285,10 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	case onvif.MediaGetVideoSourceConfigurations:
 		// important for Happytime Onvif Client
-		b = onvif.GetVideoSourceConfigurationsResponse(describe(configs()))
+		b = onvif.GetVideoSourceConfigurationsResponse(describe(sources))
 
 	case onvif.MediaGetVideoSourceConfiguration:
-		source := findSource(findToken(b, "ConfigurationToken"))
+		source := findSource(sources, findToken(b, "ConfigurationToken"))
 		if source == nil {
 			fault(w, "NoConfig", "no such configuration")
 			return
@@ -219,8 +296,8 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetVideoSourceConfigurationResponse(source)
 
 	case onvif.MediaGetVideoSourceConfigurationOptions:
-		sources, subcode := optionSources(findToken(b, "ConfigurationToken"), findToken(b, "ProfileToken"))
-		if sources == nil {
+		options, subcode := optionSources(sources, findToken(b, "ConfigurationToken"), findToken(b, "ProfileToken"))
+		if options == nil {
 			reason := "no such configuration"
 			if subcode == "NoProfile" {
 				reason = "no such profile"
@@ -228,14 +305,14 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 			fault(w, subcode, reason)
 			return
 		}
-		b = onvif.GetVideoSourceConfigurationOptionsResponse(sources)
+		b = onvif.GetVideoSourceConfigurationOptionsResponse(options)
 
 	case onvif.MediaGetVideoEncoderConfigurations:
-		b = onvif.GetVideoEncoderConfigurationsResponse(profilesOf(describe(configs())))
+		b = onvif.GetVideoEncoderConfigurationsResponse(profilesOf(describe(sources)))
 
 	case onvif.MediaGetVideoEncoderConfiguration:
 		// the token of the encoder configuration is the one of its profile
-		profile := findProfile(findToken(b, "ConfigurationToken"))
+		profile := findProfile(sources, findToken(b, "ConfigurationToken"))
 		if profile == nil {
 			fault(w, "NoConfig", "no such configuration")
 			return
@@ -247,7 +324,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		if token == "" {
 			token = findToken(b, "ConfigurationToken")
 		}
-		profile := findProfile(token)
+		profile := findProfile(sources, token)
 		if profile == nil {
 			fault(w, "NoProfile", "no such profile")
 			return
@@ -255,7 +332,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetVideoEncoderConfigurationOptionsResponse(profile)
 
 	case onvif.MediaGetStreamUri:
-		if !isProfile(findToken(b, "ProfileToken")) {
+		if !isProfile(sources, findToken(b, "ProfileToken")) {
 			fault(w, "NoProfile", "no such profile")
 			return
 		}
@@ -270,7 +347,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetStreamUriResponse(uri)
 
 	case onvif.MediaGetSnapshotUri:
-		if !isProfile(findToken(b, "ProfileToken")) {
+		if !isProfile(sources, findToken(b, "ProfileToken")) {
 			fault(w, "NoProfile", "no such profile")
 			return
 		}

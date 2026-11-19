@@ -142,16 +142,20 @@ func probeInterface(iface net.Interface, ipnet *net.IPNet, timeout time.Duration
 	// binding the source IP alone doesn't pin multicast egress on every platform
 	_ = ipv4.NewPacketConn(conn).SetMulticastInterface(&iface)
 
-	msg := []byte(probeMessage())
+	id := "urn:uuid:" + UUID()
+	sentProbes.Store(id, struct{}{})
+	defer sentProbes.Delete(id)
+
+	msg := []byte(probeMessage(id))
 
 	multicast := &net.UDPAddr{
-		IP:   net.IP{239, 255, 255, 250},
-		Port: 3702,
+		IP:   net.ParseIP(DiscoveryGroup),
+		Port: DiscoveryPort,
 	}
 	_, _ = conn.WriteToUDP(msg, multicast)
 
 	for _, host := range sweepHosts(ipnet) {
-		_, _ = conn.WriteToUDP(msg, &net.UDPAddr{IP: host, Port: 3702})
+		_, _ = conn.WriteToUDP(msg, &net.UDPAddr{IP: host, Port: DiscoveryPort})
 	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(timeout))
@@ -209,14 +213,14 @@ func probeInterface(iface net.Interface, ipnet *net.IPNet, timeout time.Duration
 	return devices
 }
 
-func probeMessage() string {
+func probeMessage(id string) string {
 	// https://www.onvif.org/wp-content/uploads/2016/12/ONVIF_Feature_Discovery_Specification_16.07.pdf
 	// 5.3 Discovery Procedure:
 	return `<?xml version="1.0" ?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
 	<s:Header xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
 		<a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action>
-		<a:MessageID>urn:uuid:` + UUID() + `</a:MessageID>
+		<a:MessageID>` + id + `</a:MessageID>
 		<a:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To>
 	</s:Header>
 	<s:Body>
