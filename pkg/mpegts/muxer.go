@@ -9,10 +9,8 @@ import (
 )
 
 type Muxer struct {
-	// a consumer gets its tracks one by one, while those added before already
-	// send: a track added late must not race them over the map
-	mu  sync.Mutex
 	pes map[uint16]*PES
+	mu  sync.RWMutex // tracks can be added while other tracks are written
 }
 
 func NewMuxer() *Muxer {
@@ -43,17 +41,17 @@ func (m *Muxer) AddTrack(streamType byte) (pid uint16) {
 func (m *Muxer) GetHeader() []byte {
 	bw := bits.NewWriter(nil)
 	m.writePAT(bw)
-	m.mu.Lock()
+	m.mu.RLock()
 	m.writePMT(bw)
-	m.mu.Unlock()
+	m.mu.RUnlock()
 	return bw.Bytes()
 }
 
-// GetPayload - safe to run concurently with different pid and with AddTrack
+// GetPayload - safe to run concurrently with different pid and with AddTrack
 func (m *Muxer) GetPayload(pid uint16, timestamp uint32, payload []byte) []byte {
-	m.mu.Lock()
+	m.mu.RLock()
 	pes := m.pes[pid]
-	m.mu.Unlock()
+	m.mu.RUnlock()
 
 	switch pes.StreamType {
 	case StreamTypeH264, StreamTypeH265:

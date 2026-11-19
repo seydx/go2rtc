@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/aac"
@@ -129,6 +130,9 @@ func (c *Producer) Start() error {
 	}
 }
 
+// probeTimeout bounds the wait for the video and audio headers
+var probeTimeout = 5 * time.Second
+
 func (c *Producer) probe() error {
 	if err := c.readHeader(); err != nil {
 		return err
@@ -153,7 +157,10 @@ func (c *Producer) probe() error {
 	// 3. Sends a video packet in more than 3 seconds
 	waitVideo := true
 	waitAudio := true
-	timeout := time.Now().Add(time.Second * 5)
+	timeout := time.Now().Add(probeTimeout)
+
+	// an AVC header without SPS/PPS, taken if no complete one comes
+	var avcWithoutParams *core.Codec
 
 	for (waitVideo || waitAudio) && time.Now().Before(timeout) {
 		pkt, err := c.readPacket()
@@ -218,6 +225,12 @@ func (c *Producer) probe() error {
 				switch codecID := pkt.Payload[0] & 0b1111; codecID {
 				case CodecH264:
 					codec = h264.ConfigToCodec(pkt.Payload[5:])
+					// Some encoders send an empty AVC header before the real one.
+					// Keep probing until SPS/PPS arrive. See https://github.com/AlexxIT/go2rtc/issues/2687
+					if !strings.Contains(codec.FmtpLine, "sprop-parameter-sets") {
+						avcWithoutParams = codec
+						continue
+					}
 				case CodecHEVC:
 					codec = h265.ConfigToCodec(pkt.Payload[5:])
 				default:
@@ -247,6 +260,15 @@ func (c *Producer) probe() error {
 				waitAudio = false
 			}
 		}
+	}
+
+	// an encoder that sends its parameter sets only in band keeps its video
+	if waitVideo && avcWithoutParams != nil {
+		c.Medias = append(c.Medias, &core.Media{
+			Kind:      core.KindVideo,
+			Direction: core.DirectionRecvonly,
+			Codecs:    []*core.Codec{avcWithoutParams},
+		})
 	}
 
 	return nil
