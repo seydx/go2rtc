@@ -26,6 +26,7 @@ type Conn struct {
 	// public
 
 	Backchannel bool
+	Keyframe    string // KeyframeResetup: video tracks request keyframes with RequestKeyframe
 	Media       string
 	OnClose     func() error
 	PacketSize  uint16
@@ -74,6 +75,8 @@ type Conn struct {
 	timestampOffset map[byte]uint32
 	seqOffset       map[byte]uint16
 	trackMu         sync.Mutex
+
+	keyframeNext atomic.Int64 // earliest time of the next RequestKeyframe
 }
 
 // ErrBackchannelBusy: the camera refused the talk track, typically because

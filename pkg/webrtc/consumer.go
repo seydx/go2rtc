@@ -90,6 +90,8 @@ func (c *Conn) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiv
 		sender.HandleRTP(track)
 	}
 
+	localTrack.setSender(sender)
+
 	c.infoMu.Lock()
 	c.Senders = append(c.Senders, sender)
 	c.infoMu.Unlock()

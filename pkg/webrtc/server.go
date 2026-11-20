@@ -174,7 +174,7 @@ transeivers:
 
 	// start new senders after renegotiation, because connected state already passed
 	if c.pc.ConnectionState() == webrtc.PeerConnectionStateConnected {
-		c.readRTCP()
+		c.startRTCPReaders()
 		for _, sender := range senders {
 			sender.Start()
 		}

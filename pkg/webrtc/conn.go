@@ -12,6 +12,7 @@ import (
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
+	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -219,7 +220,7 @@ func NewConn(pc *webrtc.PeerConnection) *Conn {
 			// Pion's NACK responder only runs while RTCP is read. Without this,
 			// receivers ask for missing RTP packets and never get them, so the
 			// picture freezes until the next keyframe.
-			c.readRTCP()
+			c.startRTCPReaders()
 
 			_, senders := c.Tracks()
 			for _, sender := range senders {
@@ -409,10 +410,10 @@ func (c *Conn) Tracks() ([]*core.Receiver, []*core.Sender) {
 	return c.Receivers, c.Senders
 }
 
-// readRTCP reads the RTCP of each sender nobody reads yet: those of the
-// connection once it is up, then those a renegotiation adds. An ICE transition
-// must not add competing readers.
-func (c *Conn) readRTCP() {
+// startRTCPReaders reads the RTCP of each sender nobody reads yet: those of
+// the connection once it is up, then those a renegotiation adds. An ICE
+// transition must not add competing readers.
+func (c *Conn) startRTCPReaders() {
 	c.rtcpMu.Lock()
 	defer c.rtcpMu.Unlock()
 	for _, sender := range c.pc.GetSenders() {
@@ -427,23 +428,24 @@ func (c *Conn) readRTCP() {
 	}
 }
 
+// readSenderRTCP reads like readRTCP does, OnSenderRTCP gets each packet that
+// parses on top
 func (c *Conn) readSenderRTCP(sender *webrtc.RTPSender) {
-	if c.OnSenderRTCP == nil {
-		buf := make([]byte, 1500)
-		for {
-			if _, _, err := sender.Read(buf); err != nil {
-				return
+	read := sender.Read
+	if onRTCP := c.OnSenderRTCP; onRTCP != nil {
+		read = func(b []byte) (int, interceptor.Attributes, error) {
+			n, attr, err := sender.Read(b)
+			if err == nil {
+				if pkts, err := rtcp.Unmarshal(b[:n]); err == nil {
+					onRTCP(pkts)
+				}
 			}
+			return n, attr, err
 		}
 	}
 
-	for {
-		packets, _, err := sender.ReadRTCP()
-		if err != nil {
-			return
-		}
-		c.OnSenderRTCP(packets)
-	}
+	track, _ := sender.Track().(*Track)
+	readRTCP(read, track)
 }
 
 func requestKeyframes(pc *webrtc.PeerConnection, ssrc webrtc.SSRC, interval time.Duration) {
