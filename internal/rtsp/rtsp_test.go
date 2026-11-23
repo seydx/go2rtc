@@ -158,6 +158,9 @@ func TestHandlerClosesFailedDescribes(t *testing.T) {
 		{"backchannel refused, then without works", "", []string{"", sdpVideo}, true, 2, []int32{1}},
 		{"no talk track, then without", "", []string{sdpVideo}, false, 2, []int32{1, 2}},
 		{"talk track", "", []string{sdpTalk}, true, 1, nil},
+		// other options keep the backchannel on (#2723), only backchannel=0 turns it off
+		{"options without backchannel, no talk track", "#timeout=10", []string{sdpVideo, sdpVideo}, true, 2, []int32{1}},
+		{"options with backchannel=0", "#timeout=10#backchannel=0", []string{sdpVideo}, true, 1, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cam := newTestCamera(t, tc.sdps...)

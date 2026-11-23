@@ -1,6 +1,7 @@
 package mjpeg
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -42,6 +43,9 @@ func HandlerKeyframe(w http.ResponseWriter, r *http.Request) {
 	handlerKeyframe(w, r)
 }
 
+const keyframeTimeout = 30 * time.Second
+
+// noinspection DuplicatedCode
 func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	stream, _ := streams.GetOrPatch(query)
@@ -94,38 +98,27 @@ func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use a channel to detect when the keyframe arrives or the client disconnects.
-	// Without this, cons.WriteTo blocks forever if no keyframe is produced,
-	// leaking the consumer in go2rtc's stream consumer list.
-	type frameResult struct {
-		buf []byte
+	ctx := r.Context() // handle when the client drops the connection
+
+	if timeout := core.ParseDuration(query.Get("timeout"), keyframeTimeout); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
-	ch := make(chan frameResult, 1)
 
 	go func() {
-		once := &core.OnceBuffer{}
-		_, _ = cons.WriteTo(once)
-		ch <- frameResult{buf: once.Buffer()}
+		<-ctx.Done()
+		stream.RemoveConsumer(cons)
 	}()
 
-	select {
-	case res := <-ch:
-		b = res.buf
-	case <-r.Context().Done():
-		// Client disconnected — close the WriteBuffer to unblock WriteTo
-		cons.Stop()
-		stream.RemoveConsumer(cons)
-		return
-	case <-time.After(30 * time.Second):
-		// Safety timeout — prevent leaked consumers if stream never produces a keyframe
-		log.Warn().Msg("[mjpeg] keyframe timeout, removing consumer")
-		cons.Stop()
-		stream.RemoveConsumer(cons)
-		http.Error(w, "keyframe timeout", http.StatusGatewayTimeout)
+	once := &core.OnceBuffer{} // init and first frame
+	_, _ = cons.WriteTo(once)
+	b = once.Buffer()
+
+	if len(b) == 0 {
+		http.Error(w, "can't get frame", http.StatusInternalServerError)
 		return
 	}
-
-	stream.RemoveConsumer(cons)
 
 	switch cons.CodecName() {
 	case core.CodecH264, core.CodecH265:

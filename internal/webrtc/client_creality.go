@@ -56,7 +56,7 @@ func crealityClient(url string) (core.Producer, error) {
 	req.Header.Set("Content-Type", "plain/text")
 
 	// TODO: change http.DefaultClient settings
-	client := http.Client{Timeout: time.Second * 5}
+	client := http.Client{Timeout: 5 * time.Second}
 	defer client.CloseIdleConnections()
 
 	res, err := client.Do(req)

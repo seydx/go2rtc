@@ -29,6 +29,9 @@ func Init() {
 
 var log zerolog.Logger
 
+const keyframeTimeout = 30 * time.Second
+
+// noinspection DuplicatedCode
 func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 	// Chrome 105 does two requests: without Range and with `Range: bytes=0-`
 	ua := r.UserAgent()
@@ -61,34 +64,26 @@ func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	once := &core.OnceBuffer{} // init and first frame
+	ctx := r.Context() // handle when the client drops the connection
 
-	// Run WriteTo in a goroutine: it blocks until the first keyframe, so a client
-	// disconnect (or a stream that never produces a keyframe) would otherwise
-	// block forever and leak the consumer in the stream's consumer list.
-	done := make(chan struct{}, 1)
-	go func() {
-		_, _ = cons.WriteTo(once)
-		done <- struct{}{}
-	}()
-
-	select {
-	case <-done:
-	case <-r.Context().Done():
-		// Client disconnected — Stop() closes the WriteBuffer to unblock WriteTo
-		cons.Stop()
-		stream.RemoveConsumer(cons)
-		return
-	case <-time.After(30 * time.Second):
-		// Safety timeout — prevent leaked consumers if no keyframe is ever produced
-		log.Warn().Msg("[mp4] keyframe timeout, removing consumer")
-		cons.Stop()
-		stream.RemoveConsumer(cons)
-		http.Error(w, "keyframe timeout", http.StatusGatewayTimeout)
-		return
+	if timeout := core.ParseDuration(query.Get("timeout"), keyframeTimeout); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 
-	stream.RemoveConsumer(cons)
+	go func() {
+		<-ctx.Done()
+		stream.RemoveConsumer(cons)
+	}()
+
+	once := &core.OnceBuffer{} // init and first frame
+	_, _ = cons.WriteTo(once)
+
+	if once.Len() == 0 {
+		http.Error(w, "can't get frame", http.StatusInternalServerError)
+		return
+	}
 
 	// Apple Safari won't show frame without length
 	header := w.Header()
@@ -166,8 +161,7 @@ func handlerMP4(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context() // handle when the client drops the connection
 
-	if i := core.Atoi(query.Get("duration")); i > 0 {
-		timeout := time.Second * time.Duration(i)
+	if timeout := core.ParseDuration(query.Get("duration"), 0); timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -175,7 +169,6 @@ func handlerMP4(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		<-ctx.Done()
-		_ = cons.Stop()
 		stream.RemoveConsumer(cons)
 	}()
 

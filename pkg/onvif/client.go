@@ -210,7 +210,7 @@ func (c *Client) Request(url, body string) ([]byte, error) {
 	e := NewEnvelopeWithUser(c.url.User)
 	e.Append(body)
 
-	client := &http.Client{Timeout: time.Second * 5}
+	client := &http.Client{Timeout: 5 * time.Second}
 	res, err := client.Post(url, `application/soap+xml;charset=utf-8`, bytes.NewReader(e.Bytes()))
 	if err != nil {
 		return nil, err
