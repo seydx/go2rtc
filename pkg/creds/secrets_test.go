@@ -20,6 +20,9 @@ func TestString(t *testing.T) {
 	// outside userinfo only the registered secrets are masked
 	s = SecretString("rtsp://192.168.1.123/stream1?user=admin&password=pa$$word")
 	require.Equal(t, "rtsp://192.168.1.123/stream1?user=***&password=***", s)
+
+	s = SecretString("http://192.168.1.123/cgi?user=admin&pwd=pa$$word")
+	require.Equal(t, "http://192.168.1.123/cgi?user=***&pwd=***", s)
 }
 
 // The log chain of internal/app: a secret in a line split the event, the
@@ -41,4 +44,18 @@ func TestSecretWriterKeepsEventWhole(t *testing.T) {
 	var event map[string]any
 	require.NoError(t, json.Unmarshal(memory.Bytes(), &event))
 	require.Equal(t, "start producer url=http://cam/snap?token=***&ch=1", event["message"])
+}
+
+func TestStripUserinfo(t *testing.T) {
+	s := `streams:
+  test:
+    - ffmpeg:rtsp://username:password@10.1.2.3:554/stream1
+    - ffmpeg:rtsp://10.1.2.3:554/stream1@#video=copy
+`
+	s = SecretString(s)
+	require.Equal(t, `streams:
+  test:
+    - ffmpeg:rtsp://***@10.1.2.3:554/stream1
+    - ffmpeg:rtsp://10.1.2.3:554/stream1@#video=copy
+`, s)
 }

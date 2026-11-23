@@ -26,7 +26,7 @@ type Conn struct {
 	// public
 
 	Backchannel bool
-	Keyframe    string // KeyframeResetup: video tracks request keyframes with RequestKeyframe
+	Keyframe    string // how video tracks request keyframes
 	Media       string
 	OnClose     func() error
 	PacketSize  uint16
@@ -77,6 +77,9 @@ type Conn struct {
 	trackMu         sync.Mutex
 
 	keyframeNext atomic.Int64 // earliest time of the next RequestKeyframe
+	keyframeChan atomic.Uint32
+	keyframeSSRC atomic.Uint32
+	firSeq       atomic.Uint32
 }
 
 // ErrBackchannelBusy: the camera refused the talk track, typically because
@@ -337,6 +340,9 @@ func (c *Conn) handleRawPacket(channel byte, buf []byte) error {
 		if err := packet.Unmarshal(buf); err != nil {
 			return err
 		}
+		if c.keyframeChan.Load() == uint32(channel) {
+			c.keyframeSSRC.Store(packet.SSRC)
+		}
 
 		receivers, _ := c.tracks()
 
@@ -427,6 +433,12 @@ func (c *Conn) WriteRequest(req *tcp.Request) error {
 
 	if c.session != "" {
 		req.Header.Set("Session", c.session)
+	}
+
+	// ONVIF Streaming Specification 5.3.1 requires the backchannel tag in
+	// requests that use this feature.
+	if c.Backchannel {
+		req.Header.Set("Require", "www.onvif.org/ver20/backchannel")
 	}
 
 	if req.Body != nil {

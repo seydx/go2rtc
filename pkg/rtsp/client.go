@@ -209,10 +209,6 @@ func (c *Conn) Describe() error {
 		},
 	}
 
-	if c.Backchannel {
-		req.Header.Set("Require", "www.onvif.org/ver20/backchannel")
-	}
-
 	if c.UserAgent != "" {
 		// this camera will answer with 401 on DESCRIBE without User-Agent
 		// https://github.com/AlexxIT/go2rtc/issues/235
@@ -350,18 +346,17 @@ func (c *Conn) SetupMedia(media *core.Media) (byte, error) {
 
 	res, err := c.Do(req)
 	if err != nil {
-		// some Dahua/Amcrest cameras fail here because two simultaneous
-		// backchannel connections
 		if c.Backchannel {
+			// the camera refused the talk track, the session goes on without it
+			if media.Direction == core.DirectionSendonly {
+				return 0, fmt.Errorf("%w: %w", ErrBackchannelBusy, err)
+			}
+
+			// some Dahua/Amcrest cameras fail here because two simultaneous
+			// backchannel connections
 			c.Backchannel = false
 			if err = c.Reconnect(); err != nil {
 				return 0, err
-			}
-			// The new session has no backchannel, so the talk media itself
-			// can't be set up in it. Reconnect already restored the other
-			// tracks, the session stays playable without talk.
-			if media.Direction == core.DirectionSendonly {
-				return 0, ErrBackchannelBusy
 			}
 			return c.SetupMedia(media)
 		}

@@ -194,7 +194,7 @@ func (n *Node) RequestKeyframe() {
 		n.mu.Unlock()
 
 		if handler != nil {
-			handler()
+			go handler()
 			return
 		}
 		n = parent

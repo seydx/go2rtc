@@ -206,6 +206,7 @@ func (s *Stream) addConsumer(cons core.Consumer, consMedias []*core.Media, isNew
 						continue
 					}
 					bound = append(bound, track)
+					requestKeyframe(bestFitProd, consMedia, track)
 
 				case core.DirectionSendonly:
 					if !bestFitProd.backchannelEnabled {
@@ -458,6 +459,7 @@ func (s *Stream) addConsumer(cons core.Consumer, consMedias []*core.Media, isNew
 						continue
 					}
 					bound = append(bound, track)
+					requestKeyframe(pInfo.prod, consMedia, track)
 
 					prodStarts = append(prodStarts, pInfo.prod)
 					matchedConsMedias[consMediaIdx] = true
@@ -577,6 +579,7 @@ func (s *Stream) addConsumer(cons core.Consumer, consMedias []*core.Media, isNew
 							continue
 						}
 						bound = append(bound, track)
+						requestKeyframe(pInfo.prod, consMedia, track)
 
 					case core.DirectionSendonly:
 						log.Trace().Msgf("[streams] match cons=%d => prod=%d media=%s (backchannel)", consN, pInfo.prodN, prodMedia.Kind)
@@ -806,4 +809,12 @@ func mediaCovered(consMedia *core.Media, collected []producerInfo) bool {
 		}
 	}
 	return false
+}
+
+// requestKeyframe asks a running source for a keyframe for a new video
+// consumer. Only sources that support it act on it (ex. RTSP with #keyframe=).
+func requestKeyframe(prod *Producer, consMedia *core.Media, track *core.Receiver) {
+	if consMedia.Kind == core.KindVideo && prod.started() {
+		track.RequestKeyframe()
+	}
 }

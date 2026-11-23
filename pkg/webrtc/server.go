@@ -215,6 +215,7 @@ func (c *Conn) GetCompleteAnswer(candidates []string, filter func(*webrtc.ICECan
 			quiet = time.AfterFunc(gatherQuiet, finish)
 		}
 	})
+	defer c.pc.OnICECandidate(nil)
 
 	answer, err := c.GetAnswer()
 	if err != nil {

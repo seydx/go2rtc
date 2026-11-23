@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,14 +38,18 @@ type fakeCamera struct {
 	played   chan int    // session index after PLAY
 	rtp      chan []byte // backchannel RTP received by the camera
 
-	rejectSetup int // session index that fails on SETUP, -1 for none
+	rejectSetup int  // session index that fails on SETUP, -1 for none
+	rejectTalk  int  // session index that fails on SETUP of the talk track, -1 for none
+	strictTalk  bool // SETUP of the talk track without the Require header fails (2N)
+
+	requires [][]string // the Require header of each request, by session
 }
 
 func newFakeCamera(t *testing.T) *fakeCamera {
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.Nil(t, err)
 
-	cam := &fakeCamera{ln: ln, played: make(chan int, 10), rtp: make(chan []byte, 10), rejectSetup: -1}
+	cam := &fakeCamera{ln: ln, played: make(chan int, 10), rtp: make(chan []byte, 10), rejectSetup: -1, rejectTalk: -1}
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -53,6 +58,7 @@ func newFakeCamera(t *testing.T) *fakeCamera {
 			}
 			cam.mu.Lock()
 			cam.sessions = append(cam.sessions, nil)
+			cam.requires = append(cam.requires, nil)
 			i := len(cam.sessions) - 1
 			cam.mu.Unlock()
 			go cam.handle(conn, i)
@@ -97,12 +103,17 @@ func (cam *fakeCamera) handle(conn net.Conn, i int) {
 
 		cam.mu.Lock()
 		cam.sessions[i] = append(cam.sessions[i], req.Method)
+		cam.requires[i] = append(cam.requires[i], req.Header.Get("Require"))
 		cam.mu.Unlock()
+
+		talk := req.Method == MethodSetup && strings.HasSuffix(req.URL.Path, "trackID=1")
 
 		res := "RTSP/1.0 200 OK\r\nCSeq: " + req.Header.Get("CSeq") + "\r\n"
 		switch {
-		case req.Method == MethodSetup && i == cam.rejectSetup:
+		case req.Method == MethodSetup && i == cam.rejectSetup, talk && i == cam.rejectTalk:
 			res = "RTSP/1.0 453 Not Enough Bandwidth\r\nCSeq: " + req.Header.Get("CSeq") + "\r\n\r\n"
+		case talk && cam.strictTalk && req.Header.Get("Require") == "":
+			res = "RTSP/1.0 400 Bad Request\r\nCSeq: " + req.Header.Get("CSeq") + "\r\n\r\n"
 		case req.Method == MethodDescribe:
 			res += "Content-Type: application/sdp\r\nContent-Length: " +
 				strconv.Itoa(len(backchannelSDP)) + "\r\n\r\n" + backchannelSDP
@@ -248,4 +259,104 @@ func TestBackchannelFallback(t *testing.T) {
 		return fmt.Sprint(cam.methods(1)) == fmt.Sprint([]string{MethodDescribe, MethodSetup, MethodTeardown}) &&
 			fmt.Sprint(cam.methods(0)) == fmt.Sprint([]string{MethodDescribe, MethodSetup, MethodPlay, MethodTeardown})
 	}, time.Second, 10*time.Millisecond, "%v %v", cam.methods(0), cam.methods(1))
+}
+
+func (cam *fakeCamera) requireHeaders(i int) []string {
+	cam.mu.Lock()
+	defer cam.mu.Unlock()
+	return append([]string{}, cam.requires[i]...)
+}
+
+// A 2N intercom refuses the SETUP of the talk track without the Require
+// header (#2725), the ONVIF example sends it with each request of the session.
+// Talk while playing took the separate session, failed and reconnected the
+// main one, and the intercom got no audio.
+func TestBackchannelRequireOnEveryRequest(t *testing.T) {
+	cam := newFakeCamera(t)
+	cam.strictTalk = true
+	defer cam.ln.Close()
+
+	client := NewClient("rtsp://" + cam.ln.Addr().String() + "/stream")
+	client.Backchannel = true
+
+	require.Nil(t, client.Dial())
+	require.Nil(t, client.Describe())
+
+	video, backchannel := client.GetMedias()[0], client.GetMedias()[1]
+	_, err := client.GetTrack(video, video.Codecs[0])
+	require.Nil(t, err)
+
+	// the session ends before the test, nothing of it reads on afterwards
+	ended := make(chan struct{})
+	go func() {
+		_ = client.Start()
+		close(ended)
+	}()
+	defer func() {
+		_ = client.Stop()
+		<-ended
+	}()
+
+	require.Equal(t, 0, waitPlayed(t, cam))
+
+	mic := core.NewReceiver(
+		&core.Media{Kind: core.KindAudio, Direction: core.DirectionRecvonly},
+		&core.Codec{Name: core.CodecPCMU, ClockRate: 8000, PayloadType: 0},
+	)
+	require.Nil(t, client.AddTrack(backchannel, backchannel.Codecs[0], mic))
+
+	// the talk session plays, the main one is not reconnected
+	require.Equal(t, 1, waitPlayed(t, cam))
+	require.NotNil(t, client.backchannel.Load())
+	require.Equal(t, []string{MethodDescribe, MethodSetup, MethodPlay}, cam.methods(1))
+
+	const tag = "www.onvif.org/ver20/backchannel"
+	for i := range 2 {
+		for _, header := range cam.requireHeaders(i) {
+			require.Equal(t, tag, header, "session %d: %v", i, cam.methods(i))
+		}
+	}
+}
+
+// A camera with a single talk slot refuses the talk track while another
+// client holds it. The session goes on without talk: it is neither dialed
+// again nor stripped of its other tracks.
+func TestBackchannelBusyKeepsTheSession(t *testing.T) {
+	cam := newFakeCamera(t)
+	cam.rejectTalk = 0
+	defer cam.ln.Close()
+
+	client := NewClient("rtsp://" + cam.ln.Addr().String() + "/stream")
+	client.Backchannel = true
+
+	require.Nil(t, client.Dial())
+	require.Nil(t, client.Describe())
+
+	video, backchannel := client.GetMedias()[0], client.GetMedias()[1]
+	_, err := client.GetTrack(video, video.Codecs[0])
+	require.Nil(t, err)
+
+	mic := core.NewReceiver(
+		&core.Media{Kind: core.KindAudio, Direction: core.DirectionRecvonly},
+		&core.Codec{Name: core.CodecPCMU, ClockRate: 8000, PayloadType: 0},
+	)
+	err = client.AddTrack(backchannel, backchannel.Codecs[0], mic)
+	require.ErrorIs(t, err, ErrBackchannelBusy)
+
+	// the session ends before the test, nothing of it reads on afterwards
+	ended := make(chan struct{})
+	go func() {
+		_ = client.Start()
+		close(ended)
+	}()
+	defer func() {
+		_ = client.Stop()
+		<-ended
+	}()
+
+	require.Equal(t, 0, waitPlayed(t, cam), "the session plays as it is")
+	require.Equal(t, []string{MethodDescribe, MethodSetup, MethodSetup, MethodPlay}, cam.methods(0))
+	cam.mu.Lock()
+	defer cam.mu.Unlock()
+	require.Len(t, cam.sessions, 1, "no second dial")
 }

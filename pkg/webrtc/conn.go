@@ -12,7 +12,6 @@ import (
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
-	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -428,24 +427,13 @@ func (c *Conn) startRTCPReaders() {
 	}
 }
 
-// readSenderRTCP reads like readRTCP does, OnSenderRTCP gets each packet that
-// parses on top
+// readSenderRTCP reads the RTCP of the sender, OnSenderRTCP gets it on top
 func (c *Conn) readSenderRTCP(sender *webrtc.RTPSender) {
-	read := sender.Read
 	if onRTCP := c.OnSenderRTCP; onRTCP != nil {
-		read = func(b []byte) (int, interceptor.Attributes, error) {
-			n, attr, err := sender.Read(b)
-			if err == nil {
-				if pkts, err := rtcp.Unmarshal(b[:n]); err == nil {
-					onRTCP(pkts)
-				}
-			}
-			return n, attr, err
-		}
+		readRTCP(sender, onRTCP)
+	} else {
+		readRTCP(sender)
 	}
-
-	track, _ := sender.Track().(*Track)
-	readRTCP(read, track)
 }
 
 func requestKeyframes(pc *webrtc.PeerConnection, ssrc webrtc.SSRC, interval time.Duration) {

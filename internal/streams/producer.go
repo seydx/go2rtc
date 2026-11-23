@@ -72,6 +72,12 @@ type Producer struct {
 
 const SourceTemplate = "{input}"
 
+func (p *Producer) started() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.state == stateStart
+}
+
 func NewProducer(source string) *Producer {
 	// Credentials written literally into the source (ex. client_secret=...) are
 	// masked from logs and the API. Registered here, not at dial, because the
