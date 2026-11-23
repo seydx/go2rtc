@@ -30,6 +30,7 @@ var names = []string{
 	"camera",
 	"Front Door",
 	"nest_enterprises%2Fproject%2Fdevices%2Fdevice-camera",
+	"camera_FD%3A53", // Home Assistant
 	"garage/main",
 	"Tom & Jerry",
 	"x<y>",

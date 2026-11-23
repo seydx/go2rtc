@@ -214,7 +214,12 @@ stop:
 	require.Eventually(t, func() bool {
 		return len(cam.methods(1)) == 4
 	}, time.Second, 10*time.Millisecond, fmt.Sprint(cam.methods(1)))
-	require.Equal(t, MethodTeardown, cam.methods(0)[len(cam.methods(0))-1])
+	// the camera reads each session in its own goroutine, the main one may
+	// record its TEARDOWN after the backchannel one
+	require.Eventually(t, func() bool {
+		methods := cam.methods(0)
+		return methods[len(methods)-1] == MethodTeardown
+	}, time.Second, 10*time.Millisecond, fmt.Sprint(cam.methods(0)))
 	require.Equal(t, MethodTeardown, cam.methods(1)[3])
 }
 

@@ -2,6 +2,7 @@ package rtsp
 
 import (
 	"testing"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,34 @@ func TestURLParse(t *testing.T) {
 	u, err = urlParse(base)
 	assert.NoError(t, err)
 	assert.Equal(t, "192.168.253.220:1935", u.Host)
+}
+
+// A bare IPv6 host keeps its address and the credentials before it.
+func TestURLParseBareIPv6(t *testing.T) {
+	u, err := urlParse("rtsp://admin:secret@::ffff:192.168.1.123/onvif/profile.1/")
+	assert.NoError(t, err)
+	assert.Equal(t, "[::ffff:192.168.1.123]", u.Host)
+	assert.Equal(t, "admin:secret", u.User.String())
+
+	u, err = urlParse("rtsp://fe80::abcd/stream1")
+	assert.NoError(t, err)
+	assert.Equal(t, "fe80::abcd", u.Hostname())
+	assert.Equal(t, "/stream1", u.Path)
+}
+
+// A broken host from the camera is an error, not an endless retry.
+func TestURLParseBrokenHost(t *testing.T) {
+	done := make(chan error, 1)
+	go func() {
+		_, err := urlParse("rtsp://:abc/x:y")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		assert.Error(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("urlParse must not retry forever")
+	}
 }
 
 func TestBugSDP1(t *testing.T) {
