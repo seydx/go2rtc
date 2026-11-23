@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -120,4 +121,42 @@ func TestKeyframeClientGone(t *testing.T) {
 	}
 	require.Eventually(t, func() bool { return consumerCount(t, "jpeggone") == 0 },
 		time.Second, 10*time.Millisecond, "the viewer must be removed from the stream")
+}
+
+// The cache keeps a frame per output, a thumbnail doesn't get the frame of
+// another size (#2392). Options that don't change the frame share it.
+func TestKeyframeCachePerOutput(t *testing.T) {
+	newSilentStream(t, "jpegcache")
+
+	key := cacheKey(url.Values{"src": {"jpegcache"}, "w": {"640"}})
+	cacheMu.Lock()
+	if cache == nil {
+		cache = map[string]cacheEntry{}
+	}
+	cache[key] = cacheEntry{payload: []byte("frame640"), timestamp: time.Now()}
+	cacheMu.Unlock()
+	t.Cleanup(func() {
+		cacheMu.Lock()
+		delete(cache, key)
+		cacheMu.Unlock()
+	})
+
+	get := func(query string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", "/api/frame.jpeg?src=jpegcache&cache=1m&timeout=100ms"+query, nil)
+		HandlerKeyframe(w, r)
+		return w
+	}
+
+	// the same output: from the cache
+	for _, query := range []string{"&w=640", "&w=640&gop=0&hw=auto"} {
+		w := get(query)
+		require.Equal(t, http.StatusOK, w.Code, query)
+		require.Equal(t, "frame640", w.Body.String(), query)
+	}
+
+	// another output: from the camera, which has no frame
+	for _, query := range []string{"", "&w=320", "&w=640&rotate=90"} {
+		require.Equal(t, http.StatusInternalServerError, get(query).Code, query)
+	}
 }
