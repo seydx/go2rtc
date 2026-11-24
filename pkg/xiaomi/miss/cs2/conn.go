@@ -42,6 +42,8 @@ func newConn(conn net.Conn, isTCP bool) *Conn {
 	}
 }
 
+const dataChannels = 4
+
 type Conn struct {
 	net.Conn
 	isTCP bool
@@ -50,7 +52,7 @@ type Conn struct {
 	seqCh0 uint16
 	seqCh3 uint16
 
-	channels [4]*dataChannel
+	channels [dataChannels]*dataChannel
 
 	cmdMu  sync.Mutex
 	cmdAck func()
@@ -145,15 +147,15 @@ func (c *Conn) worker() {
 		// 6  0000  seq
 		switch buf[1] {
 		case msgDrw:
-			// skip a datagram without data or for a channel nobody reads
+			// skip a datagram that ends before its seq
 			if n < 8 {
 				continue
 			}
 			ch := buf[5]
-			if int(ch) >= len(c.channels) || c.channels[ch] == nil {
-				continue
+			var channel *dataChannel
+			if ch < dataChannels {
+				channel = c.channels[ch]
 			}
-			channel := c.channels[ch]
 
 			if c.isTCP {
 				// For TCP we should send ping every second to keep connection alive.
@@ -163,16 +165,20 @@ func (c *Conn) worker() {
 					keepaliveTS = now.Add(time.Second)
 				}
 
-				err = channel.Push(buf[8:n])
+				if channel != nil {
+					err = channel.Push(buf[8:n])
+				}
 			} else {
 				var pushed int
 
 				seqHI, seqLO := buf[6], buf[7]
-				seq := uint16(seqHI)<<8 | uint16(seqLO)
-				pushed, err = channel.PushSeq(seq, buf[8:n])
+				if channel != nil {
+					seq := uint16(seqHI)<<8 | uint16(seqLO)
+					pushed, err = channel.PushSeq(seq, buf[8:n])
+				}
 
-				if pushed >= 0 {
-					// For UDP we should send ACK.
+				if pushed >= 0 || channel == nil {
+					// For UDP we should send ACK. Even for an unknown channel.
 					ack := []byte{magic, msgDrwAck, 0, 6, magicDrw, ch, 0, 1, seqHI, seqLO}
 					_, _ = c.Conn.Write(ack)
 				}

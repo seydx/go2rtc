@@ -25,13 +25,22 @@ func TestVideoTrackH264Codes(t *testing.T) {
 		0, 0, 0, 1, 0x65, 0x88, 0x84, // IDR
 	})
 
-	for _, code := range []byte{0x02, 0x12, 0x42, 0x52} {
+	// 0x22 and 0x62 aren't seen yet, they have the codec of H.264 too
+	for _, code := range []byte{0x02, 0x12, 0x42, 0x52, 0x22, 0x62} {
 		c := &Producer{}
 		c.addVideoTrack(code, frame)
 		require.NotNil(t, c.video, "media code %#x", code)
 		require.Equal(t, core.CodecH264, c.video.Codec.Name)
 		require.Contains(t, c.video.Codec.FmtpLine, "profile-level-id=42001f")
 		require.Len(t, c.Medias, 1)
+	}
+
+	// another codec in the low nibble isn't taken for H.264
+	for _, code := range []byte{0x01, 0x14, 0x50, 0x0A} {
+		c := &Producer{}
+		c.addVideoTrack(code, frame)
+		require.Nil(t, c.video, "media code %#x", code)
+		require.Empty(t, c.Medias)
 	}
 }
 

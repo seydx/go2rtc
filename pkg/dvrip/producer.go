@@ -171,8 +171,8 @@ func (c *Producer) probe() error {
 func (c *Producer) addVideoTrack(mediaCode byte, payload []byte) {
 	var codec *core.Codec
 	// the low nibble is the codec, the high one differs between streams
-	switch mediaCode {
-	case 0x02, 0x12, 0x42, 0x52:
+	switch mediaCode & 0x0F {
+	case 2: // known values 0x02, 0x12, 0x42, 0x52
 		codec = &core.Codec{
 			Name:        core.CodecH264,
 			ClockRate:   90000,
@@ -180,7 +180,7 @@ func (c *Producer) addVideoTrack(mediaCode byte, payload []byte) {
 			FmtpLine:    h264.GetFmtpLine(payload),
 		}
 
-	case 0x03, 0x13, 0x43, 0x53:
+	case 3: // known values 0x03, 0x13, 0x43, 0x53
 		// checks each unit's size against what is left of the frame
 		codec = h265.AVCCToCodec(payload)
 	default:
