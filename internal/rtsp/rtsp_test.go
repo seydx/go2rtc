@@ -177,6 +177,27 @@ func TestHandlerClosesFailedDescribes(t *testing.T) {
 	}
 }
 
+// #keepalive reaches the connection: an interval in s, or -1 for none (#2746)
+func TestHandlerKeepalive(t *testing.T) {
+	for _, tc := range []struct {
+		query     string
+		keepalive int
+	}{
+		{"", 0},
+		{"#keepalive=10", 10},
+		{"#keepalive=-1", -1},
+		{"#backchannel=0#keepalive=-1", -1},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			cam := newTestCamera(t, sdpVideo, sdpVideo)
+			prod, err := rtspHandler(cam.url(tc.query))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = prod.(io.Closer).Close() })
+			require.Equal(t, tc.keepalive, prod.(*rtsp.Conn).Keepalive)
+		})
+	}
+}
+
 // stubCamera is a source with an H264 track that sends nothing
 type stubCamera struct {
 	core.Connection

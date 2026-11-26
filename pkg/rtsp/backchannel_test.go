@@ -42,6 +42,8 @@ type fakeCamera struct {
 	rejectTalk  int  // session index that fails on SETUP of the talk track, -1 for none
 	strictTalk  bool // SETUP of the talk track without the Require header fails (2N)
 
+	sessionTimeout int // in the Session header of SETUP, 60 for 0
+
 	requires [][]string // the Require header of each request, by session
 }
 
@@ -118,7 +120,11 @@ func (cam *fakeCamera) handle(conn net.Conn, i int) {
 			res += "Content-Type: application/sdp\r\nContent-Length: " +
 				strconv.Itoa(len(backchannelSDP)) + "\r\n\r\n" + backchannelSDP
 		case req.Method == MethodSetup:
-			res += "Session: " + strconv.Itoa(i+1) + ";timeout=60\r\nTransport: " +
+			timeout := cam.sessionTimeout
+			if timeout == 0 {
+				timeout = 60
+			}
+			res += "Session: " + strconv.Itoa(i+1) + ";timeout=" + strconv.Itoa(timeout) + "\r\nTransport: " +
 				req.Header.Get("Transport") + "\r\n\r\n"
 		default:
 			res += "\r\n"

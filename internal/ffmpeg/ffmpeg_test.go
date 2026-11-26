@@ -96,6 +96,15 @@ func TestParseArgsDevice(t *testing.T) {
 			expect: `ffmpeg -hide_banner {input} -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
 		},
 		{
+			name:   "[DEVICE] video and audio by their unique ID or serial number",
+			source: "device?video=uid:0x8020000005ac8514&audio=serial:ABCD1234&framerate=30",
+			// new ffmpeg builds take the IDs as options, the input names no device
+			inputs: map[string]string{
+				"darwin": `-f avfoundation -video_device_id uid:0x8020000005ac8514 -framerate 30 -audio_device_id serial:ABCD1234 -i ":"`,
+			},
+			expect: `ffmpeg -hide_banner {input} -c copy -user_agent ffmpeg/go2rtc -rtsp_transport tcp -f rtsp {output}`,
+		},
+		{
 			name:   "[DEVICE] audio from ALSA",
 			source: "device?audio=default&channels=1",
 			inputs: map[string]string{
