@@ -137,3 +137,21 @@ func TestProbeStopsAtABodyThatDoesNotDecrypt(t *testing.T) {
 	_, err := c.probeVideo()
 	require.ErrorIs(t, err, invalid)
 }
+
+// A negative Content-Length ends the probe as it ends Handle: make panicked
+// on it and took the process down.
+func TestProbeNegativeContentLength(t *testing.T) {
+	clientSide, camSide := net.Pipe()
+	c := &Client{conn1: clientSide, decrypt: func(b []byte) ([]byte, error) { return b, nil }, session1: "test"}
+	t.Cleanup(func() { _ = c.Close(); _ = camSide.Close() })
+
+	go func() {
+		_, _ = camSide.Write([]byte(testBoundary + "Content-Type: video/mp2t\r\nContent-Length: -1\r\n\r\n\r\n"))
+	}()
+
+	_ = clientSide.SetReadDeadline(time.Now().Add(time.Second))
+	c.rd = core.NewReadBuffer(c.conn1)
+	var err error
+	require.NotPanics(t, func() { _, err = c.probeVideo() })
+	require.EqualError(t, err, "negative Content-Length")
+}

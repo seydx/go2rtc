@@ -144,10 +144,10 @@ func (c *Conn) Stop() (err error) {
 // (e.g. ffmpeg outputting RTSP to localhost) kill their subprocess.
 //
 // Note: we deliberately do NOT send a RTSP TEARDOWN here. WriteRequest
-// is not synchronized against the parallel handleKeepalive goroutine;
-// concurrent writes would interleave bytes on the TCP socket and leave
-// the camera in a confused state. Modern cameras detect TCP close and
-// clean up their session within a few seconds anyway.
+// counts its CSeq without a lock against the parallel handleKeepalive
+// goroutine: the camera could get two requests with one CSeq. Modern
+// cameras detect TCP close and clean up their session within a few seconds
+// anyway.
 func (c *Conn) Interrupt() error {
 	if c.OnClose != nil {
 		_ = c.OnClose()

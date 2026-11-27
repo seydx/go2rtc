@@ -256,6 +256,9 @@ func (c *Client) probeVideo() (*core.Codec, error) {
 		if err != nil {
 			return nil, err
 		}
+		if size < 0 {
+			return nil, errors.New("negative Content-Length")
+		}
 
 		body := make([]byte, size)
 		if _, err = io.ReadFull(p, body); err != nil {
@@ -313,7 +316,9 @@ func (c *Client) Handle() error {
 			return err
 		}
 
-		c.recv += size
+		if size < 0 {
+			return errors.New("negative Content-Length")
+		}
 
 		// a part whose body exceeds its Content-Length must not be read with
 		// a drained buffer: multipart returns (0, nil) then and the loop
@@ -323,6 +328,8 @@ func (c *Client) Handle() error {
 		if _, err = io.ReadFull(p, body); err != nil {
 			return err
 		}
+
+		c.recv += size
 
 		body, err = c.decrypt(body)
 		if err != nil {

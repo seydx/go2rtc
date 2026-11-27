@@ -81,6 +81,7 @@ type DTLSConn struct {
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	mu      sync.RWMutex
+	stateMu sync.Mutex
 
 	// recvDeadline limits AVRecvFrameData, in Unix nanoseconds; zero means none.
 	recvDeadline atomic.Int64
@@ -204,7 +205,9 @@ func (c *DTLSConn) AVClientStart(timeout time.Duration) error {
 				return io.EOF
 			}
 			if len(data) >= 32 && binary.LittleEndian.Uint16(data) == magicAVLoginResp {
+				c.mu.Lock()
 				c.hasTwoWayStreaming = data[31] == 1
+				c.mu.Unlock()
 
 				ack := c.msgACK()
 				conn.Write(ack)
@@ -479,6 +482,8 @@ func (c *DTLSConn) WriteAndWaitIOCtrl(payload []byte, match func([]byte) bool, t
 }
 
 func (c *DTLSConn) HasTwoWayStreaming() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.hasTwoWayStreaming
 }
 
@@ -536,6 +541,8 @@ func (c *DTLSConn) getClientConn() *dtls.Conn {
 }
 
 func (c *DTLSConn) Error() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.err != nil {
 		return c.err
 	}
@@ -651,7 +658,10 @@ func (c *DTLSConn) worker() {
 
 		n, err := conn.Read(buf)
 		if err != nil {
+			c.mu.Lock()
 			c.err = err
+			c.mu.Unlock()
+			c.cancel()
 			return
 		}
 
@@ -676,6 +686,7 @@ func (c *DTLSConn) worker() {
 		case protoVersion:
 			// Seq-Tracking
 			if len(data) >= 8 {
+				c.stateMu.Lock()
 				seq := binary.LittleEndian.Uint16(data[4:])
 				if !c.rxSeqInit {
 					c.rxSeqInit = true
@@ -683,6 +694,7 @@ func (c *DTLSConn) worker() {
 				if seq > c.rxSeqEnd || c.rxSeqEnd == 0xffff {
 					c.rxSeqEnd = seq
 				}
+				c.stateMu.Unlock()
 			}
 			c.queue(c.rawCmd, data)
 
@@ -972,6 +984,9 @@ func (c *DTLSConn) msgTxDataCC51(payload []byte, channel byte) []byte {
 }
 
 func (c *DTLSConn) msgACK() []byte {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+
 	c.ackFlags++
 	b := make([]byte, 24)
 	binary.LittleEndian.PutUint16(b[0:], magicACK)     // 0x0009
@@ -1003,6 +1018,9 @@ func (c *DTLSConn) msgKeepalive(incoming []byte) []byte {
 }
 
 func (c *DTLSConn) msgIOCtrl(payload []byte) []byte {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+
 	b := make([]byte, 40+len(payload))
 	binary.LittleEndian.PutUint16(b, protoVersion)     // magic
 	binary.LittleEndian.PutUint16(b[2:], protoVersion) // version

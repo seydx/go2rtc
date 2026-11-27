@@ -246,9 +246,7 @@ func (c *Conn) packetWriter(codec *core.Codec, channel, payloadType uint8) core.
 func (c *Conn) writeInterleavedData(data []byte) error {
 	if c.Transport != "udp" {
 		conn, _ := c.netIO()
-		_ = conn.SetWriteDeadline(time.Now().Add(c.handshakeTimeout()))
-		_, err := conn.Write(data)
-		return err
+		return c.write(conn, data)
 	}
 
 	for len(data) >= 4 && data[0] == '$' {
