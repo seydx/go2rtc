@@ -8,6 +8,11 @@ import (
 func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
 	core.Assert(media.Direction == core.DirectionRecvonly)
 
+	// The remote may answer one media with several payload types and then
+	// transmit on one that is not the first (Google Nest/SDM, #2480). The
+	// consumers that attached before the first RTP packet are wired to the
+	// receiver of the first one: a compatible codec (same name, clock rate
+	// and channels) reuses it. Its codec stays, the consumers read it.
 	receivers, senders := c.Tracks()
 	for _, track := range receivers {
 		if track.Codec.Match(codec) {

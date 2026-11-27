@@ -54,36 +54,29 @@ func TestRequestSendsCSeqFirst(t *testing.T) {
 	}
 }
 
-// setTimeout changes the package Timeout for one test. Left behind, 1ms
-// deadlines broke every later test of the package that reads a request.
-func setTimeout(t *testing.T, d time.Duration) {
-	old := Timeout
-	t.Cleanup(func() { Timeout = old })
-	Timeout = d
-}
-
 func TestTimeout(t *testing.T) {
-	setTimeout(t, time.Millisecond)
+	t.Parallel()
 
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.Nil(t, err)
+	defer ln.Close()
 
 	client := NewClient("rtsp://" + ln.Addr().String() + "/stream")
 	client.Backchannel = true
 
 	err = client.Dial()
 	require.Nil(t, err)
+	defer client.Close()
+
+	peer, err := ln.Accept()
+	require.Nil(t, err)
+	defer peer.Close()
 
 	err = client.Describe()
 	require.ErrorIs(t, err, os.ErrDeadlineExceeded)
 }
 
 func TestHandshakeTimeout(t *testing.T) {
-	oldTimeout := Timeout
-	defer func() { Timeout = oldTimeout }()
-
-	Timeout = 5 * time.Second
-
 	conn := &Conn{}
 	require.Equal(t, 5*time.Second, conn.handshakeTimeout())
 
@@ -96,8 +89,6 @@ func TestHandshakeTimeout(t *testing.T) {
 }
 
 func TestMissedControl(t *testing.T) {
-	setTimeout(t, 5*time.Second)
-
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.Nil(t, err)
 	defer ln.Close()
@@ -182,10 +173,6 @@ Session: 1
 // waits up to 10s; with only the package default (5s) go2rtc abandons the
 // DESCRIBE before the bridge answers, and the stream never comes up.
 func TestHandshakeCoversSlowDescribe(t *testing.T) {
-	oldTimeout := Timeout
-	defer func() { Timeout = oldTimeout }()
-	Timeout = 5 * time.Second // package default, as in production
-
 	// a bridge that answers DESCRIBE only after 7s (params not ready yet)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.Nil(t, err)

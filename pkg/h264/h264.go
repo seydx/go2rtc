@@ -140,30 +140,27 @@ func trimStartCode(b []byte) []byte {
 	return b
 }
 
-// GetFmtpLine from SPS+PPS+IFrame in AVC format
+// GetFmtpLine builds an fmtp line from the parameter sets in an AVCC payload.
 func GetFmtpLine(avc []byte) string {
 	s := "packetization-mode=1"
 
-	for len(avc) >= 5 { // minimum: 4 bytes length + 1 byte NAL header
-		size := 4 + int(binary.BigEndian.Uint32(avc))
+	for len(avc) >= 5 {
+		size := int(binary.BigEndian.Uint32(avc))
+		if size <= 0 || size > len(avc)-4 {
+			break
+		}
 
 		switch NALUType(avc) {
 		case NALUTypeSPS:
-			if len(avc) >= 8 && size <= len(avc) { // need at least profile-level-id
+			if size >= 4 {
 				s += ";profile-level-id=" + hex.EncodeToString(avc[5:8])
-				s += ";sprop-parameter-sets=" + base64.StdEncoding.EncodeToString(avc[4:size])
+				s += ";sprop-parameter-sets=" + base64.StdEncoding.EncodeToString(avc[4:4+size])
 			}
 		case NALUTypePPS:
-			if size <= len(avc) {
-				s += "," + base64.StdEncoding.EncodeToString(avc[4:size])
-			}
+			s += "," + base64.StdEncoding.EncodeToString(avc[4:4+size])
 		}
 
-		if size < len(avc) {
-			avc = avc[size:]
-		} else {
-			return s
-		}
+		avc = avc[4+size:]
 	}
 	return s
 }

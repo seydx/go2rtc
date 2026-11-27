@@ -131,9 +131,15 @@ func (s *atomicState) Load() State   { return State(s.v.Load()) }
 func (s *atomicState) Store(v State) { s.v.Store(uint32(v)) }
 
 func (c *Conn) Handle() (err error) {
+	c.stateMu.Lock()
+	mode := c.mode
+	keepalive := c.keepalive
+	udpConns := c.udpConn
+	c.stateMu.Unlock()
+
 	var timeout time.Duration
 
-	switch c.mode {
+	switch mode {
 	case core.ModeActiveProducer:
 		var keepaliveDT time.Duration
 
@@ -142,8 +148,8 @@ func (c *Conn) Handle() (err error) {
 			keepaliveDT = time.Duration(c.Keepalive) * time.Second
 		case c.Keepalive < 0:
 			// disabled: some servers break when they get a request while streaming
-		case c.keepalive > 5:
-			keepaliveDT = time.Duration(c.keepalive-5) * time.Second
+		case keepalive > 5:
+			keepaliveDT = time.Duration(keepalive-5) * time.Second
 		default:
 			keepaliveDT = 25 * time.Second
 		}
@@ -180,11 +186,11 @@ func (c *Conn) Handle() (err error) {
 		timeout = time.Second * 60
 
 	default:
-		return fmt.Errorf("wrong RTSP conn mode: %d", c.mode)
+		return fmt.Errorf("wrong RTSP conn mode: %d", mode)
 	}
 
-	for i := 0; i < len(c.udpConn); i++ {
-		go c.handleUDPData(byte(i))
+	for i, udpConn := range udpConns {
+		go c.handleUDPData(udpConn, byte(i))
 	}
 
 	// The loop stays on the connection it started with. A reconnect (SETUP
@@ -194,7 +200,7 @@ func (c *Conn) Handle() (err error) {
 	// loop gets an error and ends, and Start plays the new session.
 	conn, reader := c.netIO()
 
-	for c.getState() != StateNone {
+	for c.state.Load() != StateNone {
 		ts := time.Now()
 
 		_ = conn.SetReadDeadline(ts.Add(timeout))
@@ -222,9 +228,8 @@ func (c *Conn) handleKeepalive(ctx context.Context, d time.Duration) {
 	}
 }
 
-func (c *Conn) handleUDPData(channel byte) {
+func (c *Conn) handleUDPData(conn *net.UDPConn, channel byte) {
 	// TODO: handle timeouts and drop TCP connection after any error
-	conn := c.udpConn[channel]
 
 	for {
 		// TP-Link Tapo camera has crazy 10000 bytes packet size
@@ -420,7 +425,7 @@ func (c *Conn) handshakeTimeout() time.Duration {
 	if c.HandshakeTimeout > 0 {
 		return time.Second * time.Duration(c.HandshakeTimeout)
 	}
-	return Timeout
+	return core.ConnDeadline
 }
 
 func (c *Conn) WriteRequest(req *tcp.Request) error {

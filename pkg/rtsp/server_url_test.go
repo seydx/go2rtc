@@ -43,7 +43,6 @@ func TestServerTakesStreamFromDescribe(t *testing.T) {
 			require.NoError(t, client.SetDeadline(time.Now().Add(5*time.Second)))
 
 			c := NewServer(server)
-			c.HandshakeTimeout = 5
 
 			// the URL the handler of the server reads for the stream name, it
 			// attaches the connection once, as the stream does

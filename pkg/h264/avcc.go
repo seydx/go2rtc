@@ -46,7 +46,7 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 			}
 			repaired = true
 		}
-		if NALUType(payload) == NALUTypeIFrame && !ContainsParameterSets(payload) {
+		if len(ps) > 0 && NALUType(payload) == NALUTypeIFrame && !ContainsParameterSets(payload) {
 			payload = Join(ps, payload)
 			repaired = true
 		}

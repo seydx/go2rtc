@@ -108,12 +108,6 @@ func (c *Conn) Start() (err error) {
 	}
 }
 
-func (c *Conn) getState() State {
-	c.stateMu.Lock()
-	defer c.stateMu.Unlock()
-	return c.state.Load()
-}
-
 func (c *Conn) Stop() (err error) {
 	receivers, senders := c.tracks()
 	for _, receiver := range receivers {

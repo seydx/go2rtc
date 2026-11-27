@@ -47,11 +47,11 @@ type fakeCamera struct {
 	requires [][]string // the Require header of each request, by session
 }
 
-func newFakeCamera(t *testing.T) *fakeCamera {
+func newFakeCamera(t *testing.T, rejectSetup int) *fakeCamera {
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.Nil(t, err)
 
-	cam := &fakeCamera{ln: ln, played: make(chan int, 10), rtp: make(chan []byte, 10), rejectSetup: -1, rejectTalk: -1}
+	cam := &fakeCamera{ln: ln, played: make(chan int, 10), rtp: make(chan []byte, 10), rejectSetup: rejectSetup, rejectTalk: -1}
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -152,9 +152,7 @@ func waitPlayed(t *testing.T, cam *fakeCamera) int {
 // TestBackchannelSeparateSession - adding a backchannel to a playing stream
 // should not reconnect the main session (no glitch in the video)
 func TestBackchannelSeparateSession(t *testing.T) {
-	Timeout = 5 * time.Second
-
-	cam := newFakeCamera(t)
+	cam := newFakeCamera(t, -1)
 	defer cam.ln.Close()
 
 	client := NewClient("rtsp://" + cam.ln.Addr().String() + "/stream")
@@ -218,7 +216,7 @@ stop:
 	// 4. Stop closes both sessions
 	require.Nil(t, client.Stop())
 	require.Eventually(t, func() bool {
-		return len(cam.methods(1)) == 4
+		return len(cam.methods(0)) == 4 && len(cam.methods(1)) == 4
 	}, time.Second, 10*time.Millisecond, fmt.Sprint(cam.methods(1)))
 	// the camera reads each session in its own goroutine, the main one may
 	// record its TEARDOWN after the backchannel one
@@ -232,10 +230,7 @@ stop:
 // TestBackchannelFallback - camera doesn't accept a separate backchannel session,
 // so the main session is reconnected with the backchannel (old behaviour)
 func TestBackchannelFallback(t *testing.T) {
-	Timeout = 5 * time.Second
-
-	cam := newFakeCamera(t)
-	cam.rejectSetup = 1
+	cam := newFakeCamera(t, 1)
 	defer cam.ln.Close()
 
 	client := NewClient("rtsp://" + cam.ln.Addr().String() + "/stream")
@@ -283,7 +278,7 @@ func (cam *fakeCamera) requireHeaders(i int) []string {
 // Talk while playing took the separate session, failed and reconnected the
 // main one, and the intercom got no audio.
 func TestBackchannelRequireOnEveryRequest(t *testing.T) {
-	cam := newFakeCamera(t)
+	cam := newFakeCamera(t, -1)
 	cam.strictTalk = true
 	defer cam.ln.Close()
 
@@ -333,7 +328,7 @@ func TestBackchannelRequireOnEveryRequest(t *testing.T) {
 // client holds it. The session goes on without talk: it is neither dialed
 // again nor stripped of its other tracks.
 func TestBackchannelBusyKeepsTheSession(t *testing.T) {
-	cam := newFakeCamera(t)
+	cam := newFakeCamera(t, -1)
 	cam.rejectTalk = 0
 	defer cam.ln.Close()
 

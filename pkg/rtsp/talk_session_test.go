@@ -3,7 +3,6 @@ package rtsp
 import (
 	"net"
 	"testing"
-	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/stretchr/testify/require"
@@ -13,9 +12,7 @@ import (
 // playing stream goes with it: a camera with a single backchannel (Dahua)
 // would refuse it to the new session while the old one holds it.
 func TestInterruptEndsTheTalkSession(t *testing.T) {
-	Timeout = 5 * time.Second
-
-	cam := newFakeCamera(t)
+	cam := newFakeCamera(t, -1)
 	defer cam.ln.Close()
 
 	client := NewClient("rtsp://" + cam.ln.Addr().String() + "/stream")

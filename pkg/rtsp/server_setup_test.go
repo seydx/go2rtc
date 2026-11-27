@@ -20,7 +20,6 @@ func TestServerKeepsSessionAcrossSetups(t *testing.T) {
 	require.NoError(t, client.SetDeadline(time.Now().Add(5*time.Second)))
 
 	c := NewServer(server)
-	c.HandshakeTimeout = 5
 	c.mode = core.ModePassiveConsumer
 	for _, codec := range []*core.Codec{
 		{Name: core.CodecH264, ClockRate: 90000, PayloadType: 96},
@@ -89,7 +88,6 @@ func TestServerTakesTCPFromTransportList(t *testing.T) {
 			require.NoError(t, client.SetDeadline(time.Now().Add(5*time.Second)))
 
 			c := NewServer(server)
-			c.HandshakeTimeout = 5
 			c.mode = tc.mode
 			if tc.mode == core.ModePassiveConsumer {
 				codec := &core.Codec{Name: core.CodecH264, ClockRate: 90000, PayloadType: 96}

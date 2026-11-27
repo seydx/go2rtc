@@ -22,7 +22,6 @@ func playingServer(t *testing.T) *playing {
 	server, client := net.Pipe()
 
 	c := NewServer(server)
-	c.HandshakeTimeout = 5 // independent of the package Timeout other tests shrink
 
 	media := &core.Media{Kind: core.KindAudio, Direction: core.DirectionSendonly}
 	codec := &core.Codec{Name: core.CodecPCMA, ClockRate: 8000, PayloadType: 8}

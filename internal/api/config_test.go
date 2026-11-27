@@ -10,7 +10,7 @@ import (
 
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // A module takes over from the config the API saved what it can change

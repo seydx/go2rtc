@@ -15,7 +15,7 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/webrtc"
 	"github.com/gorilla/websocket"
-	"github.com/pion/stun/v3"
+	"github.com/pion/stun/v4"
 	pion "github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 )

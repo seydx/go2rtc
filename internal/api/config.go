@@ -8,7 +8,7 @@ import (
 
 	"github.com/AlexxIT/go2rtc/internal/app"
 	"github.com/AlexxIT/go2rtc/pkg/creds"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 func configHandler(w http.ResponseWriter, r *http.Request) {

@@ -23,7 +23,7 @@ func TestKeepalive(t *testing.T) {
 		{"disabled", 6, -1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cam := newFakeCamera(t)
+			cam := newFakeCamera(t, -1)
 			cam.sessionTimeout = tc.sessionTimeout
 			defer cam.ln.Close()
 
