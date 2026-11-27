@@ -121,7 +121,6 @@ func TestWorkerSkipsBrokenDatagrams(t *testing.T) {
 		{"one byte", []byte{magic}},
 		{"drw without seq", []byte{magic, msgDrw, 0, 2, magicDrw, 2}},
 		{"drw on channel 1", drw(1, 0, media("lost"))},
-		{"drw on channel 3", drw(3, 0, media("lost"))},
 		{"drw on channel 255", drw(255, 0, media("lost"))},
 	} {
 		for _, isTCP := range []bool{false, true} {
@@ -132,6 +131,22 @@ func TestWorkerSkipsBrokenDatagrams(t *testing.T) {
 				require.Equal(t, []string{"one", "two"}, payloads)
 			})
 		}
+	}
+}
+
+// A hub (mxiang.camera.mwc10) sends the audio of its cameras on channel 3. It
+// is read with the video, in the order it comes.
+func TestWorkerHubAudioOnChannel3(t *testing.T) {
+	for _, isTCP := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tcp=%t", isTCP), func(t *testing.T) {
+			c := receive(isTCP,
+				drw(2, 0, media("video1")), drw(3, 0, media("audio1")),
+				drw(2, 1, media("video2")), drw(3, 1, media("audio2")),
+			)
+			payloads, err := readPayloads(t, c)
+			require.ErrorIs(t, err, io.EOF)
+			require.Equal(t, []string{"video1", "audio1", "video2", "audio2"}, payloads)
+		})
 	}
 }
 
@@ -315,8 +330,8 @@ func drwFrame(ch byte, seq uint16, payload []byte) []byte {
 func TestWorkerUnknownChannelUDP(t *testing.T) {
 	_, conn := newTestConn(t, false)
 
-	// Channel 3 is nil in channels, channel 9 is out of its bounds.
-	for i, ch := range []byte{3, 9} {
+	// Channel 1 is nil in channels, channel 9 is out of its bounds.
+	for i, ch := range []byte{1, 9} {
 		writeConn(t, conn, drwFrame(ch, 1, []byte("junk")))
 
 		if i == 0 {
@@ -338,7 +353,7 @@ func TestWorkerUnknownChannelUDP(t *testing.T) {
 func TestWorkerUnknownChannelTCP(t *testing.T) {
 	_, conn := newTestConn(t, true)
 
-	writeConn(t, conn, drwFrame(3, 1, []byte("junk")))
+	writeConn(t, conn, drwFrame(1, 1, []byte("junk")))
 
 	// TCP worker sends a keepalive PING before dropping the packet.
 	require.Equal(t, []byte{magic, msgPing, 0, 0}, readConn(t, conn, 4))

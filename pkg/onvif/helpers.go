@@ -321,14 +321,13 @@ func SanitizeQuery(rawURL string) string {
 // path passes through; anything empty, relative, or unparseable falls back to
 // defPath.
 func GetPath(urlOrPath, defPath string) string {
-	if urlOrPath == "" {
-		return defPath
-	}
-	if urlOrPath[0] == '/' {
+	if strings.HasPrefix(urlOrPath, "/") {
 		return urlOrPath
 	}
-	if u, err := url.Parse(urlOrPath); err == nil && u.Path != "" && u.Path[0] == '/' {
-		return u.Path
+	if u, err := url.Parse(urlOrPath); err == nil {
+		if strings.HasPrefix(u.Path, "/") {
+			return u.Path
+		}
 	}
 	return defPath
 }

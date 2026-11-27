@@ -11,6 +11,7 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/aac"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
+	"github.com/AlexxIT/go2rtc/pkg/h264/annexb"
 	"github.com/AlexxIT/go2rtc/pkg/h265"
 	"github.com/pion/rtp"
 )
@@ -95,8 +96,14 @@ func (c *Producer) Start() error {
 			c.audio.WriteRTP(pkt)
 
 		case TagVideo:
-			// an empty tag, or one too short for its header, has no frame
-			if c.video == nil || len(pkt.Payload) < 5 {
+			if c.video == nil {
+				continue
+			}
+
+			// Standard video tags include a composition time and enhanced tags a FourCC.
+			headerSize := 5
+
+			if len(pkt.Payload) < headerSize {
 				continue
 			}
 
@@ -104,24 +111,32 @@ func (c *Producer) Start() error {
 				switch packetType := pkt.Payload[0] & 0b1111; packetType {
 				case PacketTypeCodedFrames:
 					// frame type 4b, packet type 4b, fourCC 32b, composition time 24b
-					if len(pkt.Payload) < 8 {
-						continue
-					}
-					pkt.Payload = pkt.Payload[8:]
+					headerSize = 8
 				case PacketTypeCodedFramesX:
 					// frame type 4b, packet type 4b, fourCC 32b
-					pkt.Payload = pkt.Payload[5:]
+					//headerSize = 5
 				default:
 					continue
 				}
 			} else {
-				switch pkt.Payload[1] {
-				case PacketTypeAVCNALU:
-					// frame type 4b, codecID 4b, avc packet type 8b, composition time 24b
-					pkt.Payload = pkt.Payload[5:]
-				default:
+				if pkt.Payload[1] != PacketTypeAVCNALU {
 					continue
 				}
+				//headerSize = 5
+			}
+
+			if len(pkt.Payload) <= headerSize {
+				continue
+			}
+
+			naluHeaderSize := 1
+			if c.video.Codec.Name == core.CodecH265 {
+				naluHeaderSize = 2
+			}
+
+			pkt.Payload = annexb.NormalizeAVCC(pkt.Payload[headerSize:], naluHeaderSize)
+			if len(pkt.Payload) == 0 {
+				continue
 			}
 
 			pkt.Timestamp = TimeToRTP(pkt.Timestamp, c.video.Codec.ClockRate)

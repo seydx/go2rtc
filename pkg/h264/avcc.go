@@ -1,3 +1,4 @@
+// Package h264 - AVCC format related functions
 package h264
 
 import (
@@ -7,6 +8,7 @@ import (
 	"encoding/hex"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/h264/annexb"
 	"github.com/pion/rtp"
 )
 
@@ -17,16 +19,17 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	fmtpLineUpdated := false
 
 	return func(packet *rtp.Packet) {
-		// without length prefixes that add up there is no telling where a NAL
-		// unit ends: a damaged unit, everything below would read past it
-		if !validAVCC(packet.Payload) {
+		// Empty NAL units are left out. Without length prefixes that add up
+		// there is no telling where a NAL unit ends: such a payload is dropped.
+		payload := annexb.NormalizeAVCC(packet.Payload, 1)
+		if len(payload) == 0 {
 			return
 		}
 
 		// Update FmtpLine from first keyframe with parameter sets
 		// This fixes MSE aspect ratio issues when RTSP cameras don't send SPS/PPS in DESCRIBE
-		if !fmtpLineUpdated && ContainsParameterSets(packet.Payload) {
-			newFmtpLine := GetFmtpLine(packet.Payload)
+		if !fmtpLineUpdated && ContainsParameterSets(payload) {
+			newFmtpLine := GetFmtpLine(payload)
 			if newFmtpLine != "" {
 				codec.SetFmtp(newFmtpLine)
 				// Re-extract SPS/PPS with updated FmtpLine
@@ -36,49 +39,29 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 			fmtpLineUpdated = true
 		}
 
-		payload := packet.Payload
-		repaired := false
-
-		// this can happen for FLV from FFmpeg
+		// FLV from FFmpeg can start with a SEI NAL unit.
 		if NALUType(payload) == NALUTypeSEI {
-			if payload = payload[4+binary.BigEndian.Uint32(payload):]; len(payload) == 0 {
+			size := annexb.AVCCNALUSize(payload)
+			if size == 0 || size >= len(payload) {
 				return // SEI only, no picture
 			}
-			repaired = true
-		}
-		if len(ps) > 0 && NALUType(payload) == NALUTypeIFrame && !ContainsParameterSets(payload) {
-			payload = Join(ps, payload)
-			repaired = true
+			payload = payload[size:]
 		}
 
-		if repaired {
-			// the packet is shared with the other consumers of the track and
-			// with the GOP cache
+		prependPS := len(ps) > 0 && NALUType(payload) == NALUTypeIFrame && !ContainsParameterSets(payload)
+		if prependPS {
+			payload = Join(ps, payload)
+		}
+
+		// the packet is shared with the other consumers of the track and
+		// with the GOP cache
+		if prependPS || len(payload) != len(packet.Payload) {
 			clone := *packet
 			clone.Payload = payload
 			packet = &clone
 		}
 		handler(packet)
 	}
-}
-
-// validAVCC reports whether avcc consists of NAL units whose length prefixes
-// add up to its size, each one with at least the NAL header
-func validAVCC(avcc []byte) bool {
-	if len(avcc) == 0 {
-		return false
-	}
-	for len(avcc) > 0 {
-		if len(avcc) < 5 {
-			return false
-		}
-		size := binary.BigEndian.Uint32(avcc)
-		if size == 0 || uint64(size) > uint64(len(avcc)-4) {
-			return false
-		}
-		avcc = avcc[4+size:]
-	}
-	return true
 }
 
 func JoinNALU(nalus ...[]byte) (avcc []byte) {
@@ -105,33 +88,26 @@ func JoinNALU(nalus ...[]byte) (avcc []byte) {
 
 func SplitNALU(avcc []byte) [][]byte {
 	var nals [][]byte
-	for {
-		// get AVC length
-		size := int(binary.BigEndian.Uint32(avcc)) + 4
-
-		// check if multiple items in one packet
-		if size < len(avcc) {
-			nals = append(nals, avcc[:size])
-			avcc = avcc[size:]
-		} else {
-			nals = append(nals, avcc)
+	for len(avcc) > 0 {
+		size := annexb.AVCCNALUSize(avcc)
+		if size == 0 {
 			break
 		}
+		nals = append(nals, avcc[:size])
+		avcc = avcc[size:]
 	}
 	return nals
 }
 
 func NALUTypes(avcc []byte) []byte {
 	var types []byte
-	for len(avcc) >= 5 { // minimum: 4 bytes length + 1 byte NAL header
-		types = append(types, NALUType(avcc))
-
-		size := 4 + int(binary.BigEndian.Uint32(avcc))
-		if size < len(avcc) {
-			avcc = avcc[size:]
-		} else {
+	for len(avcc) > 0 {
+		size := annexb.AVCCNALUSize(avcc)
+		if size == 0 {
 			break
 		}
+		types = append(types, NALUType(avcc))
+		avcc = avcc[size:]
 	}
 	return types
 }
@@ -139,31 +115,25 @@ func NALUTypes(avcc []byte) []byte {
 func AVCCToCodec(avcc []byte) *core.Codec {
 	buf := bytes.NewBufferString("packetization-mode=1")
 
-	for {
-		n := len(avcc)
-		if n < 5 { // minimum: 4 bytes length + 1 byte NAL header
+	for len(avcc) > 0 {
+		size := annexb.AVCCNALUSize(avcc)
+		if size == 0 {
 			break
 		}
 
-		size := 4 + int(binary.BigEndian.Uint32(avcc))
-		if n < size {
-			break
-		}
-
-		switch NALUType(avcc) {
-		case NALUTypeSPS:
-			// profile-level-id is read from the three bytes after the NAL
-			// header, so a truncated SPS carries no usable parameter set
-			if size < 8 {
-				break
+		if size > 4 {
+			switch NALUType(avcc) {
+			case NALUTypeSPS:
+				if size >= 8 {
+					buf.WriteString(";profile-level-id=")
+					buf.WriteString(hex.EncodeToString(avcc[5:8]))
+					buf.WriteString(";sprop-parameter-sets=")
+					buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
+				}
+			case NALUTypePPS:
+				buf.WriteString(",")
+				buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
 			}
-			buf.WriteString(";profile-level-id=")
-			buf.WriteString(hex.EncodeToString(avcc[5:8]))
-			buf.WriteString(";sprop-parameter-sets=")
-			buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
-		case NALUTypePPS:
-			buf.WriteString(",")
-			buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
 		}
 
 		avcc = avcc[size:]

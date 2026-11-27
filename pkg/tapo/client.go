@@ -42,7 +42,7 @@ type Client struct {
 	// rd reads conn1 and replays what the codec probe already consumed
 	rd *core.ReadBuffer
 
-	decrypt func(b []byte) []byte
+	decrypt func(b []byte) ([]byte, error)
 
 	session1 string
 	session2 string
@@ -169,14 +169,9 @@ func (c *Client) newDectypter(res *http.Response, brand, username, password stri
 
 	cbc := cipher.NewCBCDecrypter(block, iv[:]).(cbcMode)
 
-	c.decrypt = func(b []byte) []byte {
-		// a part cut off mid-stream (camera closing the connection) arrives
-		// short or as garbage; clamping beats panicking inside the worker
-		if tail := len(b) % aes.BlockSize; tail != 0 {
-			b = b[:len(b)-tail]
-		}
-		if len(b) == 0 {
-			return b
+	c.decrypt = func(b []byte) ([]byte, error) {
+		if len(b) == 0 || len(b)%aes.BlockSize != 0 {
+			return nil, errors.New("tapo: invalid encryption")
 		}
 
 		// restore IV
@@ -188,10 +183,11 @@ func (c *Client) newDectypter(res *http.Response, brand, username, password stri
 		// unpad, only when the pad byte is a plausible PKCS#7 value
 		n := len(b)
 		padSize := int(b[n-1])
-		if padSize < 1 || padSize > aes.BlockSize || padSize > n {
-			return b
+		if padSize == 0 || padSize > aes.BlockSize || padSize > n {
+			return nil, errors.New("tapo: invalid encryption")
 		}
-		return b[:n-padSize]
+
+		return b[:n-padSize], nil
 	}
 }
 
@@ -266,7 +262,10 @@ func (c *Client) probeVideo() (*core.Codec, error) {
 			return nil, err
 		}
 
-		bytesRd := bytes.NewReader(c.decrypt(body))
+		if body, err = c.decrypt(body); err != nil {
+			return nil, err
+		}
+		bytesRd := bytes.NewReader(body)
 		for {
 			pkt, err2 := demux.ReadPacket(bytesRd)
 			if pkt == nil || err2 == io.EOF {
@@ -325,7 +324,10 @@ func (c *Client) Handle() error {
 			return err
 		}
 
-		body = c.decrypt(body)
+		body, err = c.decrypt(body)
+		if err != nil {
+			return err
+		}
 		bytesRd := bytes.NewReader(body)
 
 		for {

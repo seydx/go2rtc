@@ -1,12 +1,13 @@
+// Package h265 - AVCC format related functions
 package h265
 
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/binary"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
+	"github.com/AlexxIT/go2rtc/pkg/h264/annexb"
 	"github.com/pion/rtp"
 )
 
@@ -17,17 +18,17 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 	fmtpLineUpdated := false
 
 	return func(packet *rtp.Packet) {
-		// AVCC needs a four byte length prefix followed by a NALU header.
-		// Some cameras intermittently emit empty or truncated video packets,
-		// and NALUType would read past the end of them.
-		if packet == nil || len(packet.Payload) < 5 {
+		// Empty NAL units are left out. Without length prefixes that add up
+		// there is no telling where a NAL unit ends: such a payload is dropped.
+		payload := annexb.NormalizeAVCC(packet.Payload, h265NaluHeaderSize)
+		if len(payload) == 0 {
 			return
 		}
 
 		// Update FmtpLine from first keyframe with parameter sets
 		// This fixes MSE aspect ratio issues when RTSP cameras don't send VPS/SPS/PPS in DESCRIBE
-		if !fmtpLineUpdated && ContainsParameterSets(packet.Payload) {
-			newFmtpLine := GetFmtpLine(packet.Payload)
+		if !fmtpLineUpdated && ContainsParameterSets(payload) {
+			newFmtpLine := GetFmtpLine(payload)
 			if newFmtpLine != "" {
 				codec.SetFmtp(newFmtpLine)
 				// Re-extract VPS/SPS/PPS with updated FmtpLine
@@ -37,53 +38,50 @@ func RepairAVCC(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 			fmtpLineUpdated = true
 		}
 
-		switch NALUType(packet.Payload) {
-		case NALUTypeIFrame, NALUTypeIFrame2, NALUTypeIFrame3:
-			hasPS := ContainsParameterSets(packet.Payload)
-
-			if !hasPS {
-				clone := *packet
-				clone.Payload = h264.Join(ps, packet.Payload)
-				handler(&clone)
-			} else {
-				handler(packet)
-			}
-		default:
-			handler(packet)
+		prependPS := len(ps) > 0 && isIRAP(NALUType(payload)) && !ContainsParameterSets(payload)
+		if prependPS {
+			payload = h264.Join(ps, payload)
 		}
+
+		// the packet is shared with the other consumers of the track and
+		// with the GOP cache
+		if prependPS || len(payload) != len(packet.Payload) {
+			clone := *packet
+			clone.Payload = payload
+			packet = &clone
+		}
+		handler(packet)
 	}
 }
 
 func AVCCToCodec(avcc []byte) *core.Codec {
 	buf := bytes.NewBufferString("profile-id=1")
 
-	for {
-		n := len(avcc)
-		if n < 5 { // minimum: 4 bytes length + 1 byte NAL header
+	for len(avcc) > 0 {
+		size := annexb.AVCCNALUSize(avcc)
+		if size == 0 {
 			break
 		}
 
-		naluSize := binary.BigEndian.Uint32(avcc)
-		// An H.265 NAL unit has a two byte header. Reject zero length,
-		// one byte and over declared units before reading their type.
-		if naluSize < 2 || naluSize > uint32(n-4) {
+		if size >= 4+h265NaluHeaderSize {
+			switch NALUType(avcc) {
+			case NALUTypeVPS:
+				buf.WriteString(";sprop-vps=")
+				buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
+			case NALUTypeSPS:
+				buf.WriteString(";sprop-sps=")
+				buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
+			case NALUTypePPS:
+				buf.WriteString(";sprop-pps=")
+				buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
+			}
+		}
+
+		if size < len(avcc) {
+			avcc = avcc[size:]
+		} else {
 			break
 		}
-		size := 4 + int(naluSize)
-
-		switch NALUType(avcc) {
-		case NALUTypeVPS:
-			buf.WriteString(";sprop-vps=")
-			buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
-		case NALUTypeSPS:
-			buf.WriteString(";sprop-sps=")
-			buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
-		case NALUTypePPS:
-			buf.WriteString(";sprop-pps=")
-			buf.WriteString(base64.StdEncoding.EncodeToString(avcc[4:size]))
-		}
-
-		avcc = avcc[size:]
 	}
 
 	return &core.Codec{

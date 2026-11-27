@@ -181,7 +181,6 @@ func (c *Producer) addVideoTrack(mediaCode byte, payload []byte) {
 		}
 
 	case 3: // known values 0x03, 0x13, 0x43, 0x53
-		// checks each unit's size against what is left of the frame
 		codec = h265.AVCCToCodec(payload)
 	default:
 		println("[DVRIP] unsupported video codec:", mediaCode)

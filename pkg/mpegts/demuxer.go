@@ -157,8 +157,16 @@ const (
 // into the packet
 func (d *Demuxer) readPSIHeader(tableID byte) bool {
 	// https://en.wikipedia.org/wiki/Program-specific_information#Table_Sections
+	if d.pos >= PacketSize {
+		return false
+	}
+	// The pointer skips bytes before the section; reject it if even the header
+	// would extend beyond this TS packet.
 	pointer := d.readByte() // Pointer field
-	d.skip(pointer)         // Pointer filler bytes
+	if int(pointer) > PacketSize-int(d.pos)-3 {
+		return false
+	}
+	d.skip(pointer) // Pointer filler bytes
 
 	if d.readByte() != tableID { // Table ID
 		return false
@@ -187,6 +195,11 @@ func (d *Demuxer) readPSIHeader(tableID byte) bool {
 // ReadPAT (Program Association Table)
 func (d *Demuxer) readPAT() {
 	// https://en.wikipedia.org/wiki/Program-specific_information#PAT_(Program_Association_Table)
+	// The final four bytes are the CRC; everything before it must be whole PAT entries.
+	if left := d.left(); (left-4)%4 != 0 {
+		return
+	}
+
 	const CRCSize = 4
 	for d.left() > CRCSize {
 		num := d.readBits(16)   // Program num
@@ -213,12 +226,17 @@ type stream struct {
 // add up
 func (d *Demuxer) readPMT() ([]stream, bool) {
 	// https://en.wikipedia.org/wiki/Program-specific_information#PMT_(Program_map_specific_data)
+	// PCR PID and program info length, then the CRC32
+	if d.left() < 8 {
+		return nil, false
+	}
+
 	_ = d.readBits(3)      // Reserved bits
 	_ = d.readBits(13)     // PCR PID
 	_ = d.readBits(4)      // Reserved bits
 	_ = d.readBits(2)      // Program info length unused bits
 	size := d.readBits(10) // Program info length
-	if size > uint32(d.left()) {
+	if size > uint32(d.left()-4) {
 		return nil, false
 	}
 	d.skip(byte(size))
@@ -227,13 +245,17 @@ func (d *Demuxer) readPMT() ([]stream, bool) {
 
 	const CRCSize = 4
 	for d.left() > CRCSize {
+		// a stream entry, then the CRC32
+		if d.left() < 5+CRCSize {
+			return nil, false
+		}
 		streamType := d.readByte() // Stream type
 		_ = d.readBits(3)          // Reserved bits
 		pid := d.readBits16(13)    // Elementary PID
 		_ = d.readBits(4)          // Reserved bits
 		_ = d.readBits(2)          // ES Info length unused bits
 		size = d.readBits(10)      // ES Info length
-		if size > uint32(d.left()) {
+		if size > uint32(d.left()-CRCSize) {
 			return nil, false
 		}
 		info := d.readBytes(byte(size))

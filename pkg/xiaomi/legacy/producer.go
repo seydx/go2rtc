@@ -56,10 +56,21 @@ type Producer struct {
 
 const codecXiaobaiPCMA = 1 // chuangmi.camera.xiaobai
 
-func probe(client *Client) ([]*core.Media, error) {
+// packetReader is the part of Client that probe needs (so it can be tested).
+type packetReader interface {
+	SetDeadline(t time.Time) error
+	ReadPacket() (hdr, payload []byte, err error)
+}
+
+// probeAudioWait bounds how long we wait for audio after finding video.
+// Some cameras have no audio, while others start sending it a little later.
+const probeAudioWait = 2 * time.Second
+
+func probe(client packetReader) ([]*core.Media, error) {
 	_ = client.SetDeadline(time.Now().Add(15 * time.Second))
 
 	var vcodec, acodec *core.Codec
+	var audioDeadlineSet bool
 
 	for {
 		// 0   5000      codec
@@ -73,6 +84,11 @@ func probe(client *Client) ([]*core.Media, error) {
 		// 18  0000
 		hdr, payload, err := client.ReadPacket()
 		if err != nil {
+			// Video is enough to start a video-only stream. This also lets
+			// cameras without audio finish probing at the shorter deadline.
+			if vcodec != nil {
+				break
+			}
 			return nil, err
 		}
 
@@ -101,6 +117,13 @@ func probe(client *Client) ([]*core.Media, error) {
 		if vcodec != nil && acodec != nil {
 			break
 		}
+
+		// Give audio a bounded grace period after discovering video. Reset the
+		// socket deadline once so packet rate does not affect the probe window.
+		if vcodec != nil && acodec == nil && !audioDeadlineSet {
+			_ = client.SetDeadline(time.Now().Add(probeAudioWait))
+			audioDeadlineSet = true
+		}
 	}
 
 	medias := []*core.Media{
@@ -109,17 +132,20 @@ func probe(client *Client) ([]*core.Media, error) {
 			Direction: core.DirectionRecvonly,
 			Codecs:    []*core.Codec{vcodec},
 		},
-		{
+	}
+	if acodec != nil {
+		medias = append(medias, &core.Media{
 			Kind:      core.KindAudio,
 			Direction: core.DirectionRecvonly,
 			Codecs:    []*core.Codec{acodec},
-		},
+		})
 	}
 	return medias, nil
 }
 
-// videoCodec reads the codec of a frame that starts with its parameter sets.
-// A frame without an Annex B start code converts to no unit at all.
+// videoCodec returns the codec if the frame starts with SPS (H264) or VPS (H265).
+// A frame that is not valid Annex B (some cameras send those at the start of a
+// session) gives an empty AVCC, so it is skipped instead of read out of range.
 func videoCodec(codec byte, payload []byte) *core.Codec {
 	avcc := annexb.EncodeToAVCC(payload)
 	if len(avcc) < 5 {
@@ -159,12 +185,17 @@ func (c *Producer) Start() error {
 
 		switch codec := hdr[0]; codec {
 		case tutk.CodecH264, tutk.CodecH265:
+			avcc := annexb.EncodeToAVCC(payload)
+			if len(avcc) == 0 {
+				continue // not valid Annex B, skip the frame
+			}
+
 			pkt = &core.Packet{
 				Header: rtp.Header{
 					SequenceNumber: videoSeq,
 					Timestamp:      core.Now90000(),
 				},
-				Payload: annexb.EncodeToAVCC(payload),
+				Payload: avcc,
 			}
 			videoSeq++
 

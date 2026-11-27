@@ -11,7 +11,7 @@ const testBoundary = "----device-stream-boundary--\r\n"
 func handleClient(t *testing.T, stream string) (*Client, net.Conn, chan error) {
 	t.Helper()
 	clientSide, camSide := net.Pipe()
-	c := &Client{conn1: clientSide, decrypt: func(b []byte) []byte { return b }}
+	c := &Client{conn1: clientSide, decrypt: func(b []byte) ([]byte, error) { return b, nil }}
 
 	go func() {
 		_, _ = camSide.Write([]byte(stream))

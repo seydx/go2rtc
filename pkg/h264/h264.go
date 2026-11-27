@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/h264/annexb"
 )
 
 const (
@@ -21,13 +22,22 @@ const (
 	NALUTypeFUA    = 28 // Fragmentation unit A (RFC 6184)
 )
 
+// NALUType returns 0xFF if the AVCC NAL unit header is missing.
 func NALUType(b []byte) byte {
+	if len(b) < 5 {
+		return 0xFF
+	}
 	return b[4] & 0x1F
 }
 
 // IsKeyframe - check if any NALU in one AU is Keyframe
 func IsKeyframe(b []byte) bool {
-	for len(b) > 4 {
+	for len(b) > 0 {
+		size := annexb.AVCCNALUSize(b)
+		if size == 0 {
+			break
+		}
+
 		switch NALUType(b) {
 		case NALUTypePFrame:
 			return false
@@ -35,13 +45,7 @@ func IsKeyframe(b []byte) bool {
 			return true
 		}
 
-		size := int(binary.BigEndian.Uint32(b)) + 4
-		if size < len(b) {
-			b = b[size:]
-			continue
-		} else {
-			return false
-		}
+		b = b[size:]
 	}
 	return false
 }

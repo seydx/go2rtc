@@ -33,11 +33,17 @@ func newConn(conn net.Conn, isTCP bool) *Conn {
 	commandChannel := newDataChannel(0, 10)
 	commandChannel.dropOldest = true
 
+	// Channel 2 - media. Some devices (hub mxiang.camera.mwc10) send audio
+	// on channel 3, so it shares the output queue with channel 2.
+	media := newDataChannel(250, 100)
+	audio := newDataChannel(250, -1)
+	audio.popBuf = media.popBuf
+
 	return &Conn{
 		Conn:  conn,
 		isTCP: isTCP,
 		channels: [4]*dataChannel{
-			commandChannel, nil, newDataChannel(250, 100), nil,
+			commandChannel, nil, media, audio,
 		},
 	}
 }

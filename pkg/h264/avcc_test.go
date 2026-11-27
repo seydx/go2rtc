@@ -17,16 +17,13 @@ const testFmtp = "sprop-parameter-sets=Zw==,aA=="
 
 // A length prefix that doesn't add up leaves no telling where a NAL unit
 // ends. Such a unit is dropped instead of taking the process down.
-func TestRepairAVCCDropsMalformedPayload(t *testing.T) {
+func TestRepairAVCCDropsDamagedPayload(t *testing.T) {
 	for _, payload := range [][]byte{
 		nil, {0}, {0, 0}, {0, 0, 0}, {0, 0, 0, 1}, {0, 0, 0, 0, 1},
 		{0, 0, 0, 2, 1}, {0xff, 0xff, 0xff, 0xff, 6},
 		append(JoinNALU([]byte{6}), 0, 0, 0, 1),
 		append(JoinNALU([]byte{1}), 0, 0, 0, 2, 1),
-		append(JoinNALU([]byte{5}), 0, 0, 0, 0),
 		append(JoinNALU([]byte{5}), 0, 0),
-		append([]byte{0, 0, 0, 0}, JoinNALU([]byte{1, 2})...),
-		append(append(JoinNALU([]byte{1, 2}), 0, 0, 0, 0), JoinNALU([]byte{1, 3})...),
 	} {
 		t.Run(hex.EncodeToString(payload), func(t *testing.T) {
 			called := false
@@ -35,6 +32,43 @@ func TestRepairAVCCDropsMalformedPayload(t *testing.T) {
 			require.False(t, called)
 		})
 	}
+}
+
+// An empty NAL unit carries nothing, but the units around it are complete:
+// it is left out, the picture goes on (#2465)
+func TestRepairAVCCLeavesOutEmptyNALUnits(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		input, expected []byte
+	}{
+		{"after I frame", append(JoinNALU([]byte{5}), 0, 0, 0, 0), JoinNALU([]byte{0x67}, []byte{0x68}, []byte{5})},
+		{"before P frame", append([]byte{0, 0, 0, 0}, JoinNALU([]byte{1, 2})...), JoinNALU([]byte{1, 2})},
+		{"between P frames", append(append(JoinNALU([]byte{1, 2}), 0, 0, 0, 0), JoinNALU([]byte{1, 3})...), JoinNALU([]byte{1, 2}, []byte{1, 3})},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := bytes.Clone(test.input)
+			codec := &core.Codec{Name: core.CodecH264, FmtpLine: testFmtp}
+			var got []byte
+			RepairAVCC(codec, func(packet *rtp.Packet) { got = packet.Payload })(&rtp.Packet{Payload: test.input})
+			require.Equal(t, test.expected, got)
+			require.Equal(t, original, test.input)
+		})
+	}
+}
+
+// A camera without parameter sets in its SDP sends them with the keyframe. An
+// empty NAL unit in front of them doesn't keep them from the codec: MSE
+// players need the profile and the resolution from it.
+func TestRepairAVCCFmtpFromKeyframeWithEmptyNALUnit(t *testing.T) {
+	sps := []byte{0x67, 0x64, 0x00, 0x1f, 0xac}
+	payload := append([]byte{0, 0, 0, 0}, JoinNALU(sps, []byte{0x68, 0xee}, []byte{5, 1})...)
+
+	codec := &core.Codec{Name: core.CodecH264}
+	called := false
+	RepairAVCC(codec, func(*rtp.Packet) { called = true })(&rtp.Packet{Payload: payload})
+
+	require.True(t, called)
+	require.Equal(t, "packetization-mode=1;profile-level-id=64001f;sprop-parameter-sets=Z2QAH6w=,aO4=", codec.Fmtp())
 }
 
 // A unit of nothing but SEI carries no picture: once the SEI is stripped
@@ -159,6 +193,8 @@ func TestRepairAVCCDoesNotMutateInputPacket(t *testing.T) {
 	}{
 		{"IDR", JoinNALU(idr)},
 		{"SEI before IDR", JoinNALU([]byte{NALUTypeSEI}, idr)},
+		{"empty NAL before IDR", append(make([]byte, 4), JoinNALU(idr)...)},
+		{"empty NAL between SEI and IDR", append(append(JoinNALU([]byte{NALUTypeSEI}), 0, 0, 0, 0), JoinNALU(idr)...)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			input := &rtp.Packet{Header: rtp.Header{Timestamp: 123}, Payload: bytes.Clone(test.payload)}
@@ -185,14 +221,55 @@ func TestRepairAVCCDropsStandaloneSEI(t *testing.T) {
 	repair(input)
 }
 
-func TestRepairAVCCDropsMalformedSEI(t *testing.T) {
-	input := &rtp.Packet{Payload: []byte{0, 0, 0, 8, NALUTypeSEI}}
-	called := false
+func TestRepairAVCCDropsMalformedPayload(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		payload []byte
+	}{
+		{"empty payload", nil},
+		{"empty NAL", make([]byte, 4)},
+		{"truncated SEI", []byte{0, 0, 0, 8, NALUTypeSEI}},
+		{"oversized NAL", []byte{0xFF, 0xFF, 0xFF, 0xFF, NALUTypeSEI}},
+		{"SEI with short tail", append(JoinNALU([]byte{NALUTypeSEI}), 0, 0, 0)},
+		{"IDR with short tail", append(JoinNALU([]byte{NALUTypeIFrame}), 0, 0)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repair := RepairAVCC(&core.Codec{}, func(*rtp.Packet) {
+				t.Fatal("forwarded a malformed AVCC packet")
+			})
+			original := bytes.Clone(test.payload)
+			repair(&rtp.Packet{Payload: test.payload})
+			require.Equal(t, original, test.payload)
+		})
+	}
+}
 
-	repair := RepairAVCC(&core.Codec{}, func(*rtp.Packet) {
-		called = true
-	})
-	require.NotPanics(t, func() { repair(input) })
-	require.False(t, called)
-	require.Equal(t, []byte{0, 0, 0, 8, NALUTypeSEI}, input.Payload)
+func TestAVCCHelpersStopAtMalformedNALU(t *testing.T) {
+	valid := JoinNALU([]byte{NALUTypePFrame})
+	malformed := append(bytes.Clone(valid), 0, 0, 0)
+
+	require.Equal(t, [][]byte{valid}, SplitNALU(malformed))
+	require.Equal(t, []byte{NALUTypePFrame}, NALUTypes(malformed))
+}
+
+func TestAVCCToCodecDropsMalformedInputSafely(t *testing.T) {
+	for _, avcc := range [][]byte{
+		nil,
+		{},
+		{0},
+		{0, 0, 0},
+		{0, 0, 0, 2, NALUTypeSPS}, // length exceeds payload
+		{0, 0, 0, 1, NALUTypeSPS}, // too short to contain profile fields
+	} {
+		require.NotPanics(t, func() {
+			codec := AVCCToCodec(avcc)
+			require.Equal(t, core.CodecH264, codec.Name)
+		})
+	}
+}
+
+func TestNALUTypeShortPayload(t *testing.T) {
+	for size := range 5 {
+		require.Equal(t, byte(0xFF), NALUType(make([]byte, size)))
+	}
 }

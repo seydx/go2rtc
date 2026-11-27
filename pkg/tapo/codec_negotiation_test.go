@@ -1,6 +1,7 @@
 package tapo
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -39,7 +40,7 @@ func cameraStream(videoType byte, frames int) string {
 func probedClient(t *testing.T, stream string) (*Client, error) {
 	t.Helper()
 	clientSide, camSide := net.Pipe()
-	c := &Client{conn1: clientSide, decrypt: func(b []byte) []byte { return b }, session1: "test"}
+	c := &Client{conn1: clientSide, decrypt: func(b []byte) ([]byte, error) { return b, nil }, session1: "test"}
 	t.Cleanup(func() { _ = c.Close(); _ = camSide.Close() })
 
 	go func() {
@@ -113,9 +114,26 @@ func TestProbeWithoutVideoKeepsBothCodecs(t *testing.T) {
 
 func TestProbeFailsWhenTheCameraClosesTheStream(t *testing.T) {
 	clientSide, camSide := net.Pipe()
-	c := &Client{conn1: clientSide, decrypt: func(b []byte) []byte { return b }, session1: "test"}
+	c := &Client{conn1: clientSide, decrypt: func(b []byte) ([]byte, error) { return b, nil }, session1: "test"}
 	t.Cleanup(func() { _ = c.Close() })
 
 	_ = camSide.Close()
 	require.Error(t, c.probe())
+}
+
+// A body that doesn't decrypt is no stream (#2765): the probe ends with the
+// error instead of demuxing garbage until its timeout.
+func TestProbeStopsAtABodyThatDoesNotDecrypt(t *testing.T) {
+	clientSide, camSide := net.Pipe()
+	invalid := errors.New("tapo: invalid encryption")
+	c := &Client{conn1: clientSide, decrypt: func([]byte) ([]byte, error) { return nil, invalid }, session1: "test"}
+	t.Cleanup(func() { _ = c.Close(); _ = camSide.Close() })
+
+	go func() { _, _ = camSide.Write([]byte(cameraStream(mpegts.StreamTypeH264, 1))) }()
+
+	// garbage would have it read on, up to the probe's deadline
+	_ = clientSide.SetReadDeadline(time.Now().Add(time.Second))
+	c.rd = core.NewReadBuffer(c.conn1)
+	_, err := c.probeVideo()
+	require.ErrorIs(t, err, invalid)
 }
