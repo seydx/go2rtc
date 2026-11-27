@@ -36,7 +36,7 @@ func RTPDepay(handlerFunc core.HandlerFunc) core.HandlerFunc {
 	var ts uint32
 
 	return func(packet *rtp.Packet) {
-		//log.Printf("[RTP] codec: %s, size: %6d, ts: %10d, pt: %2d, ssrc: %d, seq: %d, mark: %v", track.Codec.Name, len(packet.Payload), packet.Timestamp, packet.PayloadType, packet.SSRC, packet.SequenceNumber, packet.Marker)
+		//log.Printf("[RTP] codec: %s, size: %6d, ts: %10d, pt: %2d, ssrc: %d, seq: %v, mark: %v", track.Codec.Name, len(packet.Payload), packet.Timestamp, packet.PayloadType, packet.SSRC, packet.SequenceNumber, packet.Marker)
 
 		// https://www.rfc-editor.org/rfc/rfc2435#section-3.1
 		b := packet.Payload
@@ -133,7 +133,7 @@ func RTPDepay(handlerFunc core.HandlerFunc) core.HandlerFunc {
 			return
 		}
 
-		if len(buf) < 2 || buf[len(buf)-2] != 0xFF || buf[len(buf)-1] != 0xD9 {
+		if !bytes.HasSuffix(buf, []byte{0xFF, 0xD9}) {
 			buf = append(buf, 0xFF, 0xD9)
 		}
 
