@@ -173,12 +173,17 @@ export class VideoRTC extends HTMLElement {
      * https://developer.chrome.com/blog/autoplay/
      */
     play() {
-        this.video.play().catch(() => {
-            if (!this.video.muted) {
+        this.video.play().catch(er => {
+            // The HTML spec requires NotAllowedError when autoplay is blocked.
+            // Some browsers (e.g. older Safari versions) may return AbortError,
+            // which can also indicate interrupted playback or a source change.
+            if (!this.video.muted && er.name === 'NotAllowedError') {
                 this.video.muted = true;
                 this.video.play().catch(er => {
                     console.warn(er);
                 });
+            } else {
+                console.warn(er);
             }
         });
     }
@@ -573,6 +578,10 @@ export class VideoRTC extends HTMLElement {
                 video2.addEventListener('loadeddata', () => this.onpcvideo(video2), {once: true});
                 video2.srcObject = new MediaStream(tracks);
             } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                // release the microphone, a new one is requested on reconnect
+                pc.getSenders().forEach(sender => {
+                    if (sender.track) sender.track.stop();
+                });
                 pc.close(); // stop next events
 
                 this.pcState = WebSocket.CLOSED;
@@ -672,6 +681,9 @@ export class VideoRTC extends HTMLElement {
             } else {
                 this.pcState = WebSocket.CLOSED;
                 if (this.pc) {
+                    this.pc.getSenders().forEach(sender => {
+                        if (sender.track) sender.track.stop();
+                    });
                     this.pc.close();
                     this.pc = null;
                 }

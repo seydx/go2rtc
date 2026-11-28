@@ -40,7 +40,6 @@ func Init() {
 	api.HandleFunc("api/consumer", apiConsumer)
 	api.HandleFunc("api/streams.dot", apiStreamsDOT)
 	api.HandleFunc("api/preload", apiPreload)
-	api.HandleFunc("api/schemes", apiSchemes)
 
 	// Store deferred config — StartPreloads() must be called after all modules are initialized
 	deferredPublish = cfg.Publish
@@ -103,6 +102,13 @@ func StartPreloads() {
 		deferredPublish = nil
 		deferredPreload = nil
 	}()
+}
+
+func Start() {
+	// We're delaying the launch of this API so that the receiver can be sure
+	// the list of schemes is final.
+	// https://github.com/AlexxIT/go2rtc/issues/2088
+	api.HandleFunc("api/schemes", apiSchemes)
 }
 
 func New(name string, sources ...string) (*Stream, error) {
