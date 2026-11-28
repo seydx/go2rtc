@@ -199,3 +199,40 @@ func TestDecodeAVCCMalformed(t *testing.T) {
 	b := DecodeAVCC(decode("00000002 6501 00000009 410203"), true)
 	require.Equal(t, decode("00000001 6501"), b)
 }
+
+// The test from upstream (#2656): a HEVC AUD also needs a valid pic_type
+// with its rbsp_trailing_bits (H.265 7.3.2.5, Table 7-2).
+func TestIsAUD(t *testing.T) {
+	tests := []struct {
+		nalu string
+		want bool
+	}{
+		{"", false},
+		{"46", false},
+		{"4601", false},
+
+		// H264 AUD.
+		{"09f0", true},
+
+		// H265 AUD with all valid picture types.
+		{"460110", true},
+		{"460130", true},
+		{"460150", true},
+
+		// Invalid H265 AUD.
+		{"460050", false},   // zero temporal ID
+		{"460151", false},   // invalid trailing bits
+		{"460170", false},   // invalid picture type
+		{"46015080", false}, // invalid size
+
+		// H264 SPS and noncompliant SEI.
+		{"474d401e", false},
+		{"46060050", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.nalu, func(t *testing.T) {
+			require.Equal(t, tt.want, isAUD(decode(tt.nalu)))
+		})
+	}
+}
