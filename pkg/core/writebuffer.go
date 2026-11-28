@@ -13,10 +13,11 @@ import (
 // WriteTo will be locked until Write fails or Close will be called.
 type WriteBuffer struct {
 	io.Writer
-	err   error
-	mu    sync.Mutex
-	wg    sync.WaitGroup
-	state byte
+	err    error
+	mu     sync.Mutex
+	wg     sync.WaitGroup
+	state  byte
+	closed bool
 }
 
 func NewWriteBuffer(wr io.Writer) *WriteBuffer {
@@ -50,7 +51,9 @@ func (w *WriteBuffer) Close() error {
 	// I'm not sure that's the best solution. This class needs a complete rewrite.
 	// https://github.com/AlexxIT/go2rtc/pull/2339
 	w.mu.Lock()
-	closer, _ := w.Writer.(io.Closer)
+	writer := w.Writer
+	closer, _ := writer.(io.Closer)
+	w.closed = true
 	if w.err == nil {
 		w.err = io.ErrClosedPipe
 	}
@@ -83,8 +86,7 @@ const (
 )
 
 func (w *WriteBuffer) add() {
-	// after Close WriteTo must not wait for a Done that already fired (#2327)
-	if w.state == none && w.err == nil {
+	if w.state == none && !w.closed {
 		w.state = start
 		w.wg.Add(1)
 	}
