@@ -39,28 +39,6 @@ func readBody(r *bufio.Reader, header textproto.MIMEHeader) ([]byte, error) {
 	return body, nil
 }
 
-// headerString writes CSeq first and the other headers sorted: some servers
-// (ex. Google Nest, Wowza) ignore a request unless CSeq is the first header.
-// https://github.com/AlexxIT/go2rtc/issues/2622
-func headerString(header textproto.MIMEHeader) string {
-	var s string
-	keys := make([]string, 0, len(header))
-	for k := range header {
-		if !strings.EqualFold(k, "CSeq") {
-			keys = append(keys, k)
-		} else if v := header[k]; len(v) > 0 {
-			s += k + ": " + v[0] + EndLine
-		}
-	}
-	slices.Sort(keys)
-	for _, k := range keys {
-		if v := header[k]; len(v) > 0 {
-			s += k + ": " + v[0] + EndLine
-		}
-	}
-	return s
-}
-
 // Response like http.Response, but with any proto
 type Response struct {
 	Status     string
@@ -71,14 +49,13 @@ type Response struct {
 	Request    *Request
 }
 
-func (r Response) String() string {
-	s := r.Proto + " " + r.Status + EndLine
-	s += headerString(r.Header)
-	s += EndLine
-	if r.Body != nil {
-		s += string(r.Body)
-	}
-	return s
+func (r *Response) String() string {
+	var s strings.Builder
+	s.WriteString(r.Proto + " " + r.Status + EndLine)
+	writeHeaders(&s, r.Header)
+	s.WriteString(EndLine)
+	s.Write(r.Body)
+	return s.String()
 }
 
 func (r *Response) Write(w io.Writer) (err error) {
@@ -124,6 +101,56 @@ func ReadResponse(r *bufio.Reader) (*Response, error) {
 	return res, nil
 }
 
+// headerOrder is the RTSP header order used by LIVE555 (VLC). Some servers
+// (ex. Google Nest, Wowza) are sensitive to the order and ignore a request
+// unless CSeq is the first header.
+// https://github.com/AlexxIT/go2rtc/issues/2622
+var headerOrder = []string{
+	"CSeq",
+	"Authorization",
+	"User-Agent",
+	"Accept",
+	"Content-Type",
+	"Range",
+	"Transport",
+	"Require",
+	"Session",
+	"Server",
+	"Public",
+	"Www-Authenticate",
+	"Content-Length",
+}
+
+// writeHeaders writes the first value of each header in headerOrder, the key
+// in any case (Header.Set stores CSeq as Cseq). Headers outside the list
+// follow sorted, none is dropped.
+func writeHeaders(s *strings.Builder, header textproto.MIMEHeader) {
+	keys := make([]string, 0, len(header))
+	for k, v := range header {
+		if len(v) != 0 {
+			keys = append(keys, k)
+		}
+	}
+	slices.SortFunc(keys, func(a, b string) int {
+		if i, j := headerRank(a), headerRank(b); i != j {
+			return i - j
+		}
+		return strings.Compare(a, b)
+	})
+	for _, k := range keys {
+		s.WriteString(k + ": " + header[k][0] + EndLine)
+	}
+}
+
+func headerRank(key string) int {
+	for i, name := range headerOrder {
+		if strings.EqualFold(key, name) {
+			return i
+		}
+	}
+	return len(headerOrder)
+}
+
 // Request like http.Request, but with any proto
 type Request struct {
 	Method string
@@ -134,13 +161,12 @@ type Request struct {
 }
 
 func (r *Request) String() string {
-	s := r.Method + " " + r.URL.String() + " " + r.Proto + EndLine
-	s += headerString(r.Header)
-	s += EndLine
-	if r.Body != nil {
-		s += string(r.Body)
-	}
-	return s
+	var s strings.Builder
+	s.WriteString(r.Method + " " + r.URL.String() + " " + r.Proto + EndLine)
+	writeHeaders(&s, r.Header)
+	s.WriteString(EndLine)
+	s.Write(r.Body)
+	return s.String()
 }
 
 func (r *Request) Write(w io.Writer) (err error) {

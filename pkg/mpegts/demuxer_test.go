@@ -138,8 +138,8 @@ func payloads(pkts []*rtp.Packet, streamType byte) (b [][]byte) {
 
 func TestDemuxerRoundTrip(t *testing.T) {
 	m := NewMuxer()
-	video := m.AddTrack(StreamTypeH264)
-	audio := m.AddTrack(StreamTypePCMATapo)
+	video := m.AddTrack(StreamTypeH264, ClockRate)
+	audio := m.AddTrack(StreamTypePCMATapo, ClockRate)
 
 	var ts []byte
 	ts = append(ts, m.GetHeader()...)

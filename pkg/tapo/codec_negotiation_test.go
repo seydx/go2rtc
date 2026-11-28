@@ -16,8 +16,8 @@ import (
 // into tapo multipart parts
 func cameraStream(videoType byte, frames int) string {
 	mux := mpegts.NewMuxer()
-	audio := mux.AddTrack(mpegts.StreamTypePCMATapo)
-	video := mux.AddTrack(videoType)
+	audio := mux.AddTrack(mpegts.StreamTypePCMATapo, 8000)
+	video := mux.AddTrack(videoType, mpegts.ClockRate)
 
 	nalu := []byte{0, 0, 0, 4, 0x65, 0x88, 0x84, 0x00}
 	if videoType == mpegts.StreamTypeH265 {
