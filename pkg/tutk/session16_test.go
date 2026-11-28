@@ -3,6 +3,7 @@ package tutk
 import (
 	"bytes"
 	"encoding/binary"
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -81,4 +82,63 @@ func TestSession16DeliversFrameWithPaddedLastChunk(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, payload, frameData)
 	require.True(t, bytes.HasPrefix(frameInfo, hdr))
+}
+
+// The fragments of a frame repeat its layout. A last fragment announcing
+// other sizes than the first leaves no telling where the frame info ends: the
+// frame is damaged, it used to go out split in the wrong place (#2433).
+func TestSession16RejectsFragmentsWithDifferentSizes(t *testing.T) {
+	s := NewSession16(nil, make([]byte, 8))
+
+	payload := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	hdr := []byte{0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6}
+
+	require.Equal(t, msgMediaChunk, s.SessionRead(0, session16Media(0x03, 7, 0, 6, 10, payload)))
+	require.Equal(t, msgMediaLost, s.SessionRead(0, session16Media(0x03, 7, 1, 6, 4, hdr)))
+	require.Empty(t, s.rawPkt)
+
+	// the next frame goes through
+	require.Equal(t, msgMediaChunk, s.SessionRead(0, session16Media(0x03, 8, 0, 6, 10, payload)))
+	require.Equal(t, msgMediaFrame, s.SessionRead(0, session16Media(0x03, 8, 1, 6, 10, hdr)))
+	frameInfo, frameData, err := s.RecvFrameData()
+	require.NoError(t, err)
+	require.Equal(t, hdr, frameInfo)
+	require.Equal(t, payload, frameData)
+}
+
+// A size near 4 GiB waits for its chunks. On 32-bit platforms the int sum of
+// the sizes wrapped: 16 bytes completed the frame and the split panicked.
+func TestSession16HugeFrameSizeWaitsForChunks(t *testing.T) {
+	s := NewSession16(nil, make([]byte, 8))
+
+	var got int
+	require.NotPanics(t, func() {
+		got = s.SessionRead(0, session16Media(0x03, 7, 0, 0x20, 0xFFFFFFF0, make([]byte, 16)))
+	})
+	require.Equal(t, msgMediaChunk, got)
+}
+
+type discardConn struct{ net.Conn }
+
+func (discardConn) Write(b []byte) (int, error) { return len(b), nil }
+
+// An IOCtrl message too short for its control type is not queued: RecvIOCtrl
+// read the type past the end and took the process down.
+func TestSession16RejectsTruncatedIOCtrl(t *testing.T) {
+	s := NewSession16(discardConn{}, make([]byte, 8))
+
+	cmd := make([]byte, cmdHdrSize)
+	cmd[1] = 0x70
+
+	var got int
+	require.NotPanics(t, func() { got = s.SessionRead(0, cmd) })
+	require.Equal(t, msgUnknown, got)
+	require.Empty(t, s.rawCmd)
+
+	// with its control type it goes through
+	require.Equal(t, msgCommand, s.SessionRead(0, append(cmd, 1, 0, 0, 0, 0xaa)))
+	ctrlType, ctrlData, err := s.RecvIOCtrl()
+	require.NoError(t, err)
+	require.Equal(t, uint32(1), ctrlType)
+	require.Equal(t, []byte{0xaa}, ctrlData)
 }
