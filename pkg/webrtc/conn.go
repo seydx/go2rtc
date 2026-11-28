@@ -50,6 +50,10 @@ type Conn struct {
 	// the selected candidate pair rewrites Protocol and RemoteAddr while the API marshals them,
 	// a renegotiation adds Medias, Receivers and Senders while the connection runs
 	infoMu sync.Mutex
+
+	// GetTrack can be called concurrently by a consumer and OnTrack: the
+	// lookup and the creation of a receiver are one step (#2412)
+	receiverMu sync.Mutex
 }
 
 func NewConn(pc *webrtc.PeerConnection) *Conn {

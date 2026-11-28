@@ -56,6 +56,11 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 
 		data := packet.Payload
 		if len(data) < 3 {
+			// an AP without a single aggregation unit is damaged like a
+			// truncated one (RFC 7798 4.4.2 asks for two or more)
+			if len(data) == 2 && (data[0]>>1)&0x3F == NALUTypeAP {
+				drop()
+			}
 			return // too short to carry H265 data, ex. padding only
 		}
 

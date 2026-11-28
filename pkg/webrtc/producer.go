@@ -8,6 +8,11 @@ import (
 func (c *Conn) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
 	core.Assert(media.Direction == core.DirectionRecvonly)
 
+	// GetTrack can be called concurrently by a consumer and OnTrack.
+	// Serialize receiver lookup and creation to avoid duplicate receivers.
+	c.receiverMu.Lock()
+	defer c.receiverMu.Unlock()
+
 	// The remote may answer one media with several payload types and then
 	// transmit on one that is not the first (Google Nest/SDM, #2480). The
 	// consumers that attached before the first RTP packet are wired to the
